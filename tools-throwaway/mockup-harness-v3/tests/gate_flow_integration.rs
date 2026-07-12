@@ -164,16 +164,33 @@ fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
 fn every_gate_alias_is_byte_identical_to_its_declared_canonical_artifact() {
     ensure_published();
     for artifact in pilot_gate_artifacts() {
-        let canonical = fs::read(Path::new(CANONICAL_ROOT).join(&artifact.canonical_relative))
-            .expect("declared canonical artifact must be readable");
         let gate = fs::read(Path::new(GATE_ROOT).join(&artifact.gate_relative))
             .expect("declared gate alias must be readable");
+        let expected = audit_screen(artifact.screen_id, artifact.fixture_id)
+            .expect("the declared step fixture must resolve");
+        let expected_bytes = if artifact.extension == "txt" {
+            expected.render_txt().into_bytes()
+        } else {
+            render_audit_png(&expected).expect("the declared step fixture must rasterize")
+        };
         assert_eq!(
-            canonical,
-            gate,
-            "every gate alias must be a byte-identical canonical alias: {}",
+            expected_bytes, gate,
+            "every gate alias must match its declared step fixture: {}",
             artifact.gate_relative
         );
+        let canonical_fixture =
+            mockup_harness_v3::renderer::canonical_publication_fixture(artifact.screen_id)
+                .unwrap_or(artifact.fixture_id);
+        if canonical_fixture == artifact.fixture_id {
+            let canonical =
+                fs::read(Path::new(CANONICAL_ROOT).join(&artifact.canonical_relative))
+                    .expect("declared canonical artifact must be readable");
+            assert_eq!(
+                canonical, gate,
+                "gate alias must be a byte-identical canonical alias when fixtures match: {}",
+                artifact.gate_relative
+            );
+        }
     }
 }
 

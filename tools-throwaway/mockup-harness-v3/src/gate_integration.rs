@@ -967,8 +967,7 @@ pub fn pilot_gate_artifacts() -> Vec<PilotGateArtifact> {
                             flow: flow.name,
                             step_index: index + 1,
                             screen_id: step.screen_id,
-                            fixture_id: crate::renderer::canonical_publication_fixture(step.screen_id)
-                                .unwrap_or(step.fixture_id),
+                            fixture_id: step.fixture_id,
                             canonical_relative: format!("{category}/{}.txt", step.screen_id),
                             gate_relative: format!(
                                 "{}/{:02}-{}.txt",
@@ -982,8 +981,7 @@ pub fn pilot_gate_artifacts() -> Vec<PilotGateArtifact> {
                             flow: flow.name,
                             step_index: index + 1,
                             screen_id: step.screen_id,
-                            fixture_id: crate::renderer::canonical_publication_fixture(step.screen_id)
-                                .unwrap_or(step.fixture_id),
+                            fixture_id: step.fixture_id,
                             canonical_relative: format!("{category}/{}.png", step.screen_id),
                             gate_relative: format!(
                                 "{}/{:02}-{}.png",
@@ -1551,15 +1549,21 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
                 return Err("PNG feature is required for gate integration validation".to_owned());
             }
         };
-        if canonical_bytes != gate_bytes {
-            return Err(format!(
-                "canonical and gate alias bytes differ: {}",
-                artifact.gate_relative
-            ));
-        }
+        // Gate aliases must match their declared step fixture. A shared
+        // screen ID such as chat-turn may legitimately differ between the
+        // canonical gallery fixture and another journey's gate alias, so
+        // require byte-identity with the step fixture render first.
         if expected_bytes != gate_bytes {
             return Err(format!(
                 "gate alias is not canonical-equivalent for its declared fixture: {}",
+                artifact.gate_relative
+            ));
+        }
+        let canonical_fixture = crate::renderer::canonical_publication_fixture(artifact.screen_id)
+            .unwrap_or(artifact.fixture_id);
+        if canonical_fixture == artifact.fixture_id && canonical_bytes != gate_bytes {
+            return Err(format!(
+                "canonical and gate alias bytes differ: {}",
                 artifact.gate_relative
             ));
         }

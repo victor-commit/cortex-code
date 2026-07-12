@@ -354,12 +354,7 @@ fn public_flow_publishes_six_byte_identical_canonical_aliases() {
             );
             assert!(Path::new(&canonical).is_file(), "missing {canonical}");
             assert!(Path::new(&gate).is_file(), "missing {gate}");
-            let canonical_fixture = if *screen == "chat-turn" {
-                "flow1.daily-work.stable"
-            } else {
-                "flow2.input-and-approval.stable"
-            };
-            let expected = audit_screen(screen, canonical_fixture).unwrap();
+            let expected = audit_screen(screen, "flow2.input-and-approval.stable").unwrap();
             let expected_bytes = if extension == "txt" {
                 expected.render_txt().into_bytes()
             } else {
@@ -370,7 +365,52 @@ fn public_flow_publishes_six_byte_identical_canonical_aliases() {
                 fs::read(&gate).unwrap(),
                 "{gate} must be canonical-equivalent for the declared Flow 2 fixture"
             );
+            if *screen == "chat-turn" {
+                assert_eq!(
+                    expected_bytes,
+                    fs::read(&canonical).unwrap(),
+                    "canonical session/chat-turn must keep the Flow 2 paused retry identity"
+                );
+            }
             assert!(Path::new(&canonical).is_file());
         }
     }
+}
+
+#[test]
+fn terminal_chat_turn_keeps_paused_retry_origin_after_staging_finish() {
+    let finish = replay_case("staging-finish", 1).expect("staging finish must replay");
+    finish
+        .validate()
+        .expect("staging finish must validate closed side effects");
+    assert_eq!(finish.after.screen_id, "chat-turn");
+    assert_eq!(finish.after.session_id, "session.retry-review.18");
+    assert_eq!(finish.after.turn_id, "turn.retry-review.18");
+    assert_eq!(
+        finish.after.visible_origin,
+        "Input and approval · paused conversation"
+    );
+    assert_eq!(
+        finish.after.user_task,
+        "Check the retry path before we merge."
+    );
+    assert!(
+        finish.audit.render_txt().contains("session.retry-review.18"),
+        "the after-state render must keep the paused retry session identity"
+    );
+    assert!(
+        !finish.audit.render_txt().contains("Daily work · current conversation"),
+        "the Flow 2 terminal destination must not fall back to Daily work identity"
+    );
+
+    let published = audit_screen("chat-turn", "flow2.input-and-approval.stable")
+        .expect("the Flow 2 terminal chat-turn fixture must render");
+    let published_text = published.render_txt();
+    assert!(published_text.contains("Input and approval · paused conversation"));
+    assert!(published_text.contains("Check the retry path before we merge."));
+    assert!(published_text.contains("session.retry-review.18"));
+    assert!(!published_text.contains("Daily work · current conversation"));
+    assert!(!published_text.contains(
+        "Find where the server applies the rate limit and explain the safe path."
+    ));
 }

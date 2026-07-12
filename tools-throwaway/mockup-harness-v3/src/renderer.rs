@@ -644,6 +644,9 @@ fn require_selected_implemented(screens: &[&ScreenSpec]) -> Result<(), String> {
 fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> {
     let mut canonical = BTreeMap::new();
     for screen in &plan.canonical {
+        // Shared canonical gallery fixtures are journey-stable. Prefer the
+        // authoritative first-three fixture for the screen so multi-flow
+        // IDs such as chat-turn do not flip identity with publish order.
         let fixture_id = canonical_publication_fixture(screen.id)
             .map(str::to_owned)
             .unwrap_or_else(|| format!("canonical.{}", screen.id));
@@ -666,10 +669,11 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
     if let Some(flow) = plan.flow {
         let mut gate = BTreeMap::new();
         for (index, step) in flow.steps.iter().enumerate() {
-            let fixture_id = canonical_publication_fixture(step.screen_id)
-                .unwrap_or(step.fixture_id);
-            let audit =
-                audit_screen(step.screen_id, fixture_id).map_err(RenderFailure::validation)?;
+            // Gate aliases are fixture-bound to the declared step fixture. Never
+            // fall back to another journey's first published fixture for a shared
+            // screen ID such as chat-turn.
+            let audit = audit_screen(step.screen_id, step.fixture_id)
+                .map_err(RenderFailure::validation)?;
             insert_audit_artifacts(
                 &mut gate,
                 format!("{}/{:02}-{}", flow.name, index + 1, step.screen_id),
@@ -685,15 +689,31 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
     Ok(roots)
 }
 
-pub(crate) fn canonical_publication_fixture(screen_id: &str) -> Option<&'static str> {
-    let fixtures = flow_manifests()
+/// Canonical publication fixture for non-flow gallery renders.
+///
+/// When a screen appears in multiple first-three journeys, prefer the
+/// `input-and-approval` identity so the published canonical gallery preserves
+/// the paused retry origin end-to-end for Flow 2 terminal evidence. Daily work
+/// still publishes its own gate frame through the flow-specific step fixture.
+pub fn canonical_publication_fixture(screen_id: &str) -> Option<&'static str> {
+    let mut fixtures = flow_manifests()
         .iter()
         .take(3)
-        .flat_map(|flow| &flow.steps)
-        .filter(|step| step.screen_id == screen_id)
-        .map(|step| step.fixture_id)
-        .collect::<BTreeSet<_>>();
-    fixtures.into_iter().next()
+        .flat_map(|flow| flow.steps.iter().map(move |step| (flow.name, step)))
+        .filter(|(_, step)| step.screen_id == screen_id)
+        .map(|(flow_name, step)| (flow_name, step.fixture_id))
+        .collect::<Vec<_>>();
+    if fixtures.is_empty() {
+        return None;
+    }
+    if let Some((_, fixture)) = fixtures
+        .iter()
+        .find(|(flow_name, _)| *flow_name == "input-and-approval")
+    {
+        return Some(*fixture);
+    }
+    fixtures.sort_by_key(|(flow_name, _)| *flow_name);
+    fixtures.into_iter().next().map(|(_, fixture)| fixture)
 }
 
 fn insert_audit_artifacts(
