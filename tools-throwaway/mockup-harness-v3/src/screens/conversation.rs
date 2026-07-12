@@ -44,6 +44,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let mut canvas = Canvas::new();
     let flow2_storyboard = fixture_id.contains("flow2.input-and-approval.stable");
+    let work_style_return = work_style_for_fixture(fixture_id);
     let (visible_origin, user_task) = if flow2_storyboard {
         (FLOW2_ORIGIN, FLOW2_TASK)
     } else {
@@ -80,6 +81,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "chat-turn" if flow2_storyboard => {
             render_flow2_resumed_turn(&mut canvas, screen_id, fixture_id)?
         }
+        "chat-turn" if work_style_return.is_some() => {
+            render_work_style_returned_turn(&mut canvas, screen_id, fixture_id)?
+        }
         "chat-turn" if fixture_id == "conversation-completed" => {
             render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
         }
@@ -99,21 +103,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         candidates,
         events,
         transitions,
-        work_style: fixture_id.starts_with("flow3-work-style").then(|| {
-            let (applied, access_scope) = if fixture_id.contains("unchanged") {
-                ("Quick implementation", "asks before editing project files")
-            } else {
-                (
-                    "Autonomous changes",
-                    "can edit project files without asking each time, in this project",
-                )
-            };
-            WorkStyleEvidence {
-                applied: applied.to_owned(),
-                pending: None,
-                access_scope: access_scope.to_owned(),
-            }
-        }),
+        work_style: work_style_return,
         model_choice: None,
         conversation: Some(if flow2_storyboard {
             crate::audit::ConversationIdentity {
@@ -141,6 +131,152 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             }
         }),
     })
+}
+
+fn work_style_for_fixture(fixture_id: &str) -> Option<WorkStyleEvidence> {
+    if !fixture_id.starts_with("flow3-work-style") {
+        return None;
+    }
+    let (applied, access_scope) = if fixture_id.contains("unchanged") {
+        ("Quick implementation", "asks before editing project files")
+    } else if fixture_id.contains("refused-return") {
+        ("Careful edits", "asks before editing project files")
+    } else {
+        (
+            "Autonomous changes",
+            "can edit project files without asking each time, in this project",
+        )
+    };
+    Some(WorkStyleEvidence {
+        applied: applied.to_owned(),
+        pending: None,
+        access_scope: access_scope.to_owned(),
+    })
+}
+
+fn render_work_style_returned_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let work_style = work_style_for_fixture(fixture_id)
+        .ok_or_else(|| "work-style return fixture needs applied configuration".to_owned())?;
+    let unchanged = fixture_id.contains("refused-return");
+    canvas.write(
+        5,
+        4,
+        if unchanged {
+            "Code · Work configuration unchanged"
+        } else {
+            "Code · Work configuration updated"
+        },
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        8,
+        4,
+        &format!("Applied work style · {}", work_style.applied),
+        TextStyle::bright(),
+    )?;
+    let access = if work_style.applied == "Autonomous changes" {
+        "Access · Can edit project files without asking each time · this project"
+    } else {
+        "Access · Asks before editing project files"
+    };
+    canvas.write(10, 4, access, TextStyle::text())?;
+    canvas.write(
+        13,
+        4,
+        "Your transcript and draft are unchanged.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        if unchanged {
+            "The rejected access change is closed. Careful edits remains the only applied choice."
+        } else {
+            "The pending selection is now applied. No other configuration changed."
+        },
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        "Continue the paused conversation when you are ready.",
+        TextStyle::muted(),
+    )?;
+    composer(
+        canvas,
+        "Continue the retry conversation.",
+        Some("Send reply"),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "configuration-result",
+            if unchanged {
+                "work-style-unchanged"
+            } else {
+                "work-style-applied"
+            },
+            reference(5, 4, 42),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "applied-work-style",
+            reference(8, 4, 61),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "access-scope",
+            "applied-access-scope",
+            reference(10, 4, 78),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "conversation-and-draft",
+            reference(13, 4, 45),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 40),
+            "focused",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the preserved draft sends from the same conversation under the applied work style",
+        )],
+    ))
 }
 
 fn render_flow2_resumed_turn(

@@ -301,8 +301,33 @@ impl CaseReplay {
                 }
             }
         }
-        if self.case_id.starts_with("work-style-") && self.audit.work_style.is_none() {
-            return Err("work-style scenario must emit one work_style audit object".to_owned());
+        if self.case_id.starts_with("work-style-") {
+            let Some(work_style) = self.audit.work_style.as_ref() else {
+                return Err("work-style scenario must emit one work_style audit object".to_owned());
+            };
+            if work_style.applied != self.after.work_style
+                || work_style.pending != self.after.pending_work_style
+                || work_style.access_scope != self.after.access_scope
+                || self
+                    .audit
+                    .events
+                    .iter()
+                    .filter(|event| event.identity.family == "work-style")
+                    .count()
+                    != 1
+            {
+                return Err(
+                    "work-style scenario audit does not reconcile the visible resulting state"
+                        .to_owned(),
+                );
+            }
+            for field in ["work_style", "pending_work_style", "access_scope"] {
+                if !self.preserved_field_hashes.contains_key(field) {
+                    return Err(format!(
+                        "work-style scenario is missing {field} preservation hashes"
+                    ));
+                }
+            }
         }
         for state in [&self.before, &self.after] {
             if state
@@ -541,7 +566,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "work-style-unchanged" => work_style_unchanged(),
         "work-style-access-pending" => work_style_access_pending(),
         "work-style-access-confirm" => work_style_access_confirm(),
+        "work-style-access-cancel" => work_style_access_cancel(),
         "work-style-access-refused" => work_style_access_refused(),
+        "work-style-refusal-choose-unchanged" => work_style_refusal_choose_unchanged(),
+        "work-style-refusal-return" => work_style_refusal_return(),
         "session-preview-open" => session_preview_open(),
         "session-selected-docs-preview" => session_selected_docs_preview(),
         "session-preview-back" => session_preview_back(),
@@ -591,7 +619,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             "work-style-unchanged" => "flow3-work-style-unchanged",
             "work-style-access-pending" => "flow3-work-style-access",
             "work-style-access-confirm" => "flow3-work-style-access",
+            "work-style-access-cancel" => "flow3-work-style-current-only",
             "work-style-access-refused" => "flow3-work-style-refused",
+            "work-style-refusal-choose-unchanged" => "flow3-work-style-refusal-unchanged",
+            "work-style-refusal-return" => "flow3-work-style-refused-return",
             _ => unreachable!(),
         }
         .to_owned()
@@ -1343,6 +1374,65 @@ fn work_style_access_confirm() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn work_style_access_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "mode-switch",
+        vec!["chat-turn", "agent-picker", "mode-switch"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "autonomous-changes",
+        "access-confirmation",
+        Some("pending.work-style.autonomous"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.pending_work_style = Some("Autonomous changes".to_owned());
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "agent-picker".to_owned();
+    after.selection = "careful-edits".to_owned();
+    after.focus = "work-style-selection".to_owned();
+    after.pending_action = None;
+    after.pending_work_style = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mode-switch.cancel".to_owned(),
+        label: "Keep Careful edits".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path:
+            "cancel discards the pending access change and returns to the work-style choice with Careful edits still applied"
+                .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mode-switch.cancel.1".to_owned(),
+        owner_id: "pending.work-style.autonomous".to_owned(),
+        count: 0,
+        outcome: "access-change-cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mode-switch.cancel",
+        "configuration",
+        "no-change",
+        "the pending Autonomous changes selection was discarded without changing work style or access",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 fn work_style_access_refused() -> (
     ScenarioState,
     ScenarioState,
@@ -1373,7 +1463,7 @@ fn work_style_access_refused() -> (
     after.state_hash = state_hash(&after);
     let action = ActionEvidence {
         action_id: "action.mode-switch-refused.choose-safer".to_owned(),
-        label: "Choose a safer work style".to_owned(),
+        label: "Choose Quick implementation · same access".to_owned(),
         enabled: true,
         automatic: false,
     };
@@ -1396,6 +1486,118 @@ fn work_style_access_refused() -> (
         "configuration",
         "no-change",
         "approval was refused and the current work style and access remained active",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn work_style_refusal_choose_unchanged() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "mode-switch-refused",
+        vec!["chat-turn", "agent-picker", "mode-switch"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "careful-edits",
+        "refusal-recovery",
+        None,
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "agent-picker".to_owned();
+    after.selection = "quick-implementation".to_owned();
+    after.focus = "work-style-selection".to_owned();
+    after.pending_action = Some("pending.work-style.quick".to_owned());
+    after.pending_work_style = Some("Quick implementation".to_owned());
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mode-switch-refused.choose-unchanged".to_owned(),
+        label: "Choose Quick implementation · same access".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path:
+            "the refusal recovery opens Quick implementation as an unchanged-access choice while Careful edits remains applied"
+                .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mode-switch-refused.choose-unchanged.1".to_owned(),
+        owner_id: "pending.work-style.quick".to_owned(),
+        count: 0,
+        outcome: "unchanged-access-choice-opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mode-switch-refused.choose-unchanged",
+        "configuration",
+        "no-change",
+        "the rejected escalation stayed closed while Quick implementation became a pending same-access choice",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn work_style_refusal_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "mode-switch-refused",
+        vec!["chat-turn", "agent-picker", "mode-switch"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "careful-edits",
+        "refusal-recovery",
+        None,
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mode-switch-refused.return".to_owned(),
+        label: "Return to work".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path:
+            "return restores the paused conversation with Careful edits and ask-before-editing access unchanged"
+                .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mode-switch-refused.return.1".to_owned(),
+        owner_id: "pending.work-style.autonomous".to_owned(),
+        count: 0,
+        outcome: "returned-without-change".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mode-switch-refused.return",
+        "configuration",
+        "no-change",
+        "return changed no configuration and restored the paused conversation",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -3637,6 +3839,21 @@ fn preserved_hashes(
             after.return_policy.as_str(),
         ),
         (
+            "work_style",
+            before.work_style.as_str(),
+            after.work_style.as_str(),
+        ),
+        (
+            "pending_work_style",
+            before.pending_work_style.as_deref().unwrap_or(""),
+            after.pending_work_style.as_deref().unwrap_or(""),
+        ),
+        (
+            "access_scope",
+            before.access_scope.as_str(),
+            after.access_scope.as_str(),
+        ),
+        (
             "selection",
             before.selection.as_str(),
             after.selection.as_str(),
@@ -3816,7 +4033,7 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
     let visible_total_length = execution_bytes.len();
     let byte_offset = if case_id.contains("page-88")
         || case_id.contains("long-final")
-        || case_id.contains("return")
+        || case_id == "permission-shell-long-return"
         || case_id.contains("middle")
     {
         88

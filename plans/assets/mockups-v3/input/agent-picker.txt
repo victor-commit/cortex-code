@@ -10,14 +10,14 @@
     Choose the outcome you want. Your current choice stays active until you apply.                                      
                                                                                                                         
                                                                                                                         
-      Careful edits                                                                                                     
-      Asks before editing files.                                                                                        
+      Current · Careful edits                                                                                           
+      You approve each project-file edit before it happens.                                                             
                                                                                                                         
-      Quick implementation                                                                                              
-      Makes focused edits with your review at the end.                                                                  
+      Available · Quick implementation                                                                                  
+      Focused edits happen now; you review them together at the end.                                                    
                                                                                                                         
-    › Autonomous changes                                                                                                
-      Can edit project files without asking each time.                                                                  
+    › Pending selection · Autonomous changes                                                                            
+      Project-file edits can happen without asking each time.                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,7 +30,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Autonomous changes                                                                                    │  
+  │ Pending selection · Autonomous changes                                                                           │  
   │ Changes access; review the concrete project scope before applying.                                               │  
   │ › [enter] Review access change · [esc] Cancel                                                                    │  
   │ [↑↓] Choose · each row explains how Code will work                                                               │  

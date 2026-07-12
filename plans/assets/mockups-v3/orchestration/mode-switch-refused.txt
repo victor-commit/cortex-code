@@ -31,8 +31,8 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Not applied · Careful edits remains active                                                                       │  
-  │ Choose a safer work style or return to the paused conversation.                                                  │  
-  │ › [enter] Choose a safer work style · [esc] Return to work                                                       │  
+  │ Quick implementation keeps the same access and adds review at the end.                                           │  
+  │ › [enter] Choose Quick implementation · same access · [esc] Return to work                                       │  
   │ Nothing was applied.                                                                                             │  
   │ The previous work style remains the only applied choice.                                                         │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  

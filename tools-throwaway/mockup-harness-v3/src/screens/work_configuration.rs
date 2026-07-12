@@ -59,13 +59,14 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         work_style: match screen_id {
             "onboarding" | "model-picker" | "agent-picker" => Some(WorkStyleEvidence {
                 applied: "Careful edits".to_owned(),
-                pending: (screen_id == "agent-picker").then(|| {
-                    if fixture_id.contains("unchanged") {
-                        "Quick implementation".to_owned()
-                    } else {
-                        "Autonomous changes".to_owned()
-                    }
-                }),
+                pending: (screen_id == "agent-picker" && !fixture_id.contains("current-only"))
+                    .then(|| {
+                        if fixture_id.contains("unchanged") {
+                            "Quick implementation".to_owned()
+                        } else {
+                            "Autonomous changes".to_owned()
+                        }
+                    }),
                 access_scope: "asks before editing project files".to_owned(),
             }),
             "mode-switch" => Some(WorkStyleEvidence {
@@ -669,8 +670,11 @@ fn render_agent_picker(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let unchanged = fixture_id.contains("unchanged");
+    let current_only = fixture_id.contains("current-only");
     let gate_origin = is_gate_fixture(fixture_id);
-    let selected = if unchanged {
+    let selected = if current_only {
+        "Careful edits"
+    } else if unchanged {
         "Quick implementation"
     } else {
         "Autonomous changes"
@@ -689,14 +693,17 @@ fn render_agent_picker(
         TextStyle::muted(),
     )?;
     let rows = [
-        ("Careful edits", "Asks before editing files."),
+        (
+            "Careful edits",
+            "You approve each project-file edit before it happens.",
+        ),
         (
             "Quick implementation",
-            "Makes focused edits with your review at the end.",
+            "Focused edits happen now; you review them together at the end.",
         ),
         (
             "Autonomous changes",
-            "Can edit project files without asking each time.",
+            "Project-file edits can happen without asking each time.",
         ),
     ];
     let selected_index = rows
@@ -711,20 +718,29 @@ fn render_agent_picker(
         } else {
             TextStyle::text()
         };
-        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
+        let visible_label = if index == 0 {
+            format!("{marker} Current · {label}")
+        } else if index == selected_index {
+            format!("{marker} Pending selection · {label}")
+        } else {
+            format!("{marker} Available · {label}")
+        };
+        canvas.write(row, 4, &visible_label, style)?;
         canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
     }
     write_dock_border(canvas)?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 1,
-        &format!("Selected · {selected}"),
-        TextStyle::bright(),
-    )?;
+    let selected_summary = if current_only {
+        "Current · Careful edits · no pending change".to_owned()
+    } else {
+        format!("Pending selection · {selected}")
+    };
+    dock_line(canvas, DOCK_TOP + 1, &selected_summary, TextStyle::bright())?;
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        if unchanged {
+        if current_only {
+            "Careful edits remains applied; choose another row to preview an outcome."
+        } else if unchanged {
             "Keeps current access; this choice applies directly."
         } else {
             "Changes access; review the concrete project scope before applying."
@@ -734,7 +750,9 @@ fn render_agent_picker(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        if unchanged {
+        if current_only {
+            "› [enter] Keep Careful edits · [esc] Cancel"
+        } else if unchanged {
             "› [enter] Use Quick implementation · [esc] Cancel"
         } else {
             "› [enter] Review access change · [esc] Cancel"
@@ -754,17 +772,21 @@ fn render_agent_picker(
         TextStyle::muted(),
     )?;
 
-    let primary_id = if unchanged {
+    let primary_id = if current_only {
+        "action.agent-picker.keep-current"
+    } else if unchanged {
         "action.agent-picker.apply-unchanged"
     } else {
         "action.agent-picker.review-access"
     };
-    let primary_label = if unchanged {
+    let primary_label = if current_only {
+        "Keep Careful edits"
+    } else if unchanged {
         "Use Quick implementation"
     } else {
         "Review access change"
     };
-    let target = if unchanged {
+    let target = if current_only || unchanged {
         "chat-turn"
     } else {
         "mode-switch"
@@ -802,8 +824,8 @@ fn render_agent_picker(
             fixture_id,
             "work-style-row",
             "careful-edits",
-            reference(12, 4, 18),
-            "summary",
+            reference(12, 4, 28),
+            if current_only { "focused" } else { "summary" },
             None,
         ),
         semantic(
@@ -811,7 +833,7 @@ fn render_agent_picker(
             fixture_id,
             "work-style-row",
             "quick-implementation",
-            reference(15, 4, 25),
+            reference(15, 4, 45),
             if unchanged { "focused" } else { "summary" },
             None,
         ),
@@ -820,8 +842,12 @@ fn render_agent_picker(
             fixture_id,
             "work-style-row",
             "autonomous-changes",
-            reference(18, 4, 22),
-            if unchanged { "summary" } else { "focused" },
+            reference(18, 4, 42),
+            if unchanged || current_only {
+                "summary"
+            } else {
+                "focused"
+            },
             None,
         ),
         semantic(
@@ -837,7 +863,9 @@ fn render_agent_picker(
             screen_id,
             fixture_id,
             "pending-consequence",
-            if unchanged {
+            if current_only {
+                "no-pending-change"
+            } else if unchanged {
                 "same-access-applies-directly"
             } else {
                 "access-review-needed"
@@ -899,7 +927,9 @@ fn render_agent_picker(
                 "agent-picker",
                 target,
                 "direct",
-                if unchanged {
+                if current_only {
+                    "the current work style remains applied and returns to the paused conversation"
+                } else if unchanged {
                     "the unchanged-access choice applies directly and returns to the paused conversation"
                 } else {
                     "the access-changing choice opens one focused access review before it can apply"
@@ -1143,13 +1173,13 @@ fn render_mode_switch_refused(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "Choose a safer work style or return to the paused conversation.",
+        "Quick implementation keeps the same access and adds review at the end.",
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Choose a safer work style · [esc] Return to work",
+        "› [enter] Choose Quick implementation · same access · [esc] Return to work",
         TextStyle::accent(),
     )?;
     dock_line(
@@ -1206,12 +1236,12 @@ fn render_mode_switch_refused(
             screen_id,
             fixture_id,
             "primary-action",
-            "action.mode-switch-refused.choose-safer",
-            reference(DOCK_TOP + 3, 4, 54),
+            "action.mode-switch-refused.choose-unchanged",
+            reference(DOCK_TOP + 3, 4, 73),
             "focused",
             Some(action(
-                "action.mode-switch-refused.choose-safer",
-                "Choose a safer work style",
+                "action.mode-switch-refused.choose-unchanged",
+                "Choose Quick implementation · same access",
                 false,
             )),
         ),
@@ -1246,11 +1276,11 @@ fn render_mode_switch_refused(
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(
-                "action.mode-switch-refused.choose-safer",
+                "action.mode-switch-refused.choose-unchanged",
                 "mode-switch-refused",
                 "agent-picker",
                 "direct",
-                "the safe recovery returns to How Code should work with Careful edits still active",
+                "the safe recovery opens Quick implementation as an unchanged-access choice while Careful edits remains active",
             ),
             transition(
                 "action.mode-switch-refused.return",
