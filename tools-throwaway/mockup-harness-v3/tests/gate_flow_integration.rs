@@ -9,8 +9,10 @@ use mockup_harness_v3::{
     flow_manifests,
     gate_integration::{
         pilot_gate_artifacts, pilot_gate_bridges, pilot_gate_publications,
-        validate_pilot_gate_integration, validate_pilot_gate_publications,
-        validate_pilot_transition_contracts, validate_review_session_id,
+        prove_frame_review_hard_fails_when_non_current,
+        prove_frame_review_hard_fails_without_provenance, validate_pilot_gate_integration,
+        validate_pilot_gate_publications, validate_pilot_transition_contracts,
+        validate_review_session_id,
     },
     scenario::render_audit_png,
 };
@@ -93,6 +95,14 @@ fn placeholder_reviewer_sessions_are_rejected() {
             "placeholder reviewer session must fail closed: {placeholder}"
         );
     }
+}
+
+#[test]
+fn frame_review_provenance_hard_fails_like_bridges_for_forged_and_non_current() {
+    prove_frame_review_hard_fails_without_provenance()
+        .expect("forged frame provenance must hard-fail, not soft-clear currency");
+    prove_frame_review_hard_fails_when_non_current()
+        .expect("non-current frame review must hard-fail, not only raise pilot iteration");
 }
 
 #[test]

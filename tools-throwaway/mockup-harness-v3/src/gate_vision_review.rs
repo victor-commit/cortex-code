@@ -12,7 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audit::sha256_hex;
 use crate::flows::flow_manifests;
-use crate::gate_integration::{validate_review_provenance, VisionFinding};
+use crate::gate_integration::{
+    require_current_frame_review, validate_review_provenance, VisionFinding,
+};
 use crate::gate_programmatic_publication::{
     collect_bridge_digests, collect_path_hash_tuples, locate_gate_ready, six_flow_gate_artifacts,
     six_flow_gate_bridges,
@@ -188,21 +190,27 @@ fn evaluate_review_record(
             review_session_id = review.get("review_session_id").cloned().unwrap_or_default();
             response_sha256 = review.get("response_sha256").cloned().unwrap_or_default();
             model = review.get("model").cloned().unwrap_or_default();
-            record_is_current = require_field(&review, "artifact_path", artifact_path)
-                .and_then(|_| require_field(&review, "role", role))
-                .and_then(|_| require_field(&review, "sha256", expected_sha256))
-                .and_then(|_| require_field(&review, "model", REVIEW_MODEL))
-                .and_then(|_| require_field(&review, "verdict", "pass"))
-                .is_ok();
             provenance_ok = validate_review_provenance(&review).is_ok();
-            if kind == "bridge" {
-                // Bridge evidence is fail-closed on provenance.
-                record_is_current = record_is_current && provenance_ok;
+            // Frame and bridge reviews hard-fail identically on identity +
+            // Factory-owned source-session provenance (no soft currency gate).
+            record_is_current = if kind == "frame" {
+                require_current_frame_review(
+                    &review,
+                    artifact_path,
+                    role,
+                    expected_sha256,
+                    REVIEW_MODEL,
+                )
+                .is_ok()
             } else {
-                // Frame evidence remains soft for provenance (matches gate integration),
-                // but still prefers recomputable Factory-owned source sessions.
-                record_is_current = record_is_current && provenance_ok;
-            }
+                require_field(&review, "artifact_path", artifact_path)
+                    .and_then(|_| require_field(&review, "role", role))
+                    .and_then(|_| require_field(&review, "sha256", expected_sha256))
+                    .and_then(|_| require_field(&review, "model", REVIEW_MODEL))
+                    .and_then(|_| require_field(&review, "verdict", "pass"))
+                    .is_ok()
+                    && provenance_ok
+            };
         }
     }
 

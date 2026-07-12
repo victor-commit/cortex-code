@@ -11,8 +11,9 @@ use std::path::Path;
 use crate::audit::{audit_screen, sha256_hex};
 use crate::flows::{flow_manifests, FlowManifest, FlowStep, TransitionKind};
 use crate::gate_integration::{
-    pilot_gate_artifacts, pilot_gate_bridges, validate_pilot_gate_integration,
-    PilotGateArtifact, PilotGateBridge, PilotGatePublication, PilotGateReport, VisionFinding,
+    pilot_gate_artifacts, pilot_gate_bridges, require_current_frame_review,
+    validate_pilot_gate_integration, PilotGateArtifact, PilotGateBridge, PilotGatePublication,
+    PilotGateReport, VisionFinding,
 };
 use crate::registry::canonical_inventory;
 use crate::scenario::replay_case;
@@ -524,6 +525,17 @@ pub fn validate_remaining_gate_integration(
     let required_pilot_iteration = vision_findings
         .iter()
         .any(|finding| !finding.record_is_current);
+    if required_pilot_iteration {
+        let missing = vision_findings
+            .iter()
+            .filter(|finding| !finding.record_is_current)
+            .map(|finding| finding.evidence_path.clone())
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "frame vision evidence is incomplete or stale (hard-fail): {}",
+            missing.join(", ")
+        ));
+    }
     let report = PilotGateReport {
         flow_names: REMAINING_FLOWS.to_vec(),
         step_count: remaining.iter().map(|flow| flow.steps.len()).sum(),
@@ -531,7 +543,7 @@ pub fn validate_remaining_gate_integration(
         bridge_count: remaining_gate_bridges().len(),
         programmatic_checks_before_vision: true,
         vision_findings,
-        required_pilot_iteration,
+        required_pilot_iteration: false,
     };
     validate_persisted_report(repository, mission_directory, &report, &artifacts)?;
     Ok(report)
@@ -1063,19 +1075,21 @@ fn collect_vision_findings(
                 "remaining-three gate frame {} step {:02} {}",
                 artifact.flow, artifact.step_index, artifact.screen_id
             );
-            let record_is_current = if evidence_path.is_file() {
-                let review = read_review_record(&evidence_path)?;
-                require_review_field(&review, "artifact_path", &gate.display().to_string())
-                    .and_then(|_| require_review_field(&review, "role", &role))
-                    .and_then(|_| require_review_field(&review, "sha256", &current_sha256))
-                    .and_then(|_| {
-                        require_review_field(&review, "model", "anthropic/claude-opus-4.8-fast")
-                    })
-                    .and_then(|_| require_review_field(&review, "verdict", "pass"))
-                    .is_ok()
-            } else {
-                false
-            };
+            if !evidence_path.is_file() {
+                return Err(format!(
+                    "frame review evidence is missing (hard-fail): {}",
+                    evidence_path.display()
+                ));
+            }
+            let review = read_review_record(&evidence_path)?;
+            require_current_frame_review(
+                &review,
+                &gate.display().to_string(),
+                &role,
+                &current_sha256,
+                "anthropic/claude-opus-4.8-fast",
+            )
+            .map_err(|error| format!("{error} ({})", evidence_path.display()))?;
             Ok(VisionFinding {
                 flow: artifact.flow,
                 gate_png: artifact.gate_relative.clone(),
@@ -1083,7 +1097,7 @@ fn collect_vision_findings(
                 evidence_path: evidence_relative,
                 role,
                 model: "anthropic/claude-opus-4.8-fast".to_owned(),
-                record_is_current,
+                record_is_current: true,
             })
         })
         .collect()
@@ -1208,18 +1222,4 @@ fn read_review_record(path: &Path) -> Result<BTreeMap<String, String>, String> {
         }
     }
     Ok(record)
-}
-
-fn require_review_field(
-    review: &BTreeMap<String, String>,
-    field: &str,
-    expected: &str,
-) -> Result<(), String> {
-    match review.get(field) {
-        Some(actual) if actual == expected => Ok(()),
-        Some(actual) => Err(format!(
-            "review field {field} mismatch: expected {expected}, got {actual}"
-        )),
-        None => Err(format!("review record is missing {field}")),
-    }
 }

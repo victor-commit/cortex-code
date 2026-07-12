@@ -200,6 +200,18 @@ mod provenance_tests {
             .expect_err("path traversal must fail")
             .contains("artifact path"));
     }
+
+    #[test]
+    fn frame_review_hard_fails_like_bridges_for_forged_or_non_current_identity() {
+        use super::{
+            prove_frame_review_hard_fails_when_non_current,
+            prove_frame_review_hard_fails_without_provenance,
+        };
+        prove_frame_review_hard_fails_without_provenance()
+            .expect("forged frame provenance must hard-fail");
+        prove_frame_review_hard_fails_when_non_current()
+            .expect("non-current frame identity must hard-fail");
+    }
 }
 
 pub fn validate_review_session_id(session_id: &str) -> Result<(), String> {
@@ -261,6 +273,106 @@ pub fn validate_review_provenance(
     review: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), String> {
     source_session_provenance(review).map(|_| ())
+}
+
+/// Hard-fails a gate frame review when identity fields or Factory-owned
+/// session provenance are not exact, matching bridge review handling.
+pub fn require_current_frame_review(
+    review: &std::collections::BTreeMap<String, String>,
+    artifact_path: &str,
+    role: &str,
+    sha256: &str,
+    model: &str,
+) -> Result<(), String> {
+    require_review_field(review, "artifact_path", artifact_path)?;
+    require_review_field(review, "role", role)?;
+    require_review_field(review, "sha256", sha256)?;
+    require_review_field(review, "model", model)?;
+    require_review_field(review, "verdict", "pass")?;
+    source_session_provenance(review).map_err(|error| {
+        format!("frame review lacks exact Factory source provenance: {error}")
+    })?;
+    Ok(())
+}
+
+/// Negative fixture: a frame review with forged provenance must hard-fail the
+/// same way bridge reviews fail, rather than only soft-clearing currency.
+pub fn prove_frame_review_hard_fails_without_provenance() -> Result<(), String> {
+    let path = Path::new(
+        "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc/evidence/v3-fix-gate-publication-bridge-evidence/frames/01-daily-work-home.vision.txt",
+    );
+    let mut review = read_review_record(path)?;
+    let artifact_path = review
+        .get("artifact_path")
+        .cloned()
+        .ok_or_else(|| "fixture missing artifact_path".to_owned())?;
+    let role = review
+        .get("role")
+        .cloned()
+        .ok_or_else(|| "fixture missing role".to_owned())?;
+    let sha256 = review
+        .get("sha256")
+        .cloned()
+        .ok_or_else(|| "fixture missing sha256".to_owned())?;
+    // Sanity: original fixture must pass.
+    require_current_frame_review(
+        &review,
+        &artifact_path,
+        &role,
+        &sha256,
+        REVIEW_MODEL,
+    )?;
+    review.insert("response_sha256".to_owned(), "0".repeat(64));
+    match require_current_frame_review(
+        &review,
+        &artifact_path,
+        &role,
+        &sha256,
+        REVIEW_MODEL,
+    ) {
+        Ok(()) => Err(
+            "forged frame response_sha256 must hard-fail provenance, not soft-pass".to_owned(),
+        ),
+        Err(error)
+            if error.contains("frame review lacks exact Factory source provenance")
+                || error.contains("does not match") =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "forged frame provenance failed for the wrong reason: {error}"
+        )),
+    }
+}
+
+/// Negative fixture: non-current / mismatched frame identity fields must fail
+/// closed rather than only set record_is_current=false.
+pub fn prove_frame_review_hard_fails_when_non_current() -> Result<(), String> {
+    let path = Path::new(
+        "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc/evidence/v3-fix-gate-publication-bridge-evidence/frames/01-daily-work-home.vision.txt",
+    );
+    let review = read_review_record(path)?;
+    let role = review
+        .get("role")
+        .cloned()
+        .ok_or_else(|| "fixture missing role".to_owned())?;
+    let artifact_path = review
+        .get("artifact_path")
+        .cloned()
+        .ok_or_else(|| "fixture missing artifact_path".to_owned())?;
+    match require_current_frame_review(
+        &review,
+        &artifact_path,
+        &role,
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        REVIEW_MODEL,
+    ) {
+        Ok(()) => Err("mismatched frame sha256 must hard-fail".to_owned()),
+        Err(error) if error.contains("sha256") || error.contains("mismatch") => Ok(()),
+        Err(error) => Err(format!(
+            "non-current frame failed for the wrong reason: {error}"
+        )),
+    }
 }
 
 fn source_session_provenance(
@@ -1029,12 +1141,24 @@ pub fn validate_pilot_gate_integration(
     validate_artifacts(repository, &artifacts)?;
 
     // Only after all programmatic checks above do we inspect the existing,
-    // read-only pilot vision records. A missing current hash is a finding that
-    // requires pilot iteration, not a reason to silently reuse stale evidence.
+    // read-only pilot vision records. Frame reviews hard-fail identically to
+    // bridges when identity or Factory provenance is non-current; callers must
+    // not soft-accept via record_is_current / required_pilot_iteration alone.
     let vision_findings = collect_vision_findings(repository, mission_directory, &artifacts)?;
     let required_pilot_iteration = vision_findings
         .iter()
         .any(|finding| !finding.record_is_current);
+    if required_pilot_iteration {
+        let missing = vision_findings
+            .iter()
+            .filter(|finding| !finding.record_is_current)
+            .map(|finding| finding.evidence_path.clone())
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "frame vision evidence is incomplete or stale (hard-fail): {}",
+            missing.join(", ")
+        ));
+    }
     let report = PilotGateReport {
         flow_names: PILOT_FLOWS.to_vec(),
         step_count: pilot_manifests.iter().map(|flow| flow.steps.len()).sum(),
@@ -1042,7 +1166,7 @@ pub fn validate_pilot_gate_integration(
         bridge_count: pilot_gate_bridges().len(),
         programmatic_checks_before_vision: true,
         vision_findings,
-        required_pilot_iteration,
+        required_pilot_iteration: false,
     };
     validate_persisted_report(repository, mission_directory, &report, &artifacts)?;
     Ok(report)
@@ -1625,16 +1749,20 @@ fn collect_vision_findings(
                 artifact.flow, artifact.step_index, artifact.screen_id
             );
             let review = read_review_record(&evidence_path)?;
-            let record_is_current =
-                require_review_field(&review, "artifact_path", &gate.display().to_string())
-                    .and_then(|_| require_review_field(&review, "role", &role))
-                    .and_then(|_| require_review_field(&review, "sha256", &current_sha256))
-                    .and_then(|_| {
-                        require_review_field(&review, "model", "anthropic/claude-opus-4.8-fast")
-                    })
-                    .and_then(|_| require_review_field(&review, "verdict", "pass"))
-                    .is_ok()
-                    && source_session_provenance(&review).is_ok();
+            require_current_frame_review(
+                &review,
+                &gate.display().to_string(),
+                &role,
+                &current_sha256,
+                REVIEW_MODEL,
+            )
+            .map_err(|error| {
+                format!(
+                    "{} ({})",
+                    error,
+                    evidence_path.display()
+                )
+            })?;
             Ok(VisionFinding {
                 flow: artifact.flow,
                 gate_png: artifact.gate_relative.clone(),
@@ -1642,7 +1770,7 @@ fn collect_vision_findings(
                 evidence_path: evidence_relative,
                 role,
                 model: review.get("model").cloned().unwrap_or_default(),
-                record_is_current,
+                record_is_current: true,
             })
         })
         .collect()
