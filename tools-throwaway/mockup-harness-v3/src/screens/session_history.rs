@@ -5,21 +5,23 @@
 //! temporary detail view that always returns to that exact preview.
 
 use crate::{
+    Surface,
     audit::{
-        ActionEvidence, AuditDocument, Canvas, Identity, RenderRef, SemanticCandidate,
-        SemanticEvent, TransitionTrace, WorkStyleEvidence,
+        ActionEvidence, AuditDocument, Canvas, ConversationIdentity, Identity, RenderRef,
+        SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
+        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
-    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Sonnet 4.5";
 const DOCK_TOP: u16 = 30;
+const FLOW3_TASK: &str = "Choose a model and how Code should work.";
+const FLOW3_ORIGIN: &str = "Work configuration · onboarding";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -55,7 +57,17 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             access_scope: "asks before editing project files".to_owned(),
         }),
         model_choice: None,
-        conversation: None,
+        conversation: is_gate_fixture(fixture_id).then(|| ConversationIdentity {
+            conversation_id: "conversation.configuration".to_owned(),
+            transcript_id: "transcript.configuration".to_owned(),
+            session_id: "session.configuration.1".to_owned(),
+            turn_id: "turn.configuration.1".to_owned(),
+            user_task: FLOW3_TASK.to_owned(),
+            visible_origin: FLOW3_ORIGIN.to_owned(),
+            submitted_prompt: None,
+            paused_activity_id: None,
+            later_draft: None,
+        }),
     })
 }
 
@@ -71,15 +83,20 @@ fn render_session_picker(
         return render_no_matches(canvas, screen_id, fixture_id);
     }
 
-    let gate_origin = fixture_id.starts_with("gate.work-configuration");
+    let gate_origin = is_gate_fixture(fixture_id);
     let docs_selected = fixture_id.contains("selected-docs");
     let selected_index = usize::from(docs_selected);
-    canvas.write(
-        3,
-        4,
-        "You · Continue the paused conversation.",
-        TextStyle::bright(),
-    )?;
+    if gate_origin {
+        canvas.write(3, 4, FLOW3_ORIGIN, TextStyle::muted())?;
+        canvas.write(4, 4, FLOW3_TASK, TextStyle::bright())?;
+    } else {
+        canvas.write(
+            3,
+            4,
+            "You · Continue the paused conversation.",
+            TextStyle::bright(),
+        )?;
+    }
     canvas.write(6, 4, "Resume a conversation", TextStyle::bright())?;
     canvas.write(
         8,
@@ -340,7 +357,11 @@ fn render_session_picker(
             transition(
                 "action.session-picker.back",
                 "session-picker",
-                if gate_origin { "onboarding" } else { "chat-turn" },
+                if gate_origin {
+                    "onboarding"
+                } else {
+                    "chat-turn"
+                },
                 "cancel",
                 if gate_origin {
                     "back restores the onboarding configuration hub without applying a session"
@@ -633,19 +654,30 @@ fn render_timeline(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, "Retry policy review", TextStyle::bright())?;
-    canvas.write(
-        4,
-        4,
-        "~/project · Session history · Oldest first",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        6,
-        4,
-        "A temporary detail from the selected session preview.",
-        TextStyle::text(),
-    )?;
+    if is_gate_fixture(fixture_id) {
+        canvas.write(2, 4, FLOW3_ORIGIN, TextStyle::muted())?;
+        canvas.write(
+            4,
+            4,
+            "Retry policy review · Session history · Oldest first",
+            TextStyle::bright(),
+        )?;
+        canvas.write(6, 4, FLOW3_TASK, TextStyle::text())?;
+    } else {
+        canvas.write(2, 4, "Retry policy review", TextStyle::bright())?;
+        canvas.write(
+            4,
+            4,
+            "~/project · Session history · Oldest first",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            6,
+            4,
+            "A temporary detail from the selected session preview.",
+            TextStyle::text(),
+        )?;
+    }
     let events = [
         (
             9,
@@ -863,6 +895,10 @@ fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {
         TextStyle::muted(),
     )?;
     Ok(())
+}
+
+fn is_gate_fixture(fixture_id: &str) -> bool {
+    fixture_id.starts_with("gate.work-configuration.")
 }
 
 fn dock_line(canvas: &mut Canvas, row: u16, text: &str, style: TextStyle) -> Result<(), String> {

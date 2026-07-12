@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use crate::registry::{canonical_inventory, FlowOwner};
+use crate::registry::{FlowOwner, canonical_inventory};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransitionKind {
@@ -355,7 +355,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             "session-picker",
                             "onboarding",
                             "chat-turn",
-                            "chat-turn",
+                            "agent-picker",
                             None,
                             WORK_CONFIGURATION_RETURN_CHECK,
                         ),

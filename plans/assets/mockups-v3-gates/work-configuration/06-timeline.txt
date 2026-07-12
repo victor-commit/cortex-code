@@ -1,10 +1,10 @@
                                                                                                                         
                                                                                                                         
-    Retry policy review                                                                                                 
+    Work configuration · onboarding                                                                                     
                                                                                                                         
-    ~/project · Session history · Oldest first                                                                          
+    Retry policy review · Session history · Oldest first                                                                
                                                                                                                         
-    A temporary detail from the selected session preview.                                                               
+    Choose a model and how Code should work.                                                                            
                                                                                                                         
                                                                                                                         
     Today, 09:14                                                                                                        

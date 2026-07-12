@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::audit::{
-    action_json, audit_screen, field, quote, sha256_hex, transition_json, ActionEvidence,
-    AuditDocument, TransitionTrace,
+    ActionEvidence, AuditDocument, TransitionTrace, action_json, audit_screen, field, quote,
+    sha256_hex, transition_json,
 };
 use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
 
@@ -619,13 +619,20 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             "work-style-unchanged" => "flow3-work-style-unchanged",
             "work-style-access-pending" => "flow3-work-style-access",
             "work-style-access-confirm" => "flow3-work-style-access",
-            "work-style-access-cancel" => "flow3-work-style-current-only",
+            "work-style-access-cancel" => "gate.work-configuration.agent-picker.current-only",
             "work-style-access-refused" => "flow3-work-style-refused",
             "work-style-refusal-choose-unchanged" => "flow3-work-style-refusal-unchanged",
             "work-style-refusal-return" => "flow3-work-style-refused-return",
             _ => unreachable!(),
         }
         .to_owned()
+    } else if case_id.starts_with("session-")
+        && matches!(after.screen_id.as_str(), "session-picker" | "timeline")
+    {
+        format!(
+            "gate.work-configuration.{}.case.{case_id}.tick.{tick}",
+            after.screen_id
+        )
     } else {
         format!("case.{case_id}.tick.{tick}")
     };
@@ -1384,16 +1391,17 @@ fn work_style_access_cancel() -> (
 ) {
     let mut before = state(
         "mode-switch",
-        vec!["chat-turn", "agent-picker", "mode-switch"],
-        "Continue the retry conversation.",
-        "turn-retry-review",
+        vec!["onboarding", "agent-picker", "mode-switch"],
+        "Start the first conversation after configuration.",
+        "first-run",
         "autonomous-changes",
         "access-confirmation",
         Some("pending.work-style.autonomous"),
-        "return-to-chat-turn",
+        "return-to-onboarding",
         0,
     );
     before.pending_work_style = Some("Autonomous changes".to_owned());
+    apply_flow3_onboarding_identity(&mut before);
     before.state_hash = state_hash(&before);
     let mut after = before.clone();
     after.screen_id = "agent-picker".to_owned();
@@ -1415,7 +1423,7 @@ fn work_style_access_cancel() -> (
         to_screen_id: after.screen_id.clone(),
         kind: "cancel".to_owned(),
         path:
-            "cancel discards the pending access change and returns to the work-style choice with Careful edits still applied"
+            "cancel discards the pending access change and returns to the work-style choice with Careful edits still applied while preserving the onboarding origin"
                 .to_owned(),
     };
     let attempt = AttemptEvidence {
@@ -2035,9 +2043,9 @@ fn session_state(
 ) -> ScenarioState {
     let mut state = state(
         screen_id,
-        vec!["chat-turn", "session-picker"],
+        vec!["onboarding", "session-picker"],
         "Continue the current draft while choosing a saved conversation.",
-        "turn-current-latest",
+        "first-run",
         selection,
         if screen_id == "timeline" {
             "timeline-point"
@@ -2052,6 +2060,7 @@ fn session_state(
     state.queued_follow_up = format!("session-filter={filter}");
     state.work_style = "Careful edits".to_owned();
     state.access_scope = "asks before editing project files".to_owned();
+    apply_flow3_onboarding_identity(&mut state);
     state.state_hash = state_hash(&state);
     state
 }

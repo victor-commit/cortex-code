@@ -1,8 +1,8 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Continue the paused conversation.                                                                             
-                                                                                                                        
+    Work configuration · onboarding                                                                                     
+    Choose a model and how Code should work.                                                                            
                                                                                                                         
     Resume a conversation                                                                                               
                                                                                                                         

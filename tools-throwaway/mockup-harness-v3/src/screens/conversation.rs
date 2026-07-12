@@ -13,7 +13,7 @@ use crate::{
     },
     chrome::{
         components::{ActivityRow, ActivityState, Component},
-        layout::{StatusLine, CANVAS_ROWS},
+        layout::{CANVAS_ROWS, StatusLine},
         tokens::TextStyle,
     },
 };
@@ -33,6 +33,8 @@ Then explain the failure path that still needs coverage before the merge; includ
 Keep the summary short before we merge.";
 const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.";
 const FLOW2_ACTIVITY_ID: &str = "activity.retry-policy-edit.18";
+const FLOW3_TASK: &str = "Choose a model and how Code should work.";
+const FLOW3_ORIGIN: &str = "Work configuration · onboarding";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -44,9 +46,12 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let mut canvas = Canvas::new();
     let flow2_storyboard = fixture_id.contains("flow2.input-and-approval.stable");
+    let flow3_session_return = fixture_id.starts_with("case.session-resume-latest");
     let work_style_return = work_style_for_fixture(fixture_id);
     let (visible_origin, user_task) = if flow2_storyboard {
         (FLOW2_ORIGIN, FLOW2_TASK)
+    } else if flow3_session_return {
+        (FLOW3_ORIGIN, FLOW3_TASK)
     } else {
         (DAILY_WORK_ORIGIN, DAILY_WORK_TASK)
     };
@@ -80,6 +85,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         }
         "chat-turn" if flow2_storyboard => {
             render_flow2_resumed_turn(&mut canvas, screen_id, fixture_id)?
+        }
+        "chat-turn" if flow3_session_return => {
+            render_session_resumed_turn(&mut canvas, screen_id, fixture_id)?
         }
         "chat-turn" if work_style_return.is_some() => {
             render_work_style_returned_turn(&mut canvas, screen_id, fixture_id)?
@@ -116,6 +124,18 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 submitted_prompt: Some(FLOW2_SUBMITTED_PROMPT.to_owned()),
                 paused_activity_id: Some(FLOW2_ACTIVITY_ID.to_owned()),
                 later_draft: Some(FLOW2_LATER_DRAFT.to_owned()),
+            }
+        } else if flow3_session_return {
+            crate::audit::ConversationIdentity {
+                conversation_id: "conversation.configuration".to_owned(),
+                transcript_id: "transcript.configuration".to_owned(),
+                session_id: "session.retry-policy-review".to_owned(),
+                turn_id: "turn.configuration.1".to_owned(),
+                user_task: FLOW3_TASK.to_owned(),
+                visible_origin: FLOW3_ORIGIN.to_owned(),
+                submitted_prompt: None,
+                paused_activity_id: Some("activity.retry-policy-review.latest".to_owned()),
+                later_draft: Some("Add the final review note.".to_owned()),
             }
         } else {
             crate::audit::ConversationIdentity {
@@ -1169,6 +1189,131 @@ fn render_chat_turn(
                 "the completed request remains inline while the conversation stays ready",
             ),
         ],
+    ))
+}
+
+fn render_session_resumed_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        6,
+        4,
+        "Resumed conversation · Retry policy review",
+        TextStyle::bright(),
+    )?;
+    canvas.write(9, 4, "Latest stable work", TextStyle::bright())?;
+    canvas.write(
+        11,
+        4,
+        "Tests pass; the retry policy review is ready.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "Saved draft · Add the final review note.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "How Code works · Careful edits · asks before editing project files.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        "The source conversation and its history are unchanged.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        23,
+        4,
+        "Historical points still fork into a separate copy.",
+        TextStyle::muted(),
+    )?;
+    composer(canvas, "Add the final review note.", Some("Send reply"))?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "session-result",
+            "retry-policy-review-resumed",
+            reference(6, 4, 49),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "resume-destination",
+            "latest-stable-work",
+            reference(9, 4, 22),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "selected-session-draft",
+            reference(14, 4, 46),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "careful-edits",
+            reference(17, 4, 72),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "source-history-unchanged",
+            reference(20, 4, 59),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 32),
+            "focused",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the resumed session sends from its restored draft in the selected conversation",
+        )],
     ))
 }
 

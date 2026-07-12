@@ -5,20 +5,22 @@
 //! human-readable choices, then adds detail only for the focused pending row.
 
 use crate::{
+    Surface,
     audit::{
-        ActionEvidence, AuditDocument, Canvas, Identity, ModelChoiceEvidence, RenderRef,
-        SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
+        ActionEvidence, AuditDocument, Canvas, ConversationIdentity, Identity, ModelChoiceEvidence,
+        RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
+        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
-    Surface,
 };
 
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Sonnet 4.5";
+const FLOW3_TASK: &str = "Choose a model and how Code should work.";
+const FLOW3_ORIGIN: &str = "Work configuration · onboarding";
 const DOCK_TOP: u16 = 31;
 const ONBOARDING_DOCK_TOP: u16 = 25;
 const CODE_BANNER: [&str; 6] = [
@@ -118,7 +120,19 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             }),
             _ => None,
         },
-        conversation: None,
+        conversation: (screen_id == "mode-switch" && is_gate_fixture(fixture_id)).then(|| {
+            ConversationIdentity {
+                conversation_id: "conversation.configuration".to_owned(),
+                transcript_id: "transcript.configuration".to_owned(),
+                session_id: "session.configuration.1".to_owned(),
+                turn_id: "turn.configuration.1".to_owned(),
+                user_task: FLOW3_TASK.to_owned(),
+                visible_origin: FLOW3_ORIGIN.to_owned(),
+                submitted_prompt: None,
+                paused_activity_id: None,
+                later_draft: None,
+            }
+        }),
     })
 }
 
@@ -679,12 +693,22 @@ fn render_agent_picker(
     } else {
         "Autonomous changes"
     };
-    canvas.write(
-        4,
-        4,
-        "You · Continue the paused conversation.",
-        TextStyle::bright(),
-    )?;
+    if gate_origin {
+        canvas.write(3, 4, FLOW3_ORIGIN, TextStyle::muted())?;
+        canvas.write(
+            4,
+            4,
+            "Choose how Code should work for this conversation.",
+            TextStyle::bright(),
+        )?;
+    } else {
+        canvas.write(
+            4,
+            4,
+            "You · Continue the paused conversation.",
+            TextStyle::bright(),
+        )?;
+    }
     canvas.write(7, 4, "How Code should work", TextStyle::bright())?;
     canvas.write(
         9,
@@ -768,7 +792,7 @@ fn render_agent_picker(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Only the selected outcome gets extra detail.",
+        "Each row shows its outcome; access details open after review.",
         TextStyle::muted(),
     )?;
 
@@ -959,12 +983,18 @@ fn render_mode_switch(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
-        4,
-        4,
-        "You · Continue the paused conversation.",
-        TextStyle::bright(),
-    )?;
+    let onboarding_origin = is_gate_fixture(fixture_id);
+    if onboarding_origin {
+        canvas.write(3, 4, FLOW3_ORIGIN, TextStyle::muted())?;
+        canvas.write(4, 4, FLOW3_TASK, TextStyle::bright())?;
+    } else {
+        canvas.write(
+            4,
+            4,
+            "You · Continue the paused conversation.",
+            TextStyle::bright(),
+        )?;
+    }
     canvas.write(7, 4, "Review a work-style change", TextStyle::bright())?;
     canvas.write(9, 4, "Requested: Autonomous changes", TextStyle::text())?;
     canvas.write(
@@ -1127,7 +1157,11 @@ fn render_mode_switch(
                 "mode-switch",
                 "agent-picker",
                 "cancel",
-                "cancel leaves Careful edits and its current access active, then returns to the work-style choice",
+                if onboarding_origin {
+                    "cancel leaves Careful edits and its current access active, then returns to the work-style choice while preserving the onboarding origin"
+                } else {
+                    "cancel leaves Careful edits and its current access active, then returns to the work-style choice"
+                },
             ),
         ],
     ))
