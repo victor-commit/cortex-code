@@ -8809,7 +8809,10 @@ fn draw_underscore(
 }
 
 /// Draws the approved U+23BF result elbow without consulting a system font.
-/// The fixed two-pixel strokes match the 10-by-21 terminal cell geometry.
+/// Geometry is fixed, fully opaque, and sized for the 10-by-21 terminal cell.
+/// Even 2px strokes form a left-rail vertical that meets a rightward arm at a
+/// solid filled corner — the classic mono U+23BF ⎿ silhouette used for nest
+/// markers, with stroke weight solid enough to stay readable at PNG scale.
 #[cfg(feature = "png")]
 fn draw_synthetic_elbow(
     image: &mut image::RgbImage,
@@ -8822,14 +8825,25 @@ fn draw_synthetic_elbow(
             image.put_pixel(x, y, foreground);
         }
     };
-    let corner_y = cell_y + 13;
-    for y in cell_y + 1..=corner_y {
-        put(image, cell_x + 4, y);
-        put(image, cell_x + 5, y);
+    // Even 2px solid stroke. Tall left-rail stem mirrors mono U+23BF proportions
+    // (much taller than a mid-cell capital letter foot) and the horizontal arm
+    // springs from the solid bottom-left join to the right cell edge.
+    let stem_left = cell_x + 3;
+    let stem_right = cell_x + 4;
+    let stem_top = cell_y + 3;
+    let arm_top = cell_y + 14;
+    let arm_bottom = cell_y + 15;
+    let arm_right = cell_x + 9;
+
+    for y in stem_top..=arm_bottom {
+        for x in stem_left..=stem_right {
+            put(image, x, y);
+        }
     }
-    for x in cell_x + 4..cell_x + 10 {
-        put(image, x, corner_y);
-        put(image, x, corner_y + 1);
+    for y in arm_top..=arm_bottom {
+        for x in stem_left..=arm_right {
+            put(image, x, y);
+        }
     }
 }
 

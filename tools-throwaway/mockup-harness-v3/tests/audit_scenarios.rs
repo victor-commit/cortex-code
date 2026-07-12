@@ -418,18 +418,52 @@ fn synthetic_elbow_rasterization_is_stable_and_non_empty_at_txt_and_png_scales()
         .to_rgb8();
     assert_eq!(png.dimensions(), (1200, 840));
     let canvas = png.get_pixel(0, 0);
-    let non_canvas_pixels = (12 * 21 + 1..=12 * 21 + 14)
-        .flat_map(|y| (10 * 10 + 4..=10 * 10 + 5).map(move |x| (x, y)))
-        .chain((10 * 10 + 4..10 * 10 + 10).flat_map(|x| {
-            [12 * 21 + 13, 12 * 21 + 14]
-                .into_iter()
-                .map(move |y| (x, y))
-        }))
+    // Geometry resolves inside cell (col 10, row 12) → origin (100, 252).
+    // Tall left-rail 2px stem meets a long rightward 2px arm at a solid filled
+    // bottom-left corner so the raster reads as classic mono U+23BF ⎿.
+    let origin_x = 10 * 10;
+    let origin_y = 12 * 21;
+    let key_ink = [
+        // tall stem body begins near the top of the cell (2px rail)
+        (origin_x + 3, origin_y + 4),
+        (origin_x + 4, origin_y + 4),
+        (origin_x + 3, origin_y + 9),
+        (origin_x + 4, origin_y + 9),
+        // solid filled corner
+        (origin_x + 3, origin_y + 14),
+        (origin_x + 4, origin_y + 14),
+        (origin_x + 3, origin_y + 15),
+        (origin_x + 4, origin_y + 15),
+        // long horizontal arm
+        (origin_x + 6, origin_y + 14),
+        (origin_x + 9, origin_y + 14),
+        (origin_x + 6, origin_y + 15),
+        (origin_x + 9, origin_y + 15),
+    ];
+    for (x, y) in key_ink {
+        assert_ne!(
+            png.get_pixel(x, y),
+            canvas,
+            "expected U+23BF ink at ({x},{y}) inside the solid elbow stroke"
+        );
+    }
+
+    // Margin above the stem tip and beneath the arm keep the join clean.
+    assert_eq!(png.get_pixel(origin_x + 3, origin_y + 2), canvas);
+    assert_eq!(png.get_pixel(origin_x + 3, origin_y + 16), canvas);
+    // Rightward arm + empty upper-right prove left-rail elbow, not a T.
+    assert_ne!(png.get_pixel(origin_x + 8, origin_y + 14), canvas);
+    assert_eq!(png.get_pixel(origin_x + 8, origin_y + 9), canvas);
+    // Even strokes: outer left of the 2px rail stays empty.
+    assert_eq!(png.get_pixel(origin_x + 2, origin_y + 9), canvas);
+
+    let non_canvas_pixels = (origin_y + 3..=origin_y + 15)
+        .flat_map(|y| (origin_x + 3..=origin_x + 9).map(move |x| (x, y)))
         .filter(|(x, y)| png.get_pixel(*x, *y) != canvas)
         .count();
     assert!(
-        non_canvas_pixels > 0,
-        "the deterministic synthetic elbow must write visible non-canvas pixels"
+        non_canvas_pixels >= 35,
+        "the refined U+23BF elbow must paint solid even strokes (got {non_canvas_pixels})"
     );
 }
 
