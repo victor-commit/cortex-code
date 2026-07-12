@@ -210,9 +210,9 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                         ),
                         step(
                             "chat-turn",
-                            "Send the next request",
+                            "Send the open rate-limit request",
                             TransitionKind::Direct,
-                            "the reply begins in the existing transcript",
+                            "the open request starts streaming in this same turn",
                             "streaming",
                             "chat-turn",
                             "streaming",
@@ -246,9 +246,9 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                         ),
                         step(
                             "tool-success",
-                            "Continue from the tool result",
+                            "Continue this same response",
                             TransitionKind::Direct,
-                            "the assistant completes the answer in the same transcript",
+                            "the open turn continues from the tool result into the completed answer",
                             "rich-response",
                             "chat-turn",
                             "rich-response",

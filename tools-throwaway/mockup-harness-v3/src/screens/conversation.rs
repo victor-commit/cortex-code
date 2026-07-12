@@ -1324,14 +1324,158 @@ fn render_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    let daily_work_lifecycle =
-        matches!(fixture_id, "flow1.daily-work.stable" | "canonical.chat-turn");
+    // Daily-work gate 02 sits immediately before same-turn streaming (03). It must not
+    // claim a terminal answer or "next prompt" handoff for the open rate-limit request.
+    let open_turn_prestream = fixture_id == "flow1.daily-work.stable"
+        || fixture_id.starts_with("flow1-storyboard.chat-turn");
     let flow2_resume = matches!(
         fixture_id,
         "flow2-storyboard.chat-turn" | "flow2-storyboard.resumed"
     );
     canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
+
+    if open_turn_prestream {
+        canvas.write(
+            9,
+            4,
+            "Earlier · Updated retry_policy.rs and checked the current session.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            11,
+            4,
+            "That work is complete. The rate-limit request is still open.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            14,
+            4,
+            "Send this request to start the reply in this same turn.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            17,
+            4,
+            "Checked  ·  retry_policy.rs  ·  current session",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            20,
+            4,
+            "Queued request · waiting for send.",
+            TextStyle::muted(),
+        )?;
+        composer(canvas, "Reply to Code", Some("Send reply"))?;
+
+        let request = semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "user-request",
+            reference(4, 4, 50),
+            "summary",
+            None,
+        );
+        let prior_context = semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "prior-complete-work",
+            reference(9, 4, 64),
+            "summary",
+            None,
+        );
+        let open_request = semantic(
+            screen_id,
+            fixture_id,
+            "turn-state",
+            "open-request-pending-send",
+            reference(11, 4, 60),
+            "focused",
+            None,
+        );
+        let send_guidance = semantic(
+            screen_id,
+            fixture_id,
+            "continuation",
+            "send-to-start-reply",
+            reference(14, 4, 61),
+            "summary",
+            None,
+        );
+        let checked = semantic(
+            screen_id,
+            fixture_id,
+            "content",
+            "checked-file-scope",
+            reference(17, 4, 48),
+            "summary",
+            None,
+        );
+        let pending = semantic(
+            screen_id,
+            fixture_id,
+            "turn-state",
+            "queued-request-waiting",
+            reference(20, 4, 37),
+            "summary",
+            None,
+        );
+        let composer = semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        );
+        let focus = semantic(
+            screen_id,
+            fixture_id,
+            "focus",
+            "conversation-input",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            None,
+        );
+        let status = semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        );
+        let pairs = [
+            request,
+            prior_context,
+            open_request,
+            send_guidance,
+            checked,
+            pending,
+            composer,
+            focus,
+            status,
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            vec![transition(
+                "action.chat-turn.send-reply",
+                "chat-turn",
+                "streaming",
+                "direct",
+                "the open rate-limit request begins streaming in this same turn",
+            )],
+        ));
+    }
+
     canvas.write(9, 4, "Updated retry_policy.rs.", TextStyle::text())?;
     canvas.write(
         11,
@@ -1348,11 +1492,7 @@ fn render_chat_turn(
     canvas.write(
         15,
         4,
-        if daily_work_lifecycle {
-            "The answer is ready; the conversation stays open for your next prompt."
-        } else {
-            "The request is complete; a new draft stays separate."
-        },
+        "The request is complete; a new draft stays separate.",
         TextStyle::muted(),
     )?;
     canvas.write(18, 4, "Result", TextStyle::bright())?;
@@ -1371,11 +1511,7 @@ fn render_chat_turn(
     canvas.write(
         24,
         4,
-        if daily_work_lifecycle {
-            "Your next prompt will start a new response here."
-        } else {
-            "You can ask a follow-up without reopening the completed request."
-        },
+        "You can ask a follow-up without reopening the completed request.",
         TextStyle::muted(),
     )?;
     canvas.write(
@@ -2169,6 +2305,13 @@ fn render_tool_success(
     .with_elapsed("0.4s")
     .compact();
     write_component(canvas, 12, 4, &success)?;
+    // Same open turn continues into the completed answer; not a next-prompt handoff.
+    canvas.write(
+        15,
+        4,
+        "Tool finished · continue this same response with the full answer.",
+        TextStyle::muted(),
+    )?;
     composer(canvas, "Reply to Code", Some("Continue response"))?;
 
     let request = semantic(
@@ -2198,6 +2341,15 @@ fn render_tool_success(
         "summary",
         None,
     );
+    let continue_phase = semantic(
+        screen_id,
+        fixture_id,
+        "turn-state",
+        "continue-same-response",
+        reference(15, 4, 66),
+        "summary",
+        None,
+    );
     let composer = semantic(
         screen_id,
         fixture_id,
@@ -2220,7 +2372,7 @@ fn render_tool_success(
         "summary",
         None,
     );
-    let pairs = [request, result, summary, composer, status];
+    let pairs = [request, result, summary, continue_phase, composer, status];
     Ok((
         pairs
             .iter()
@@ -2232,7 +2384,7 @@ fn render_tool_success(
             "tool-success",
             "rich-response",
             "direct",
-            "the compact result continues into the completed answer in this same transcript",
+            "the open turn continues from the tool result into the completed answer",
         )],
     ))
 }

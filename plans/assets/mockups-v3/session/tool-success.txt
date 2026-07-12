@@ -13,7 +13,7 @@
     ✓ Search project code · Complete · 0.4s · 3 matches in 400 files                                                    
                                                                                                                         
                                                                                                                         
-                                                                                                                        
+    Tool finished · continue this same response with the full answer.                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         

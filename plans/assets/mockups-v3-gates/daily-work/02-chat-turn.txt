@@ -7,26 +7,26 @@
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
-    Updated retry_policy.rs.                                                                                            
+    Earlier · Updated retry_policy.rs and checked the current session.                                                  
                                                                                                                         
-    The retry check now verifies the current session before continuing.                                                 
-                                                                                                                        
-    Older sessions are asked to sign in again after credentials change.                                                 
-                                                                                                                        
-    The answer is ready; the conversation stays open for your next prompt.                                              
+    That work is complete. The rate-limit request is still open.                                                        
                                                                                                                         
                                                                                                                         
-    Result                                                                                                              
+    Send this request to start the reply in this same turn.                                                             
                                                                                                                         
-    retry_policy.rs now protects the current session without changing your draft.                                       
-                                                                                                                        
-    No files outside this check were changed.                                                                           
-                                                                                                                        
-    Your next prompt will start a new response here.                                                                    
                                                                                                                         
     Checked  ·  retry_policy.rs  ·  current session                                                                     
                                                                                                                         
-    Ready for your next question.                                                                                       
+                                                                                                                        
+    Queued request · waiting for send.                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

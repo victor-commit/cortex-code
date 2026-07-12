@@ -207,7 +207,9 @@ fn chat_turn_uses_plain_file_copy_and_fills_the_transcript_measure() {
     assert!(!text.contains("patch revision"));
     assert!(text.contains("Updated retry_policy.rs."));
     assert!(text.contains("The retry check now verifies the current session before continuing."));
-    assert!(text.contains("The answer is ready; the conversation stays open for your next prompt."));
+    // Terminal completed-request frame (not the daily-work pre-stream gate frame).
+    assert!(text.contains("The request is complete; a new draft stays separate."));
+    assert!(text.contains("Ready for your next question."));
     assert!(text.contains("Reply to Code"));
 }
 
@@ -220,11 +222,30 @@ fn daily_chat_turn_does_not_claim_completion_before_a_new_prompt() {
     assert!(
         !text.contains("request is complete")
             && !text.contains("Request complete")
+            && !text.contains("The answer is ready")
+            && !text.contains("next prompt")
+            && !text.contains("Ready for your next question")
+            && !text.contains("Your next prompt will start")
             && !audit
                 .events
                 .iter()
-                .any(|event| event.identity.subject_id == "request-complete"),
-        "the same-turn daily frame must use nonterminal continuation copy"
+                .any(|event| event.identity.subject_id == "request-complete"
+                    || event.identity.subject_id == "conversation-ready"
+                    || event.identity.subject_id == "follow-up-ready"
+                    || event.identity.subject_id == "ready-for-follow-up"),
+        "the same-turn daily frame must use nonterminal continuation copy before streaming"
+    );
+    assert!(
+        text.contains("Daily work · current conversation"),
+        "journey origin must stay Daily work across the pre-stream frame"
+    );
+    assert!(
+        text.contains("Find where the server applies the rate limit and explain the safe path."),
+        "the rate-limit task must remain the open request for this turn"
+    );
+    assert!(
+        text.contains("Send reply") || text.contains("Start reply"),
+        "composer must still offer the send action that begins streaming"
     );
     let actions = audit
         .events
@@ -237,6 +258,52 @@ fn daily_chat_turn_does_not_claim_completion_before_a_new_prompt() {
     assert_eq!(audit.transitions[0].action_id, "action.chat-turn.send-reply");
     assert_eq!(audit.transitions[0].to_screen_id, "streaming");
     assert_eq!(audit.transitions[0].kind, "direct");
+    assert!(
+        !audit.transitions[0].path.contains("next prompt begins a new response"),
+        "transition path must not describe a terminal next-prompt handoff before streaming"
+    );
+    assert!(
+        audit.transitions[0].path.contains("same")
+            || audit.transitions[0].path.contains("existing")
+            || audit.transitions[0].path.contains("this turn"),
+        "transition path must describe the same open turn starting to stream"
+    );
+}
+
+#[test]
+fn daily_tool_success_continue_wording_matches_open_turn() {
+    let audit = audit_screen("tool-success", "flow1.daily-work.stable")
+        .expect("the daily-work tool success must render typed evidence");
+    let text = audit.render_txt();
+
+    assert!(text.contains("Daily work · current conversation"));
+    assert!(text.contains(
+        "Find where the server applies the rate limit and explain the safe path."
+    ));
+    assert!(
+        text.contains("Continue response"),
+        "tool-success must invite continuing the same open answer, not a new prompt"
+    );
+    assert!(
+        !text.contains("Ready for your next question")
+            && !text.contains("The answer is ready")
+            && !text.contains("next prompt"),
+        "tool-success must not use next-prompt terminal language while the turn is still open"
+    );
+    assert!(
+        audit.events.iter().any(|event| {
+            event.action.as_ref().is_some_and(|action| {
+                action.action_id == "action.tool-success.continue"
+                    && action.label == "Continue response"
+            })
+        }),
+        "continue action label must match the open-turn phase"
+    );
+    assert!(audit.transitions.iter().any(|transition| {
+        transition.action_id == "action.tool-success.continue"
+            && transition.to_screen_id == "rich-response"
+            && transition.kind == "direct"
+    }));
 }
 
 #[cfg(feature = "png")]
