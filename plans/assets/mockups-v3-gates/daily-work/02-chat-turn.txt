@@ -13,7 +13,7 @@
                                                                                                                         
     Older sessions are asked to sign in again after credentials change.                                                 
                                                                                                                         
-    The request is complete; a new draft stays separate.                                                                
+    The answer is ready; the conversation stays open for your next prompt.                                              
                                                                                                                         
                                                                                                                         
     Result                                                                                                              
@@ -22,7 +22,7 @@
                                                                                                                         
     No files outside this check were changed.                                                                           
                                                                                                                         
-    You can ask a follow-up without reopening the completed request.                                                    
+    Your next prompt will start a new response here.                                                                    
                                                                                                                         
     Checked  ·  retry_policy.rs  ·  current session                                                                     
                                                                                                                         

@@ -45,7 +45,11 @@ type ScreenEvidence = (
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let mut canvas = Canvas::new();
-    let flow2_storyboard = fixture_id.contains("flow2.input-and-approval.stable");
+    let flow2_storyboard = matches!(
+        fixture_id,
+        "flow2.input-and-approval.stable"
+            | "case.staging-finish.tick.1.flow2.input-and-approval.stable"
+    );
     let flow3_session_return = fixture_id.starts_with("case.session-resume-latest");
     let work_style_return = work_style_for_fixture(fixture_id);
     let (visible_origin, user_task) = if flow2_storyboard {
@@ -972,6 +976,12 @@ fn render_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let daily_work_lifecycle =
+        matches!(fixture_id, "flow1.daily-work.stable" | "canonical.chat-turn");
+    let flow2_resume = matches!(
+        fixture_id,
+        "flow2-storyboard.chat-turn" | "flow2-storyboard.resumed"
+    );
     canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(9, 4, "Updated retry_policy.rs.", TextStyle::text())?;
@@ -990,7 +1000,11 @@ fn render_chat_turn(
     canvas.write(
         15,
         4,
-        "The request is complete; a new draft stays separate.",
+        if daily_work_lifecycle {
+            "The answer is ready; the conversation stays open for your next prompt."
+        } else {
+            "The request is complete; a new draft stays separate."
+        },
         TextStyle::muted(),
     )?;
     canvas.write(18, 4, "Result", TextStyle::bright())?;
@@ -1009,7 +1023,11 @@ fn render_chat_turn(
     canvas.write(
         24,
         4,
-        "You can ask a follow-up without reopening the completed request.",
+        if daily_work_lifecycle {
+            "Your next prompt will start a new response here."
+        } else {
+            "You can ask a follow-up without reopening the completed request."
+        },
         TextStyle::muted(),
     )?;
     canvas.write(
@@ -1028,20 +1046,22 @@ fn render_chat_turn(
         "user-request",
         reference(4, 4, 50),
         "summary",
-        None,
+        flow2_resume.then(|| {
+            action(
+                "action.chat-turn.resume-request",
+                "Resume the paused conversation",
+                true,
+            )
+        }),
     );
-    let resume = semantic(
+    let continuation_status = semantic(
         screen_id,
         fixture_id,
-        "resume",
-        "request-complete",
+        "continuation",
+        "conversation-ready",
         reference(15, 4, 53),
         "focused",
-        Some(action(
-            "action.chat-turn.resume-request",
-            "Request complete",
-            true,
-        )),
+        None,
     );
     let answer = semantic(
         screen_id,
@@ -1067,15 +1087,6 @@ fn render_chat_turn(
         "content",
         "session-expiry-explanation",
         reference(13, 4, 70),
-        "summary",
-        None,
-    );
-    let continuation = semantic(
-        screen_id,
-        fixture_id,
-        "continuation",
-        "completed-request",
-        reference(15, 4, 53),
         "summary",
         None,
     );
@@ -1153,11 +1164,10 @@ fn render_chat_turn(
     );
     let pairs = [
         request,
-        resume,
+        continuation_status,
         answer,
         session_check,
         session_expiry,
-        continuation,
         result_summary,
         scope,
         follow_up,
@@ -1167,28 +1177,29 @@ fn render_chat_turn(
         focus,
         status,
     ];
+    let mut transitions = vec![transition(
+        "action.chat-turn.send-reply",
+        "chat-turn",
+        "streaming",
+        "direct",
+        "the next prompt begins a new response in the same conversation",
+    )];
+    if flow2_resume {
+        transitions.push(transition(
+            "action.chat-turn.resume-request",
+            "chat-turn",
+            "chat-turn",
+            "summarized",
+            "the applied edit is summarized inline before the paused conversation continues",
+        ));
+    }
     Ok((
         pairs
             .iter()
             .map(|(candidate, _)| candidate.clone())
             .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
-        vec![
-            transition(
-                "action.chat-turn.send-reply",
-                "chat-turn",
-                "streaming",
-                "direct",
-                "the next reply begins inline in this same transcript",
-            ),
-            transition(
-                "action.chat-turn.resume-request",
-                "chat-turn",
-                "chat-turn",
-                "summarized",
-                "the completed request remains inline while the conversation stays ready",
-            ),
-        ],
+        transitions,
     ))
 }
 

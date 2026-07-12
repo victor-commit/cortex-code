@@ -207,8 +207,36 @@ fn chat_turn_uses_plain_file_copy_and_fills_the_transcript_measure() {
     assert!(!text.contains("patch revision"));
     assert!(text.contains("Updated retry_policy.rs."));
     assert!(text.contains("The retry check now verifies the current session before continuing."));
-    assert!(text.contains("The request is complete; a new draft stays separate."));
+    assert!(text.contains("The answer is ready; the conversation stays open for your next prompt."));
     assert!(text.contains("Reply to Code"));
+}
+
+#[test]
+fn daily_chat_turn_does_not_claim_completion_before_a_new_prompt() {
+    let audit = audit_screen("chat-turn", "flow1.daily-work.stable")
+        .expect("the daily-work chat turn must render typed evidence");
+    let text = audit.render_txt();
+
+    assert!(
+        !text.contains("request is complete")
+            && !text.contains("Request complete")
+            && !audit
+                .events
+                .iter()
+                .any(|event| event.identity.subject_id == "request-complete"),
+        "the same-turn daily frame must use nonterminal continuation copy"
+    );
+    let actions = audit
+        .events
+        .iter()
+        .filter_map(|event| event.action.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].action_id, "action.chat-turn.send-reply");
+    assert_eq!(audit.transitions.len(), 1);
+    assert_eq!(audit.transitions[0].action_id, "action.chat-turn.send-reply");
+    assert_eq!(audit.transitions[0].to_screen_id, "streaming");
+    assert_eq!(audit.transitions[0].kind, "direct");
 }
 
 #[cfg(feature = "png")]
