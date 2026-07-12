@@ -14,9 +14,9 @@ use std::os::raw::c_char;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::audit::{audit_screen, sha256_hex, AuditDocument};
-use crate::flows::{flow_manifests, FlowManifest, TransitionKind};
-use crate::registry::{canonical_inventory, Category, ImplementationStatus, ScreenSpec};
+use crate::audit::{AuditDocument, audit_screen, sha256_hex};
+use crate::flows::{FlowManifest, TransitionKind, flow_manifests};
+use crate::registry::{Category, ImplementationStatus, ScreenSpec, canonical_inventory};
 use crate::validate_canonical_map;
 
 const CANONICAL_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3";
@@ -644,23 +644,8 @@ fn require_selected_implemented(screens: &[&ScreenSpec]) -> Result<(), String> {
 fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> {
     let mut canonical = BTreeMap::new();
     for screen in &plan.canonical {
-        let fixture_id = if plan
-            .flow
-            .is_some_and(|flow| flow.name == "input-and-approval")
-        {
-            "flow2.input-and-approval.stable"
-        } else if screen.flow.as_str() == "daily-work" {
-            "flow1.daily-work.stable"
-        } else {
-            // Canonical artifacts outside the repaired storyboard retain their
-            // category-local fixture identity.
-            ""
-        };
-        let fixture_id = if fixture_id.is_empty() {
-            format!("canonical.{}", screen.id)
-        } else {
-            fixture_id.to_owned()
-        };
+        let fixture_id = canonical_publication_fixture(screen.id)
+            .unwrap_or_else(|| format!("canonical.{}", screen.id));
         let audit = audit_screen(screen.id, &fixture_id).map_err(RenderFailure::validation)?;
         insert_audit_artifacts(
             &mut canonical,
@@ -695,6 +680,21 @@ fn prepare_roots(plan: &RenderPlan) -> Result<Vec<PreparedRoot>, RenderFailure> 
         });
     }
     Ok(roots)
+}
+
+fn canonical_publication_fixture(screen_id: &str) -> Option<String> {
+    let mut fixtures = flow_manifests()
+        .iter()
+        .take(3)
+        .flat_map(|flow| &flow.steps)
+        .filter(|step| step.screen_id == screen_id)
+        .map(|step| step.fixture_id)
+        .collect::<BTreeSet<_>>();
+    if fixtures.len() == 1 {
+        fixtures.pop_first().map(str::to_owned)
+    } else {
+        None
+    }
 }
 
 fn insert_audit_artifacts(
@@ -1337,9 +1337,11 @@ mod tests {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
         assert_eq!(implemented.canonical_ids().count(), 19);
-        assert!(preflight_render(&PublicSelector::All)
-            .expect_err("full render must reject missing renderers")
-            .contains("chat-long-scroll"));
+        assert!(
+            preflight_render(&PublicSelector::All)
+                .expect_err("full render must reject missing renderers")
+                .contains("chat-long-scroll")
+        );
     }
 
     #[test]

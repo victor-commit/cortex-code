@@ -563,6 +563,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "model-picker-apply" => model_picker_apply(),
         "model-picker-cancel" => model_picker_cancel(),
         "model-picker-connect" => model_picker_connect(),
+        "model-to-work-style-bridge" => model_to_work_style_bridge(),
         "work-style-unchanged" => work_style_unchanged(),
         "work-style-access-pending" => work_style_access_pending(),
         "work-style-access-confirm" => work_style_access_confirm(),
@@ -570,6 +571,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "work-style-access-refused" => work_style_access_refused(),
         "work-style-refusal-choose-unchanged" => work_style_refusal_choose_unchanged(),
         "work-style-refusal-return" => work_style_refusal_return(),
+        "mode-switch-to-session-bridge" => mode_switch_to_session_bridge(),
         "session-preview-open" => session_preview_open(),
         "session-selected-docs-preview" => session_selected_docs_preview(),
         "session-preview-back" => session_preview_back(),
@@ -614,6 +616,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "flow2.input-and-approval.stable".to_owned()
     } else if case_id == "staging-finish" {
         "case.staging-finish.tick.1.flow2.input-and-approval.stable".to_owned()
+    } else if case_id == "model-to-work-style-bridge" {
+        "gate.work-configuration.agent-picker".to_owned()
+    } else if case_id == "mode-switch-to-session-bridge" {
+        "gate.work-configuration.session-picker".to_owned()
     } else if case_id.starts_with("work-style-") {
         match case_id {
             "work-style-unchanged" => "flow3-work-style-unchanged",
@@ -1187,6 +1193,67 @@ fn model_picker_connect() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn model_to_work_style_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "model-picker",
+        vec!["onboarding", "model-picker"],
+        "Start the first conversation after configuration.",
+        "first-run",
+        "claude-opus-4-8",
+        "model-selection",
+        Some("pending.model.claude-opus-4-8"),
+        "return-to-onboarding",
+        0,
+    );
+    apply_flow3_onboarding_identity(&mut before);
+    let mut after = state(
+        "agent-picker",
+        vec!["onboarding", "model-picker"],
+        "Start the first conversation after configuration.",
+        "first-run",
+        "autonomous-changes",
+        "work-style-selection",
+        Some("pending.work-style.autonomous"),
+        "return-to-onboarding",
+        1,
+    );
+    apply_flow3_onboarding_identity(&mut after);
+    let action = ActionEvidence {
+        action_id: "action.storyboard.open-work-style-after-model".to_owned(),
+        label: "Review how Code should work".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "illustrative_detour".to_owned(),
+        path: "after the model applies and returns to onboarding, the explicit next configuration action opens How Code should work"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.storyboard.open-work-style.1".to_owned(),
+        owner_id: "onboarding.configuration".to_owned(),
+        count: 1,
+        outcome: "work-style-opened-after-model-return".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.storyboard.open-work-style",
+        "storyboard-navigation",
+        "illustrative-detour",
+        "the applied model returned to onboarding before the user opened the work-style choice",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 fn blocked_model_recovery_audit(
     case_id: &str,
     state: &ScenarioState,
@@ -1606,6 +1673,68 @@ fn work_style_refusal_return() -> (
         "configuration",
         "no-change",
         "return changed no configuration and restored the paused conversation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mode_switch_to_session_bridge() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "mode-switch",
+        vec!["onboarding", "agent-picker", "mode-switch"],
+        "Start the first conversation after configuration.",
+        "first-run",
+        "autonomous-changes",
+        "access-confirmation",
+        Some("pending.work-style.autonomous"),
+        "return-to-onboarding",
+        0,
+    );
+    before.pending_work_style = Some("Autonomous changes".to_owned());
+    apply_flow3_onboarding_identity(&mut before);
+    before.state_hash = state_hash(&before);
+    let mut after = session_state(
+        "session-picker",
+        "all",
+        "saved-conversations",
+        Some("pending.session-picker"),
+        "return-to-onboarding",
+        1,
+    );
+    apply_flow3_onboarding_identity(&mut after);
+    after.origin_stack = before.origin_stack.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.storyboard.open-sessions-after-work-style".to_owned(),
+        label: "Choose a saved conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "illustrative_detour".to_owned(),
+        path: "after the confirmed work style returns to onboarding, the explicit session action opens saved conversations"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.storyboard.open-sessions.1".to_owned(),
+        owner_id: "onboarding.configuration".to_owned(),
+        count: 1,
+        outcome: "session-picker-opened-after-work-style-return".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.storyboard.open-sessions",
+        "storyboard-navigation",
+        "illustrative-detour",
+        "the applied work style returned to onboarding before the user opened saved conversations",
     );
     (before, after, action, transition, attempt, effect)
 }

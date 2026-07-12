@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::audit::{audit_screen, sha256_hex};
-use crate::flows::{flow_manifests, FlowManifest, TransitionKind};
+use crate::flows::{FlowManifest, FlowStep, TransitionKind, flow_manifests};
 use crate::registry::canonical_inventory;
 use crate::scenario::replay_case;
 
@@ -43,6 +43,19 @@ pub struct PilotGateArtifact {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PilotGatePublication {
+    pub flow: &'static str,
+    pub step_index: usize,
+    pub screen_id: &'static str,
+    pub fixture_id: String,
+    pub origin: String,
+    pub action_id: &'static str,
+    pub expected_next_bridge: Option<&'static str>,
+    pub gate_txt: String,
+    pub gate_png: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PilotGateBridge {
     pub flow: &'static str,
     pub case_id: &'static str,
@@ -51,10 +64,11 @@ pub struct PilotGateBridge {
     pub expected_after: &'static str,
     pub expected_kind: &'static str,
     pub expected_action: &'static str,
-    pub evidence_txt: Option<&'static str>,
-    pub evidence_png: Option<&'static str>,
-    pub audit_json: Option<&'static str>,
-    pub vision_evidence: Option<&'static str>,
+    pub role: &'static str,
+    pub evidence_txt: &'static str,
+    pub evidence_png: &'static str,
+    pub audit_json: &'static str,
+    pub vision_evidence: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,7 +77,9 @@ pub struct VisionFinding {
     pub gate_png: String,
     pub current_sha256: String,
     pub evidence_path: String,
-    pub evidence_contains_current_hash: bool,
+    pub role: String,
+    pub model: String,
+    pub record_is_current: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,18 +103,11 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "rich-response",
             expected_kind: "direct",
             expected_action: "action.tool-success.continue",
-            evidence_txt: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.txt",
-            ),
-            evidence_png: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.png",
-            ),
-            audit_json: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1.json",
-            ),
-            vision_evidence: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/tool-success-continue-tick-1-vision.md",
-            ),
+            role: "first-three bridge daily-work tool result continuation",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/tool-success-continue-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/tool-success-continue-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/tool-success-continue-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/tool-success-continue-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "daily-work",
@@ -108,18 +117,11 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.streaming.interrupt",
-            evidence_txt: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.txt",
-            ),
-            evidence_png: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.png",
-            ),
-            audit_json: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1.json",
-            ),
-            vision_evidence: Some(
-                "evidence/v3-pilot-flow1-storyboard/bridges/streaming-interrupt-tick-1-vision.md",
-            ),
+            role: "first-three bridge daily-work streaming interruption",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/streaming-interrupt-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/streaming-interrupt-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/streaming-interrupt-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/streaming-interrupt-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -129,10 +131,11 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "permission-shell",
             expected_kind: "direct",
             expected_action: "action.file-mention.submit-prepared-prompt",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            role: "first-three bridge input-and-approval prompt submission",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/flow2-submit-bridge-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/flow2-submit-bridge-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/flow2-submit-bridge-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/flow2-submit-bridge-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -142,10 +145,11 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "diff-edit",
             expected_kind: "direct",
             expected_action: "action.permission.allow-once",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            role: "first-three bridge input-and-approval permission approval",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/permission-allow-once-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/permission-allow-once-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/permission-allow-once-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/permission-allow-once-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -155,10 +159,11 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "diff-viewer-staging",
             expected_kind: "direct",
             expected_action: "action.diff-edit.review-changes",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            role: "first-three bridge input-and-approval diff review",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/diff-review-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/diff-review-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/diff-review-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/diff-review-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "input-and-approval",
@@ -168,71 +173,25 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.staging.finish",
-            evidence_txt: Some(
-                "evidence/v3-fix-flow2-storyboard-resumption/bridges/staging-finish-tick-1.txt",
-            ),
-            evidence_png: Some(
-                "evidence/v3-fix-flow2-storyboard-resumption/bridges/staging-finish-tick-1.png",
-            ),
-            audit_json: Some(
-                "evidence/v3-fix-flow2-storyboard-resumption/bridges/staging-finish-tick-1.json",
-            ),
-            vision_evidence: Some("evidence/v3-fix-flow2-storyboard-resumption/vision-evidence.md"),
+            role: "first-three bridge input-and-approval staging finish",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/staging-finish-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/staging-finish-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/staging-finish-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/staging-finish-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "work-configuration",
-            case_id: "onboarding-unusable-model",
+            case_id: "model-to-work-style-bridge",
             tick: 1,
             expected_before: "model-picker",
-            expected_after: "connect-provider",
-            expected_kind: "direct",
-            expected_action: "action.model-picker.connect",
-            evidence_txt: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/onboarding-unusable-model-tick-1.txt",
-            ),
-            evidence_png: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/onboarding-unusable-model-tick-1.png",
-            ),
-            audit_json: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/onboarding-unusable-model-tick-1.json",
-            ),
-            vision_evidence: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/vision-evidence.md",
-            ),
-        },
-        PilotGateBridge {
-            flow: "work-configuration",
-            case_id: "model-picker-connect",
-            tick: 1,
-            expected_before: "model-picker",
-            expected_after: "connect-provider",
-            expected_kind: "direct",
-            expected_action: "action.model-picker.connect",
-            evidence_txt: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/model-picker-connect-tick-1.txt",
-            ),
-            evidence_png: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/model-picker-connect-tick-1.png",
-            ),
-            audit_json: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/bridges/model-picker-connect-tick-1.json",
-            ),
-            vision_evidence: Some(
-                "evidence/v3-fix-flow3-onboarding-origin-recovery/vision-evidence.md",
-            ),
-        },
-        PilotGateBridge {
-            flow: "work-configuration",
-            case_id: "model-picker-cancel",
-            tick: 1,
-            expected_before: "model-picker",
-            expected_after: "chat-turn",
-            expected_kind: "cancel",
-            expected_action: "action.model-picker.cancel",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            expected_after: "agent-picker",
+            expected_kind: "illustrative_detour",
+            expected_action: "action.storyboard.open-work-style-after-model",
+            role: "first-three bridge work-configuration model return to work style",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/model-to-work-style-bridge-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/model-to-work-style-bridge-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/model-to-work-style-bridge-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/model-to-work-style-bridge-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -242,10 +201,11 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "mode-switch",
             expected_kind: "direct",
             expected_action: "action.agent-picker.review-access",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            role: "first-three bridge work-configuration access review",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-pending-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-pending-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-pending-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-pending-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -255,23 +215,25 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.mode-switch.confirm",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            role: "first-three bridge work-configuration access confirmation",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-confirm-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-confirm-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-confirm-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/work-style-access-confirm-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "work-configuration",
-            case_id: "work-style-access-refused",
+            case_id: "mode-switch-to-session-bridge",
             tick: 1,
             expected_before: "mode-switch",
-            expected_after: "mode-switch-refused",
-            expected_kind: "direct",
-            expected_action: "action.mode-switch-refused.choose-safer",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            expected_after: "session-picker",
+            expected_kind: "illustrative_detour",
+            expected_action: "action.storyboard.open-sessions-after-work-style",
+            role: "first-three bridge work-configuration work style return to sessions",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/mode-switch-to-session-bridge-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/mode-switch-to-session-bridge-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/mode-switch-to-session-bridge-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/mode-switch-to-session-bridge-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -281,10 +243,11 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "session-picker",
             expected_kind: "cancel",
             expected_action: "action.timeline.back",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            role: "first-three bridge work-configuration timeline back",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-timeline-back-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-timeline-back-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-timeline-back-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-timeline-back-tick-1.vision.txt",
         },
         PilotGateBridge {
             flow: "work-configuration",
@@ -294,12 +257,130 @@ pub fn pilot_gate_bridges() -> &'static [PilotGateBridge] {
             expected_after: "chat-turn",
             expected_kind: "direct",
             expected_action: "action.session-picker.resume",
-            evidence_txt: None,
-            evidence_png: None,
-            audit_json: None,
-            vision_evidence: None,
+            role: "first-three bridge work-configuration latest session resume",
+            evidence_txt: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-resume-latest-tick-1.txt",
+            evidence_png: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-resume-latest-tick-1.png",
+            audit_json: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-resume-latest-tick-1.json",
+            vision_evidence: "evidence/v3-fix-gate-publication-bridge-evidence/bridges/session-resume-latest-tick-1.vision.txt",
         },
     ]
+}
+
+pub fn pilot_gate_publications() -> Vec<PilotGatePublication> {
+    flow_manifests()
+        .iter()
+        .filter(|flow| PILOT_FLOWS.contains(&flow.name))
+        .flat_map(|flow| {
+            flow.steps
+                .iter()
+                .enumerate()
+                .map(move |(index, step)| PilotGatePublication {
+                    flow: flow.name,
+                    step_index: index + 1,
+                    screen_id: step.screen_id,
+                    fixture_id: step.fixture_id.to_owned(),
+                    origin: step.origin.to_owned(),
+                    action_id: declared_action_id(flow.name, step.screen_id),
+                    expected_next_bridge: match (flow.name, step.screen_id) {
+                        ("work-configuration", "model-picker") => {
+                            Some("model-to-work-style-bridge")
+                        }
+                        ("work-configuration", "mode-switch") => {
+                            Some("mode-switch-to-session-bridge")
+                        }
+                        _ => None,
+                    },
+                    gate_txt: format!("{}/{:02}-{}.txt", flow.name, index + 1, step.screen_id),
+                    gate_png: format!("{}/{:02}-{}.png", flow.name, index + 1, step.screen_id),
+                })
+        })
+        .collect()
+}
+
+pub fn validate_pilot_gate_publications(
+    publications: &[PilotGatePublication],
+) -> Result<(), String> {
+    if publications.len() != 18 {
+        return Err(format!(
+            "first-three publication map must contain 18 steps, got {}",
+            publications.len()
+        ));
+    }
+    let expected = pilot_gate_publications();
+    let mut paths = BTreeSet::new();
+    for (index, (actual, expected)) in publications.iter().zip(&expected).enumerate() {
+        if actual.flow != expected.flow
+            || actual.step_index != expected.step_index
+            || actual.screen_id != expected.screen_id
+            || actual.origin != expected.origin
+        {
+            return Err(format!(
+                "publication origin/order mismatch at first-three step {}",
+                index + 1
+            ));
+        }
+        if actual.fixture_id != expected.fixture_id
+            || actual.fixture_id.trim().is_empty()
+            || actual.fixture_id.starts_with("canonical.")
+        {
+            return Err(format!(
+                "publication fixture mismatch or canonical fallback at first-three step {}",
+                index + 1
+            ));
+        }
+        if actual.action_id != expected.action_id
+            || actual.expected_next_bridge != expected.expected_next_bridge
+        {
+            return Err(format!(
+                "publication action/bridge mismatch at first-three step {}",
+                index + 1
+            ));
+        }
+        for path in [&actual.gate_txt, &actual.gate_png] {
+            if !paths.insert(path) {
+                return Err(format!("duplicate publication path: {path}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_pilot_transition_contracts() -> Result<(), String> {
+    let publications = pilot_gate_publications();
+    validate_pilot_gate_publications(&publications)?;
+    for flow in flow_manifests()
+        .iter()
+        .filter(|flow| PILOT_FLOWS.contains(&flow.name))
+    {
+        validate_manifest_steps(flow)?;
+    }
+    Ok(())
+}
+
+fn declared_action_id(flow: &str, screen_id: &str) -> &'static str {
+    match (flow, screen_id) {
+        ("daily-work", "home") => "action.home.start-request",
+        ("daily-work", "chat-turn") => "action.chat-turn.send-reply",
+        ("daily-work", "streaming") => "action.streaming.start-requested-tool",
+        ("daily-work", "tool-running") => "action.tool-running.complete",
+        ("daily-work", "tool-success") => "action.tool-success.continue",
+        ("daily-work", "rich-response") => "action.rich-response.continue",
+        ("input-and-approval", "composer-multiline") => {
+            "action.composer-multiline.open-file-mention"
+        }
+        ("input-and-approval", "file-mention") => "action.file-mention.submit-prepared-prompt",
+        ("input-and-approval", "permission-shell") => "action.permission.allow-once",
+        ("input-and-approval", "diff-edit") => "action.diff-edit.review-changes",
+        ("input-and-approval", "diff-viewer-staging") => "action.staging.finish",
+        ("input-and-approval", "chat-turn") => "action.chat-turn.resume-request",
+        ("work-configuration", "onboarding") => "action.onboarding.review-models",
+        ("work-configuration", "model-picker") => "action.model-picker.apply",
+        ("work-configuration", "agent-picker") => "action.agent-picker.review-access",
+        ("work-configuration", "mode-switch") => "action.mode-switch.confirm",
+        ("work-configuration", "session-picker") => "action.session-picker.timeline",
+        ("work-configuration", "timeline") => "action.timeline.resume",
+        _ => unreachable!("the authoritative first-three map contains only known steps"),
+    }
 }
 
 pub fn pilot_gate_artifacts() -> Vec<PilotGateArtifact> {
@@ -376,6 +457,7 @@ pub fn validate_pilot_gate_integration(
     for flow in &pilot_manifests {
         validate_manifest_steps(flow)?;
     }
+    validate_pilot_gate_publications(&pilot_gate_publications())?;
     validate_bridges(mission_directory)?;
 
     let artifacts = pilot_gate_artifacts();
@@ -387,7 +469,7 @@ pub fn validate_pilot_gate_integration(
     let vision_findings = collect_vision_findings(repository, mission_directory, &artifacts)?;
     let required_pilot_iteration = vision_findings
         .iter()
-        .any(|finding| !finding.evidence_contains_current_hash);
+        .any(|finding| !finding.record_is_current);
 
     Ok(PilotGateReport {
         flow_names: PILOT_FLOWS.to_vec(),
@@ -415,6 +497,27 @@ fn validate_manifest_steps(flow: &FlowManifest) -> Result<(), String> {
         }
         let audit = audit_screen(step.screen_id, step.fixture_id)?;
         audit.validate()?;
+        let action_id = declared_action_id(flow.name, step.screen_id);
+        let rendered_action = audit
+            .events
+            .iter()
+            .filter_map(|event| event.action.as_ref())
+            .find(|action| action.action_id == action_id)
+            .ok_or_else(|| {
+                format!(
+                    "{} step {} does not render declared action {}",
+                    flow.name,
+                    index + 1,
+                    action_id
+                )
+            })?;
+        if step.transition_kind == TransitionKind::Automatic && !rendered_action.automatic {
+            return Err(format!(
+                "{} step {} automatic transition is not bound to an automatic action",
+                flow.name,
+                index + 1
+            ));
+        }
         if matches!(flow.name, "daily-work" | "input-and-approval") {
             let identity = audit.conversation.as_ref().ok_or_else(|| {
                 format!(
@@ -451,37 +554,161 @@ Keep the summary short before we merge."
                     )
                 })?;
         }
-        if step.transition_kind == TransitionKind::Direct {
-            let expected_kind = "direct";
-            if !audit.transitions.iter().any(|transition| {
-                transition.to_screen_id == step.expected_next_frame
-                    && transition.kind == expected_kind
-            }) {
-                return Err(format!(
-                    "{} step {} has no rendered direct edge to {}",
-                    flow.name,
-                    index + 1,
-                    step.expected_next_frame
-                ));
+        match step.transition_kind {
+            TransitionKind::IllustrativeDetour => {
+                let bridge = pilot_gate_publications()
+                    .into_iter()
+                    .find(|publication| {
+                        publication.flow == flow.name
+                            && publication.step_index == index + 1
+                            && publication.screen_id == step.screen_id
+                    })
+                    .and_then(|publication| publication.expected_next_bridge)
+                    .and_then(|case_id| {
+                        pilot_gate_bridges()
+                            .iter()
+                            .find(|bridge| bridge.case_id == case_id)
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "{} step {} illustrative adjacency has no named bridge",
+                            flow.name,
+                            index + 1
+                        )
+                    })?;
+                if bridge.expected_before != step.screen_id
+                    || bridge.expected_after != step.expected_next_frame
+                    || bridge.expected_kind != "illustrative_detour"
+                {
+                    return Err(format!(
+                        "{} step {} illustrative bridge does not reach {}",
+                        flow.name,
+                        index + 1,
+                        step.expected_next_frame
+                    ));
+                }
             }
-        } else if !audit.transitions.iter().any(|transition| {
-            transition.kind == "cancel" || transition.to_screen_id == step.success_return
-        }) {
-            return Err(format!(
-                "{} step {} illustrative/automatic return is not rendered",
-                flow.name,
-                index + 1
-            ));
+            kind => {
+                let expected_kind = match kind {
+                    TransitionKind::Direct => "direct",
+                    TransitionKind::Automatic => "automatic",
+                    TransitionKind::Summarized => "summarized",
+                    TransitionKind::IllustrativeDetour => unreachable!(),
+                };
+                let rendered_kind = if kind == TransitionKind::Summarized {
+                    "summarized"
+                } else {
+                    expected_kind
+                };
+                if !audit.transitions.iter().any(|transition| {
+                    transition.action_id == action_id
+                        && transition.to_screen_id == step.expected_next_frame
+                        && transition.kind == rendered_kind
+                }) {
+                    return Err(format!(
+                        "{} step {} action {} has no rendered {} edge to {}",
+                        flow.name,
+                        index + 1,
+                        action_id,
+                        expected_kind,
+                        step.expected_next_frame
+                    ));
+                }
+            }
+        }
+        validate_destination(flow.name, index + 1, step, &audit, "success_return")?;
+        validate_destination(flow.name, index + 1, step, &audit, "cancel_return")?;
+        if step.terminal_return.is_some() {
+            validate_destination(flow.name, index + 1, step, &audit, "terminal_return")?;
         }
     }
     Ok(())
 }
 
+fn validate_destination(
+    flow: &str,
+    step_index: usize,
+    step: &FlowStep,
+    audit: &crate::audit::AuditDocument,
+    field: &str,
+) -> Result<(), String> {
+    let target = match field {
+        "success_return" => step.success_return,
+        "cancel_return" => step.cancel_return,
+        "terminal_return" => step
+            .terminal_return
+            .ok_or_else(|| "terminal return was not declared".to_owned())?,
+        _ => unreachable!("destination validation accepts only declared return fields"),
+    };
+    if field == "cancel_return"
+        && target == step.origin
+        && (audit.conversation.is_some()
+            || audit
+                .events
+                .iter()
+                .any(|event| matches!(event.identity.family.as_str(), "transcript" | "origin")))
+    {
+        return Ok(());
+    }
+    let transition = audit.transitions.iter().find(|transition| {
+        transition.to_screen_id == target
+            && (field != "cancel_return" || transition.kind == "cancel")
+    });
+    if let Some(transition) = transition {
+        if !audit.events.iter().any(|event| {
+            event
+                .action
+                .as_ref()
+                .is_some_and(|action| action.action_id == transition.action_id)
+        }) {
+            return Err(format!(
+                "{flow} step {step_index} {field} {target} references an unrendered action"
+            ));
+        }
+        return Ok(());
+    }
+
+    if bridge_path_reaches(flow, step.screen_id, target) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{flow} step {step_index} {field} {target} has no exact rendered action or named bridge"
+    ))
+}
+
+fn bridge_path_reaches(flow: &str, source: &str, target: &str) -> bool {
+    let mut pending = vec![source];
+    let mut visited = BTreeSet::new();
+    while let Some(current) = pending.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+        for bridge in pilot_gate_bridges()
+            .iter()
+            .filter(|bridge| bridge.flow == flow && bridge.expected_before == current)
+        {
+            if bridge.expected_after == target {
+                return true;
+            }
+            pending.push(bridge.expected_after);
+        }
+    }
+    false
+}
+
 fn validate_bridges(mission_directory: &str) -> Result<(), String> {
+    if pilot_gate_bridges().len() != 12 {
+        return Err(format!(
+            "first-three integration requires exactly 12 bridge replays, got {}",
+            pilot_gate_bridges().len()
+        ));
+    }
     let canonical_ids = canonical_inventory()
         .iter()
         .map(|screen| screen.id)
         .collect::<BTreeSet<_>>();
+    let mut evidence_paths = BTreeSet::new();
     for bridge in pilot_gate_bridges() {
         let replay = replay_case(bridge.case_id, bridge.tick)?;
         replay.validate()?;
@@ -495,63 +722,69 @@ fn validate_bridges(mission_directory: &str) -> Result<(), String> {
                 bridge.case_id
             ));
         }
-        if let (Some(txt), Some(png), Some(audit), Some(vision)) = (
-            bridge.evidence_txt,
-            bridge.evidence_png,
-            bridge.audit_json,
-            bridge.vision_evidence,
-        ) {
-            let evidence_root = Path::new(mission_directory);
-            let txt_path = evidence_root.join(txt);
-            let png_path = evidence_root.join(png);
-            let audit_path = evidence_root.join(audit);
-            let vision_path = evidence_root.join(vision);
-            let txt_bytes = fs::read(&txt_path)
-                .map_err(|error| format!("missing bridge TXT {}: {error}", txt_path.display()))?;
-            let txt = std::str::from_utf8(&txt_bytes)
-                .map_err(|error| format!("bridge TXT is not UTF-8: {error}"))?;
-            if txt.lines().count() != 40
-                || !txt.ends_with('\n')
-                || txt.lines().any(|line| line.chars().count() != 120)
-            {
+        let evidence_root = Path::new(mission_directory);
+        let txt_path = evidence_root.join(bridge.evidence_txt);
+        let png_path = evidence_root.join(bridge.evidence_png);
+        let audit_path = evidence_root.join(bridge.audit_json);
+        let vision_path = evidence_root.join(bridge.vision_evidence);
+        for path in [&txt_path, &png_path, &audit_path, &vision_path] {
+            if !evidence_paths.insert(path.clone()) {
                 return Err(format!(
-                    "invalid bridge TXT dimensions: {}",
-                    txt_path.display()
+                    "bridge evidence path is reused across records: {}",
+                    path.display()
                 ));
             }
-            let png_bytes = fs::read(&png_path)
-                .map_err(|error| format!("missing bridge PNG {}: {error}", png_path.display()))?;
-            let png_hash = sha256_hex(&png_bytes);
-            let audit = fs::read_to_string(&audit_path).map_err(|error| {
-                format!("missing bridge audit {}: {error}", audit_path.display())
-            })?;
-            if !audit.contains(bridge.case_id)
-                || !audit.contains(bridge.expected_action)
-                || !audit.contains(&format!("\"virtual_tick\":{}", bridge.tick))
-                || !audit.contains(bridge.expected_before)
-                || !audit.contains(bridge.expected_after)
-            {
-                return Err(format!(
-                    "bridge audit does not bind case, action, tick, and states: {}",
-                    audit_path.display()
-                ));
-            }
-            let vision = fs::read_to_string(&vision_path).map_err(|error| {
-                format!(
-                    "missing bridge vision evidence {}: {error}",
-                    vision_path.display()
-                )
-            })?;
-            if !vision.contains("anthropic/claude-opus-4.8-fast")
-                || !vision.contains(&png_path.display().to_string())
-                || !vision.contains(&png_hash)
-                || !vision.contains("Role:")
-            {
-                return Err(format!(
-                    "bridge vision evidence is not hash/path/model bound: {}",
-                    vision_path.display()
-                ));
-            }
+        }
+        let txt_bytes = fs::read(&txt_path)
+            .map_err(|error| format!("missing bridge TXT {}: {error}", txt_path.display()))?;
+        let expected_txt = replay.audit.render_txt().into_bytes();
+        if txt_bytes != expected_txt {
+            return Err(format!(
+                "bridge TXT is stale or belongs to another replay: {}",
+                txt_path.display()
+            ));
+        }
+        let png_bytes = fs::read(&png_path)
+            .map_err(|error| format!("missing bridge PNG {}: {error}", png_path.display()))?;
+        #[cfg(feature = "png")]
+        let expected_png = crate::scenario::render_audit_png(&replay.audit)?;
+        #[cfg(not(feature = "png"))]
+        return Err("PNG feature is required for bridge validation".to_owned());
+        #[cfg(feature = "png")]
+        if png_bytes != expected_png {
+            return Err(format!(
+                "bridge PNG is stale or belongs to another replay: {}",
+                png_path.display()
+            ));
+        }
+        let png_hash = sha256_hex(&png_bytes);
+        let audit = fs::read_to_string(&audit_path)
+            .map_err(|error| format!("missing bridge audit {}: {error}", audit_path.display()))?;
+        if audit.trim_end() != replay.to_json() {
+            return Err(format!(
+                "bridge audit is not the exact replay JSON: {}",
+                audit_path.display()
+            ));
+        }
+        let review = read_review_record(&vision_path)?;
+        require_review_field(&review, "artifact_path", &png_path.display().to_string())?;
+        require_review_field(&review, "role", bridge.role)?;
+        require_review_field(&review, "sha256", &png_hash)?;
+        require_review_field(&review, "model", "anthropic/claude-opus-4.8-fast")?;
+        require_review_field(&review, "case_id", bridge.case_id)?;
+        require_review_field(&review, "tick", &bridge.tick.to_string())?;
+        require_review_field(&review, "verdict", "pass")?;
+        if review
+            .get("review_session_id")
+            .is_none_or(|value| value.trim().is_empty())
+            || review
+                .get("response_sha256")
+                .is_none_or(|value| value.len() != 64)
+        {
+            return Err(format!(
+                "bridge review lacks exact review session/response binding: {}",
+                vision_path.display()
+            ));
         }
         for screen_id in [&replay.before.screen_id, &replay.after.screen_id] {
             if !canonical_ids.contains(screen_id.as_str()) {
@@ -562,7 +795,69 @@ fn validate_bridges(mission_directory: &str) -> Result<(), String> {
             }
         }
     }
+    validate_bridge_continuity()?;
     Ok(())
+}
+
+fn validate_bridge_continuity() -> Result<(), String> {
+    let flow2 = pilot_gate_bridges()
+        .iter()
+        .filter(|bridge| bridge.flow == "input-and-approval")
+        .map(|bridge| replay_case(bridge.case_id, bridge.tick))
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected_session = "session.retry-review.18";
+    let expected_activity = "activity.retry-policy-edit.18";
+    for replay in flow2 {
+        if replay.before.session_id != expected_session
+            || replay.after.session_id != expected_session
+            || replay.before.paused_activity_id != expected_activity
+            || replay.after.paused_activity_id != expected_activity
+        {
+            return Err(format!(
+                "Flow 2 bridge {} breaks session/paused-activity continuity",
+                replay.case_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_review_record(path: &Path) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("could not read review record {}: {error}", path.display()))?;
+    let mut record = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("invalid review record line in {}: {line}", path.display()))?;
+        if record
+            .insert(key.trim().to_owned(), value.trim().to_owned())
+            .is_some()
+        {
+            return Err(format!(
+                "duplicate review record field {key} in {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(record)
+}
+
+fn require_review_field(
+    review: &std::collections::BTreeMap<String, String>,
+    field: &str,
+    expected: &str,
+) -> Result<(), String> {
+    match review.get(field) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(actual) => Err(format!(
+            "review field {field} mismatch: expected {expected}, got {actual}"
+        )),
+        None => Err(format!("review record is missing {field}")),
+    }
 }
 
 fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Result<(), String> {
@@ -650,20 +945,6 @@ fn collect_vision_findings(
     mission_directory: &str,
     artifacts: &[PilotGateArtifact],
 ) -> Result<Vec<VisionFinding>, String> {
-    let evidence = [
-        (
-            "daily-work",
-            "evidence/v3-pilot-flow1-storyboard/vision-and-transition-evidence.md",
-        ),
-        (
-            "input-and-approval",
-            "evidence/v3-pilot-flow2-storyboard/vision-and-transition-evidence.md",
-        ),
-        (
-            "work-configuration",
-            "evidence/v3-pilot-flow3-storyboard/vision-and-transition-evidence.md",
-        ),
-    ];
     artifacts
         .iter()
         .filter(|artifact| artifact.extension == "png")
@@ -675,20 +956,39 @@ fn collect_vision_findings(
                 &fs::read(&gate)
                     .map_err(|error| format!("could not hash {}: {error}", gate.display()))?,
             );
-            let evidence_relative = evidence
-                .iter()
-                .find(|(flow, _)| *flow == artifact.flow)
-                .map(|(_, path)| *path)
-                .ok_or_else(|| format!("missing vision evidence mapping for {}", artifact.flow))?;
-            let evidence_path = Path::new(mission_directory).join(evidence_relative);
-            let evidence_text = fs::read_to_string(&evidence_path)
-                .map_err(|error| format!("could not read {}: {error}", evidence_path.display()))?;
+            let evidence_relative = format!(
+                "evidence/v3-fix-gate-publication-bridge-evidence/frames/{:02}-{}-{}.vision.txt",
+                artifact.step_index, artifact.flow, artifact.screen_id
+            );
+            let evidence_path = Path::new(mission_directory).join(&evidence_relative);
+            let role = format!(
+                "first-three gate frame {} step {:02} {}",
+                artifact.flow, artifact.step_index, artifact.screen_id
+            );
+            let review = read_review_record(&evidence_path)?;
+            let record_is_current =
+                require_review_field(&review, "artifact_path", &gate.display().to_string())
+                    .and_then(|_| require_review_field(&review, "role", &role))
+                    .and_then(|_| require_review_field(&review, "sha256", &current_sha256))
+                    .and_then(|_| {
+                        require_review_field(&review, "model", "anthropic/claude-opus-4.8-fast")
+                    })
+                    .and_then(|_| require_review_field(&review, "verdict", "pass"))
+                    .is_ok()
+                    && review
+                        .get("review_session_id")
+                        .is_some_and(|value| !value.trim().is_empty())
+                    && review
+                        .get("response_sha256")
+                        .is_some_and(|value| value.len() == 64);
             Ok(VisionFinding {
                 flow: artifact.flow,
                 gate_png: artifact.gate_relative.clone(),
                 current_sha256: current_sha256.clone(),
-                evidence_path: evidence_relative.to_owned(),
-                evidence_contains_current_hash: evidence_text.contains(&current_sha256),
+                evidence_path: evidence_relative,
+                role,
+                model: review.get("model").cloned().unwrap_or_default(),
+                record_is_current,
             })
         })
         .collect()

@@ -7,7 +7,11 @@ use std::sync::Once;
 use mockup_harness_v3::{
     audit::audit_screen,
     flow_manifests,
-    gate_integration::{pilot_gate_artifacts, pilot_gate_bridges, validate_pilot_gate_integration},
+    gate_integration::{
+        pilot_gate_artifacts, pilot_gate_bridges, pilot_gate_publications,
+        validate_pilot_gate_integration, validate_pilot_gate_publications,
+        validate_pilot_transition_contracts,
+    },
     scenario::render_audit_png,
 };
 
@@ -50,31 +54,58 @@ fn first_three_manifests_join_to_the_published_gate_contract() {
     );
     assert_eq!(report.step_count, 18);
     assert_eq!(report.artifact_count, 36);
-    assert_eq!(report.bridge_count, pilot_gate_bridges().len());
+    assert_eq!(report.bridge_count, 12);
     assert!(report.programmatic_checks_before_vision);
     assert_eq!(report.vision_findings.len(), 18);
-    assert!(
-        report.vision_findings.iter().all(|finding| {
-            finding.gate_png != "daily-work/02-chat-turn.png"
-                || finding.evidence_contains_current_hash
-        }),
-        "the revised Flow 1 chat-turn frame must not retain stale vision evidence"
-    );
-    assert!(
-        report.vision_findings.iter().all(|finding| {
-            finding.gate_png != "work-configuration/01-onboarding.png"
-                || finding.evidence_contains_current_hash
-        }),
-        "the revised Flow 3 onboarding frame must not retain stale vision evidence"
-    );
+    assert!(report.vision_findings.iter().all(|finding| {
+        finding.record_is_current
+            && finding.model == "anthropic/claude-opus-4.8-fast"
+            && finding.role.starts_with("first-three gate frame ")
+    }));
     assert!(
         !report.required_pilot_iteration,
-        "both required pilot iterations now have current hash-bound vision evidence"
+        "every frame must have an exact path/role/hash/model-bound vision record"
     );
 }
 
 #[test]
-fn gate_aliases_are_exactly_the_canonical_artifacts_for_first_three_flows() {
+fn publication_records_bind_every_alias_to_its_declared_fixture_and_origin() {
+    let publications = pilot_gate_publications();
+    assert_eq!(publications.len(), 18);
+    validate_pilot_gate_publications(&publications)
+        .expect("the authoritative first-three publication map must validate");
+    assert!(publications.iter().all(|publication| {
+        !publication.fixture_id.starts_with("canonical.")
+            && !publication.origin.trim().is_empty()
+            && publication.gate_txt.ends_with(".txt")
+            && publication.gate_png.ends_with(".png")
+    }));
+
+    let mut fallback = publications.clone();
+    fallback[0].fixture_id = "canonical.home".to_owned();
+    assert!(
+        validate_pilot_gate_publications(&fallback)
+            .expect_err("canonical fixture fallback must fail")
+            .contains("fixture")
+    );
+
+    let mut wrong_origin = publications;
+    wrong_origin[0].origin = "chat-turn".to_owned();
+    assert!(
+        validate_pilot_gate_publications(&wrong_origin)
+            .expect_err("an alias with the wrong declared origin must fail")
+            .contains("origin")
+    );
+}
+
+#[test]
+fn every_declared_action_and_destination_matches_rendered_audit_or_named_bridge() {
+    validate_pilot_transition_contracts()
+        .expect("all direct, automatic, summarized, and illustrative contracts must reconcile");
+}
+
+#[test]
+fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
     ensure_published();
     let expected = pilot_gate_artifacts();
     let mut seen = BTreeSet::new();
@@ -103,6 +134,18 @@ fn gate_aliases_are_exactly_the_canonical_artifacts_for_first_three_flows() {
             fs::read(&gate).expect("gate artifact must be readable"),
             "gate alias must be canonical-equivalent for its declared fixture: {gate:?}"
         );
+    }
+}
+
+#[test]
+fn twelve_bridges_require_persisted_txt_png_audit_and_frame_specific_opus_records() {
+    assert_eq!(pilot_gate_bridges().len(), 12);
+    for bridge in pilot_gate_bridges() {
+        assert!(!bridge.evidence_txt.is_empty());
+        assert!(!bridge.evidence_png.is_empty());
+        assert!(!bridge.audit_json.is_empty());
+        assert!(!bridge.vision_evidence.is_empty());
+        assert!(bridge.role.starts_with("first-three bridge "));
     }
 }
 
