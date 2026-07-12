@@ -56,7 +56,7 @@ fn approval_request_schema_binds_full_current_bundle() {
     ensure_programmatic_and_vision_ready();
     let request_time = 1_720_000_000_000u64;
     let request = write_human_gate_request(REPOSITORY, MISSION_DIRECTORY, Some(request_time))
-        .expect("immutable awaiting_user request must write");
+        .expect("immutable awaiting_user request must write or reuse existing digest history");
     assert_eq!(request.schema_version, APPROVAL_SCHEMA_VERSION);
     assert_eq!(request.feature_id, APPROVAL_FEATURE_ID);
     assert_eq!(request.status, "awaiting_user");
@@ -88,14 +88,22 @@ fn approval_request_schema_binds_full_current_bundle() {
     ] {
         assert!(body.contains(required), "request missing {required}");
     }
-    assert!(
-        !Path::new(MISSION_DIRECTORY)
-            .join(HUMAN_GATE_ROOT)
-            .join(&request.review_bundle_sha256)
-            .join(DECISION_FILE_NAME)
-            .exists(),
-        "worker must not create decision.json"
-    );
+
+    // Worker path must never author a decision. An orchestrator decision may already exist
+    // for the live approved bundle; when present, it must be role-sealed to orchestrator.
+    let decision = load_decision_if_present(MISSION_DIRECTORY, &request).expect("decision load");
+    match decision {
+        None => {}
+        Some(decision) => {
+            assert_eq!(
+                decision.decision_actor_role, "orchestrator",
+                "only the orchestrator may author decision.json"
+            );
+            assert_eq!(decision.request_digest, request.request_digest);
+            assert_eq!(decision.reviewed_bundle_digest, request.review_bundle_sha256);
+            assert!(decision.status == "approved" || decision.status == "rejected");
+        }
+    }
 }
 
 #[test]
@@ -147,26 +155,43 @@ fn awaiting_user_integrity_passes_and_require_approved_blocks() {
     let request = write_human_gate_request(REPOSITORY, MISSION_DIRECTORY, Some(1_720_000_000_001))
         .expect("request write");
     let integrity = validate_approval_integrity(REPOSITORY, MISSION_DIRECTORY, false)
-        .expect("awaiting_user integrity must pass without a decision");
+        .expect("integrity must accept the live request with or without orchestrator decision");
     match integrity {
         ApprovalIntegrity::AwaitingUser { request: loaded } => {
             assert_eq!(loaded.review_bundle_sha256, request.review_bundle_sha256);
             assert_eq!(loaded.status, "awaiting_user");
+            // Bulk remains blocked until an orchestrator-approved decision exists.
+            let blocked = validate_approval_integrity(REPOSITORY, MISSION_DIRECTORY, true)
+                .expect_err("bulk production must remain blocked until orchestrator approval");
+            assert!(
+                blocked.contains("awaiting_user")
+                    || blocked.contains("decision.json is missing")
+                    || blocked.contains("blocked")
+            );
+            assert!(load_decision_if_present(MISSION_DIRECTORY, &request)
+                .expect("decision load")
+                .is_none());
         }
-        other => panic!("expected awaiting_user, got {other:?}"),
+        ApprovalIntegrity::Approved {
+            request: loaded,
+            decision,
+        } => {
+            assert_eq!(loaded.review_bundle_sha256, request.review_bundle_sha256);
+            assert_eq!(decision.status, "approved");
+            assert_eq!(decision.decision_actor_role, "orchestrator");
+            assert_eq!(decision.request_digest, request.request_digest);
+            let required =
+                validate_approval_integrity(REPOSITORY, MISSION_DIRECTORY, true)
+                    .expect("require-approved must pass for live orchestrator approval");
+            match required {
+                ApprovalIntegrity::Approved { .. } => {}
+                other => panic!("expected approved under require-approved, got {other:?}"),
+            }
+        }
+        other => panic!("expected awaiting_user or approved live integrity, got {other:?}"),
     }
-    let blocked = validate_approval_integrity(REPOSITORY, MISSION_DIRECTORY, true)
-        .expect_err("bulk production must remain blocked until orchestrator approval");
-    assert!(
-        blocked.contains("awaiting_user")
-            || blocked.contains("decision.json is missing")
-            || blocked.contains("blocked")
-    );
     revalidate_request_against_live_bundle(REPOSITORY, MISSION_DIRECTORY, &request)
         .expect("live revalidation must accept the just-written request");
-    assert!(load_decision_if_present(MISSION_DIRECTORY, &request)
-        .expect("decision load")
-        .is_none());
     let reloaded = load_request(MISSION_DIRECTORY, &request.review_bundle_sha256).unwrap();
     assert_eq!(reloaded.request_digest, request.request_digest);
     let affected = identify_affected_pilot_features(&request, "ready_for_review");
@@ -223,7 +248,7 @@ fn immutable_request_refuses_content_mutation() {
 fn check_gate_approval_shell_reports_awaiting_user() {
     let _guard = evidence_lock();
     ensure_programmatic_and_vision_ready();
-    let _ = write_human_gate_request(REPOSITORY, MISSION_DIRECTORY, Some(1_720_000_000_003))
+    let request = write_human_gate_request(REPOSITORY, MISSION_DIRECTORY, Some(1_720_000_000_003))
         .expect("request must exist for shell checker");
     let harness = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let script = harness.join("check_gate_approval.sh");
@@ -237,22 +262,52 @@ fn check_gate_approval_shell_reports_awaiting_user() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "awaiting_user integrity should succeed without --require-approved\nstdout={stdout}\nstderr={stderr}"
+        "integrity should succeed without --require-approved\nstdout={stdout}\nstderr={stderr}"
     );
-    assert!(
-        stdout.contains("awaiting_user") || stderr.contains("awaiting_user"),
-        "checker should report awaiting_user"
-    );
-
-    let blocked = Command::new(&script)
-        .arg("--require-approved")
-        .arg(root.as_os_str())
-        .output()
-        .expect("require-approved checker must run");
-    assert!(
-        !blocked.status.success(),
-        "require-approved must fail while decision is missing"
-    );
+    let combined = format!("{stdout}{stderr}");
+    let decision = load_decision_if_present(MISSION_DIRECTORY, &request).expect("decision load");
+    match decision {
+        None => {
+            assert!(
+                combined.contains("awaiting_user"),
+                "checker should report awaiting_user when no decision exists\n{combined}"
+            );
+            let blocked = Command::new(&script)
+                .arg("--require-approved")
+                .arg(root.as_os_str())
+                .output()
+                .expect("require-approved checker must run");
+            assert!(
+                !blocked.status.success(),
+                "require-approved must fail while decision is missing"
+            );
+        }
+        Some(decision) => {
+            assert_eq!(decision.decision_actor_role, "orchestrator");
+            assert!(
+                combined.contains("approved") || combined.contains("rejected"),
+                "checker should report the orchestrator decision status\n{combined}"
+            );
+            let required = Command::new(&script)
+                .arg("--require-approved")
+                .arg(root.as_os_str())
+                .output()
+                .expect("require-approved checker must run for live decision");
+            if decision.status == "approved" {
+                assert!(
+                    required.status.success(),
+                    "require-approved must pass for live orchestrator approval\nstdout={}\nstderr={}",
+                    String::from_utf8_lossy(&required.stdout),
+                    String::from_utf8_lossy(&required.stderr)
+                );
+            } else {
+                assert!(
+                    !required.status.success(),
+                    "require-approved must fail while decision is rejected"
+                );
+            }
+        }
+    }
 }
 
 #[test]
