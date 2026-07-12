@@ -12,7 +12,8 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        components::ENTRY_CODE_BANNER,
+        layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::{ColorToken, TextStyle},
     },
 };
@@ -20,19 +21,11 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Sonnet 4.5";
-const DOCK_TOP: u16 = 31;
+const DOCK_TOP: u16 = ACTION_DOCK_TOP;
 const FLOW4_PROVIDER_TASK: &str = "Connect the model needed for this conversation.";
 const FLOW4_PROVIDER_ORIGIN: &str = "Provider connection · blocked model action";
 const FLOW4_MCP_TASK: &str = "Fix the capabilities this conversation needs.";
 const FLOW4_MCP_ORIGIN: &str = "MCP · conversation capabilities";
-const CODE_BANNER: [&str; 6] = [
-    " ██████              ██",
-    "██                   ██",
-    "██        ████    █████   ████",
-    "██       ██  ██  ██  ██  ██████",
-    "██       ██  ██  ██  ██  ██",
-    " ██████   ████    █████   █████",
-];
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -135,7 +128,7 @@ fn render_login(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    for (offset, line) in CODE_BANNER.iter().enumerate() {
+    for (offset, line) in ENTRY_CODE_BANNER.iter().enumerate() {
         canvas.write(2 + offset as u16, 4, line, TextStyle::accent())?;
     }
     canvas.write(10, 4, FLOW4_PROVIDER_ORIGIN, TextStyle::muted())?;

@@ -11,7 +11,7 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
 };
@@ -19,7 +19,7 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Sonnet 4.5";
-const DOCK_TOP: u16 = 30;
+const DOCK_TOP: u16 = ACTION_DOCK_TOP;
 const FLOW3_RESUME_TASK: &str = "Resume a conversation or inspect its history.";
 const FLOW3_CURRENT_ORIGIN: &str = "Work configuration · current conversation";
 
@@ -138,52 +138,41 @@ fn render_session_picker(
         canvas.write(row + 2, 6, latest, TextStyle::text())?;
     }
 
-    let (selected_title, selected_context, latest, draft) = if docs_selected {
-        (
-            "Document release steps",
-            "~/project · latest stable work from yesterday",
-            "Drafted the release checklist",
-            "No saved draft",
-        )
+    let selected_title = if docs_selected {
+        "Document release steps"
     } else {
-        (
-            "Retry policy review",
-            "~/project · latest stable work from today",
-            "Tests pass; review is ready",
-            "Your saved draft: Add the final review note.",
-        )
+        "Retry policy review"
     };
     write_dock_border(canvas)?;
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        &format!("Selected · {selected_title}"),
+        &format!("Resume · {selected_title}"),
         TextStyle::bright(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        &format!("Latest stable work · {latest}"),
-        TextStyle::text(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 3,
-        &format!("{selected_context} · {draft}"),
+        if docs_selected {
+            "Latest stable work · no saved draft"
+        } else {
+            "Latest stable work · saved draft ready"
+        },
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
-        DOCK_TOP + 4,
+        DOCK_TOP + 3,
         "› [enter] Resume latest · [t] View timeline",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
-        DOCK_TOP + 5,
-        "[f] Fork instead makes a copy · [esc] Back · [↑↓] Choose",
+        DOCK_TOP + 4,
+        "[f] Fork instead · [esc] Back · [↑↓] Choose",
         TextStyle::muted(),
     )?;
+    dock_line(canvas, DOCK_TOP + 5, "", TextStyle::muted())?;
 
     let row_subjects = [
         "retry-policy-review",
@@ -249,7 +238,7 @@ fn render_session_picker(
             fixture_id,
             "selected-detail",
             row_subjects[selected_index],
-            reference(DOCK_TOP + 1, 4, 45),
+            reference(DOCK_TOP + 1, 4, 40),
             "focused",
             None,
         ),
@@ -258,7 +247,7 @@ fn render_session_picker(
             fixture_id,
             "resume-destination",
             "latest-stable-work",
-            reference(DOCK_TOP + 2, 4, 73),
+            reference(DOCK_TOP + 2, 4, 48),
             "focused",
             None,
         ),
@@ -267,7 +256,7 @@ fn render_session_picker(
             fixture_id,
             "primary-action",
             "action.session-picker.resume",
-            reference(DOCK_TOP + 4, 4, 30),
+            reference(DOCK_TOP + 3, 4, 30),
             "focused",
             Some(action(
                 "action.session-picker.resume",
@@ -280,7 +269,7 @@ fn render_session_picker(
             fixture_id,
             "secondary-action",
             "action.session-picker.timeline",
-            reference(DOCK_TOP + 4, 31, 49),
+            reference(DOCK_TOP + 3, 31, 49),
             "summary",
             Some(action(
                 "action.session-picker.timeline",
@@ -293,7 +282,7 @@ fn render_session_picker(
             fixture_id,
             "secondary-action",
             "action.session-picker.fork",
-            reference(DOCK_TOP + 5, 4, 37),
+            reference(DOCK_TOP + 4, 4, 26),
             "summary",
             Some(action("action.session-picker.fork", "Fork instead", false)),
         ),
@@ -302,7 +291,7 @@ fn render_session_picker(
             fixture_id,
             "cancel-action",
             "action.session-picker.back",
-            reference(DOCK_TOP + 5, 38, 50),
+            reference(DOCK_TOP + 4, 27, 40),
             "summary",
             Some(action("action.session-picker.back", "Back", false)),
         ),
@@ -311,7 +300,7 @@ fn render_session_picker(
             fixture_id,
             "local-control",
             "action.session-picker.choose",
-            reference(DOCK_TOP + 5, 51, 65),
+            reference(DOCK_TOP + 4, 41, 56),
             "summary",
             Some(action(
                 "action.session-picker.choose",

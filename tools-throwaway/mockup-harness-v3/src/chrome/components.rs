@@ -858,6 +858,70 @@ impl Component for ReviewBlock {
     }
 }
 
+/// Compact decision-dock body used by dense offender rework: title, one effect
+/// line optional, one primary, up to two compact secondary/cancel lines.
+/// Avoids restating list-row bodies or dual [enter]/[esc] footnotes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactActionDock {
+    title: String,
+    summary: Option<String>,
+    primary: String,
+    secondary_lines: Vec<String>,
+}
+
+impl CompactActionDock {
+    pub fn new(title: &str, primary: &str) -> Result<Self, String> {
+        if title.trim().is_empty() || primary.trim().is_empty() {
+            return Err("compact action dock needs a title and primary action".to_owned());
+        }
+        Ok(Self {
+            title: title.to_owned(),
+            summary: None,
+            primary: primary.to_owned(),
+            secondary_lines: Vec::new(),
+        })
+    }
+
+    pub fn with_summary(mut self, summary: &str) -> Self {
+        self.summary = Some(summary.to_owned());
+        self
+    }
+
+    pub fn with_secondary_line(mut self, line: &str) -> Result<Self, String> {
+        if self.secondary_lines.len() >= 3 {
+            return Err("compact action dock allows at most three secondary lines".to_owned());
+        }
+        self.secondary_lines.push(line.to_owned());
+        Ok(self)
+    }
+
+    pub fn lines(&self) -> Vec<ComponentLine> {
+        let mut lines = vec![ComponentLine::new(self.title.clone(), TextStyle::bright())];
+        if let Some(summary) = &self.summary {
+            lines.push(ComponentLine::new(summary.clone(), TextStyle::muted()));
+        }
+        lines.push(ComponentLine::new(
+            format!("› [enter] {}", self.primary),
+            TextStyle::accent(),
+        ));
+        for line in &self.secondary_lines {
+            lines.push(ComponentLine::new(line.clone(), TextStyle::muted()));
+        }
+        lines
+    }
+}
+
+/// Restrained entry-only "Code" ASCII brand (F-6). Shared so login/onboarding
+/// do not re-encode snowflake banner tables.
+pub const ENTRY_CODE_BANNER: [&str; 6] = [
+    " ██████              ██",
+    "██                   ██",
+    "██        ████    █████   ████",
+    "██       ██  ██  ██  ██  ██████",
+    "██       ██  ██  ██  ██  ██",
+    " ██████   ████    █████   █████",
+];
+
 /// Rejects a component that would compete with the one obvious next action or
 /// misuse the restrained accent budget.
 pub fn validate_component(component: &impl Component) -> Result<(), String> {

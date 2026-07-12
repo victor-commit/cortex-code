@@ -15,7 +15,9 @@ use crate::{
         SemanticEvent, TransitionTrace,
     },
     chrome::{
-        layout::{ScreenComposition, StatusLine, CANVAS_ROWS},
+        layout::{
+            ScreenComposition, StatusLine, ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP, CANVAS_ROWS,
+        },
         tokens::TextStyle,
     },
     Surface,
@@ -24,8 +26,8 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
-const DOCK_TOP: u16 = 31;
-const DOCK_BOTTOM: u16 = 37;
+const DOCK_TOP: u16 = ACTION_DOCK_TOP;
+const DOCK_BOTTOM: u16 = ACTION_DOCK_BOTTOM;
 const FLOW2_FIXTURE: &str = "flow2.input-and-approval.stable";
 const FLOW2_TASK: &str = "Check the retry path before we merge.";
 /// Continuous pause-window You-line: must match FLOW2_TASK verb/subject
@@ -191,53 +193,33 @@ fn render_diff_edit(
         &format!("    {:>2}  +{}", guard.new_start + 2, guard.new_payload[2]),
         TextStyle::text(),
     )?;
+    // Progressive disclosure: second hunk summarized until staging detail.
     canvas.write(
         20,
         4,
         &format!(
-            "Hunk @@ -{},{} +{},{}",
+            "Second hunk · hunk.retry-test · @@ -{},{} +{},{} · open staging for lines",
             test.old_start, test.old_lines, test.new_start, test.new_lines
         ),
-        TextStyle::text(),
+        TextStyle::muted(),
     )?;
     canvas.write(
-        21,
-        6,
-        &format!(
-            "{}  {:>2}  -{}",
-            test.old_start, test.new_start, test.old_payload[0]
-        ),
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        23,
-        6,
-        &format!("    {:>2}  +{}", test.new_start, test.new_payload[0]),
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        24,
-        6,
-        &format!("    {:>2}  +{}", test.new_start + 1, test.new_payload[1]),
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        26,
+        22,
         4,
         "Why this change: keep retry timing from repeating the same failed window.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        28,
+        24,
         4,
-        "The paused conversation and your draft stay unchanged until you decide.",
+        "Paused conversation and draft stay unchanged until you decide.",
         TextStyle::muted(),
     )?;
     write_dock_border(canvas)?;
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Pending edit · choose one next step",
+        "Pending edit",
         TextStyle::bright(),
     )?;
     dock_line(
@@ -249,21 +231,16 @@ fn render_diff_edit(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "  [a] Apply all · write this exact patch and resume the paused turn",
+        "  [a] Apply all · write this exact patch and resume",
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Cancel · write nothing and return to the paused conversation",
+        "  [esc] Cancel · write nothing",
         TextStyle::text(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "Review is read-only · editing is available inside staging detail",
-        TextStyle::muted(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 5, "", TextStyle::muted())?;
 
     let pairs = [
         semantic(
@@ -298,7 +275,7 @@ fn render_diff_edit(
             fixture_id,
             "hunk",
             "hunk.retry-test",
-            reference(20, 4, 28),
+            reference(20, 4, 78),
             "summary",
             None,
         ),
@@ -307,7 +284,7 @@ fn render_diff_edit(
             fixture_id,
             "rationale",
             "retry-window-jitter",
-            reference(24, 4, 78),
+            reference(22, 4, 78),
             "summary",
             None,
         ),
@@ -329,7 +306,7 @@ fn render_diff_edit(
             fixture_id,
             "secondary-action",
             "action.diff-edit.apply-all",
-            reference(DOCK_TOP + 3, 4, 77),
+            reference(DOCK_TOP + 3, 4, 58),
             "summary",
             Some(action("action.diff-edit.apply-all", "Apply all", false)),
         ),
@@ -338,7 +315,7 @@ fn render_diff_edit(
             fixture_id,
             "cancel-action",
             "action.diff-edit.cancel",
-            reference(DOCK_TOP + 4, 4, 78),
+            reference(DOCK_TOP + 4, 4, 36),
             "summary",
             Some(action("action.diff-edit.cancel", "Cancel", false)),
         ),
@@ -558,26 +535,20 @@ fn render_diff_staging(
         TextStyle::text(),
     )?;
     canvas.write(
-        22,
+        23,
         4,
         if stage.apply_failed {
             "Finish stopped before writing: the patch is stale and no partial change was made."
         } else {
-            "Include or Exclude changes the focused hunk; Include all selects both. No file is written until Finish."
+            "No file is written until Finish."
         },
         TextStyle::muted(),
     )?;
     canvas.write(
         25,
         4,
-        "[i] Include  [x] Exclude  [a] Include all  [e] Edit",
+        "[i] Include  [x] Exclude  [a] Include all  [e] Edit  ·  [enter] Finish  [esc] Cancel",
         TextStyle::bright(),
-    )?;
-    canvas.write(
-        26,
-        4,
-        "[enter] Finish  [esc] Cancel · Return to pending edit",
-        TextStyle::accent(),
     )?;
     let pairs = [
         semantic(
@@ -663,7 +634,7 @@ fn render_diff_staging(
             fixture_id,
             "include-all-action",
             "include-all-hunks",
-            reference(23, 4, 50),
+            reference(25, 4, 42),
             "summary",
             Some(action("action.staging.include-all", "Include all", false)),
         ),
@@ -672,7 +643,7 @@ fn render_diff_staging(
             fixture_id,
             "edit-action",
             "edit-focused-hunk",
-            reference(23, 52, 62),
+            reference(25, 43, 55),
             "summary",
             Some(action("action.staging.edit", "Edit", false)),
         ),
@@ -681,7 +652,7 @@ fn render_diff_staging(
             fixture_id,
             "primary-action",
             "finish-included-hunks",
-            reference(24, 4, 23),
+            reference(25, 58, 77),
             "focused",
             Some(action("action.staging.finish", "Finish", false)),
         ),
@@ -690,7 +661,7 @@ fn render_diff_staging(
             fixture_id,
             "cancel-action",
             "return-pending-edit",
-            reference(24, 25, 60),
+            reference(25, 78, 96),
             "summary",
             Some(action("action.staging.cancel", "Cancel", false)),
         ),
@@ -900,10 +871,11 @@ fn render_permission_shell(
             },
             TextStyle::muted(),
         )?;
+        // Summary-first for short commands: hash evidence waits on expand/detail.
         canvas.write(
             16,
             4,
-            &format!("Execution {page_label} · SHA-256: {hash}"),
+            "Command detail collapsed · [e] Expand command detail",
             TextStyle::muted(),
         )?;
     }
@@ -911,24 +883,12 @@ fn render_permission_shell(
         || (fixture_id.contains("permission-persistent-scope") && !fixture_id.contains("outside"))
         || fixture_id.contains("flow2.input-and-approval.stable")
         || fixture_id.contains("canonical.permission-shell");
-    let persistent_row = if long_command { 20 } else { 19 };
+    let persistent_row = if long_command { 20 } else { 18 };
     if persistent_supported {
         canvas.write(
             persistent_row,
             4,
-            "Persistent scope · matcher: git diff -- src/net/* · duration: this session",
-            TextStyle::muted(),
-        )?;
-        canvas.write(
-            persistent_row + 1,
-            4,
-            "Project root: ~/project · work style: Careful edits",
-            TextStyle::muted(),
-        )?;
-        canvas.write(
-            persistent_row + 2,
-            4,
-            "Child actions: inherit only read-only checks · cap: same project root",
+            "Persistent: this session · matcher git diff -- src/net/* · Careful edits",
             TextStyle::muted(),
         )?;
     } else {
@@ -942,19 +902,13 @@ fn render_permission_shell(
             },
             TextStyle::muted(),
         )?;
-        canvas.write(
-            persistent_row + 1,
-            4,
-            "This request can run once only; no reusable rule will be offered.",
-            TextStyle::muted(),
-        )?;
     }
 
     write_dock_border(canvas)?;
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Permission choices · purpose and effect are shown above",
+        "Permission choices",
         TextStyle::bright(),
     )?;
     dock_line(

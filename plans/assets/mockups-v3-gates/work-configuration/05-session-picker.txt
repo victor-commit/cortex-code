@@ -28,13 +28,13 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Retry policy review                                                                                   │  
-  │ Latest stable work · Tests pass; review is ready                                                                 │  
-  │ ~/project · latest stable work from today · Your saved draft: Add the final review note.                         │  
-  │ › [enter] Resume latest · [t] View timeline                                                                      │  
-  │ [f] Fork instead makes a copy · [esc] Back · [↑↓] Choose                                                         │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Resume · Retry policy review                                                                                     │  
+  │ Latest stable work · saved draft ready                                                                           │  
+  │ › [enter] Resume latest · [t] View timeline                                                                      │  
+  │ [f] Fork instead · [esc] Back · [↑↓] Choose                                                                      │  
+  │                                                                                                                  │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

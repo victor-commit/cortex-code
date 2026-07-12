@@ -8,33 +8,33 @@
      ██████   ████    █████   █████                                                                                     
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
     Set up your first conversation                                                                                      
                                                                                                                         
     Choose the model Code will use when you begin.                                                                      
-                                                                                                                        
-    The recommended model is a safe everyday default.                                                                   
-                                                                                                                        
+    Recommended: Claude Sonnet 4.5 · balanced everyday coding.                                                          
                                                                                                                         
     You can change it later. You do not need to connect an account yet.                                                 
                                                                                                                         
-                                                                                                                        
     How Code should work: Careful edits, which asks before changing files.                                              
                                                                                                                         
-                                                                                                                        
-    Review the safe recommendation below, then continue or choose another model.                                        
+    Continue uses the safe recommendation in the dock.                                                                  
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Recommended starting model                                                                                       │  
-  │ Claude Sonnet 4.5                                                                                                │  
-  │ Balanced speed and depth for everyday coding conversations.                                                      │  
-  │ Works with Careful edits, which asks before changing files.                                                      │  
-  │                                                                                                                  │  
+  │ Claude Sonnet 4.5 · recommended starting model                                                                   │  
   │ › [enter] Continue                                                                                               │  
   │   [s] Skip with this safe default                                                                                │  
   │   [m] Review other models                                                                                        │  
-  │   [esc] Back to the previous setup step                                                                          │  
-  │                                                                                                                  │  
-  │ Continue accepts the recommendation. Skip keeps the same safe default.                                           │  
+  │   [esc] Back                                                                                                     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

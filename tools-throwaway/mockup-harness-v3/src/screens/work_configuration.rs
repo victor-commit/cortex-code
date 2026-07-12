@@ -11,7 +11,8 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        components::ENTRY_CODE_BANNER,
+        layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
 };
@@ -22,16 +23,7 @@ const MODEL: &str = "Claude Sonnet 4.5";
 const FLOW3_SETUP_TASK: &str = "Choose a model and how Code should work.";
 const FLOW3_ONBOARDING_ORIGIN: &str = "Work configuration · onboarding";
 const FLOW3_CURRENT_ORIGIN: &str = "Work configuration · current conversation";
-const DOCK_TOP: u16 = 31;
-const ONBOARDING_DOCK_TOP: u16 = 25;
-const CODE_BANNER: [&str; 6] = [
-    " ██████              ██",
-    "██                   ██",
-    "██        ████    █████   ████",
-    "██       ██  ██  ██  ██  ██████",
-    "██       ██  ██  ██  ██  ██",
-    " ██████   ████    █████   █████",
-];
+const DOCK_TOP: u16 = ACTION_DOCK_TOP;
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -143,95 +135,70 @@ fn render_onboarding(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let gate_origin = is_gate_fixture(fixture_id);
-    for (offset, line) in CODE_BANNER.iter().enumerate() {
+    for (offset, line) in ENTRY_CODE_BANNER.iter().enumerate() {
         canvas.write(2 + offset as u16, 4, line, TextStyle::accent())?;
     }
-    canvas.write(10, 4, "Set up your first conversation", TextStyle::bright())?;
+    // Keep body content tight above the standard bottom dock (rows 20-30).
+    canvas.write(20, 4, "Set up your first conversation", TextStyle::bright())?;
     canvas.write(
-        12,
+        22,
         4,
         "Choose the model Code will use when you begin.",
         TextStyle::text(),
     )?;
     canvas.write(
-        14,
+        23,
         4,
-        "The recommended model is a safe everyday default.",
+        "Recommended: Claude Sonnet 4.5 · balanced everyday coding.",
         TextStyle::text(),
     )?;
     canvas.write(
-        17,
+        25,
         4,
         "You can change it later. You do not need to connect an account yet.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        20,
+        27,
         4,
         "How Code should work: Careful edits, which asks before changing files.",
         TextStyle::text(),
     )?;
     canvas.write(
-        23,
+        29,
         4,
-        "Review the safe recommendation below, then continue or choose another model.",
+        "Continue uses the safe recommendation in the dock.",
         TextStyle::muted(),
     )?;
-    write_onboarding_dock_border(canvas)?;
+    write_dock_border(canvas)?;
     dock_line(
         canvas,
-        ONBOARDING_DOCK_TOP + 1,
-        "Recommended starting model",
+        DOCK_TOP + 1,
+        "Claude Sonnet 4.5 · recommended starting model",
         TextStyle::bright(),
     )?;
     dock_line(
         canvas,
-        ONBOARDING_DOCK_TOP + 2,
-        "Claude Sonnet 4.5",
-        TextStyle::bright(),
-    )?;
-    dock_line(
-        canvas,
-        ONBOARDING_DOCK_TOP + 3,
-        "Balanced speed and depth for everyday coding conversations.",
-        TextStyle::text(),
-    )?;
-    dock_line(
-        canvas,
-        ONBOARDING_DOCK_TOP + 4,
-        "Works with Careful edits, which asks before changing files.",
-        TextStyle::muted(),
-    )?;
-    dock_line(canvas, ONBOARDING_DOCK_TOP + 5, "", TextStyle::text())?;
-    dock_line(
-        canvas,
-        ONBOARDING_DOCK_TOP + 6,
+        DOCK_TOP + 2,
         "› [enter] Continue",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
-        ONBOARDING_DOCK_TOP + 7,
+        DOCK_TOP + 3,
         "  [s] Skip with this safe default",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
-        ONBOARDING_DOCK_TOP + 8,
+        DOCK_TOP + 4,
         "  [m] Review other models",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
-        ONBOARDING_DOCK_TOP + 9,
-        "  [esc] Back to the previous setup step",
-        TextStyle::muted(),
-    )?;
-    dock_line(canvas, ONBOARDING_DOCK_TOP + 10, "", TextStyle::text())?;
-    dock_line(
-        canvas,
-        ONBOARDING_DOCK_TOP + 11,
-        "Continue accepts the recommendation. Skip keeps the same safe default.",
+        DOCK_TOP + 5,
+        "  [esc] Back",
         TextStyle::muted(),
     )?;
 
@@ -250,7 +217,7 @@ fn render_onboarding(
             fixture_id,
             "surface",
             "onboarding-action-dock",
-            reference(10, 4, 34),
+            reference(20, 4, 34),
             "summary",
             None,
         ),
@@ -259,7 +226,7 @@ fn render_onboarding(
             fixture_id,
             "decision",
             "first-model-choice",
-            reference(12, 4, 53),
+            reference(22, 4, 53),
             "focused",
             None,
         ),
@@ -268,7 +235,7 @@ fn render_onboarding(
             fixture_id,
             "default",
             "recommended-claude-sonnet-4-5",
-            reference(ONBOARDING_DOCK_TOP + 1, 4, 30),
+            reference(DOCK_TOP + 1, 4, 48),
             "focused",
             None,
         ),
@@ -277,7 +244,7 @@ fn render_onboarding(
             fixture_id,
             "consequence",
             "balanced-speed-and-depth",
-            reference(ONBOARDING_DOCK_TOP + 3, 4, 63),
+            reference(23, 4, 64),
             "focused",
             None,
         ),
@@ -286,7 +253,7 @@ fn render_onboarding(
             fixture_id,
             "work-style",
             "work_style",
-            reference(20, 4, 73),
+            reference(27, 4, 73),
             "summary",
             None,
         ),
@@ -299,7 +266,7 @@ fn render_onboarding(
             } else {
                 "action.onboarding.apply-default"
             },
-            reference(ONBOARDING_DOCK_TOP + 6, 4, 24),
+            reference(DOCK_TOP + 2, 4, 24),
             "focused",
             Some(action(
                 if gate_origin {
@@ -316,7 +283,7 @@ fn render_onboarding(
             fixture_id,
             "secondary-action",
             "action.onboarding.skip",
-            reference(ONBOARDING_DOCK_TOP + 7, 4, 37),
+            reference(DOCK_TOP + 3, 4, 37),
             "summary",
             Some(action(
                 "action.onboarding.skip",
@@ -329,7 +296,7 @@ fn render_onboarding(
             fixture_id,
             "secondary-action",
             "action.onboarding.other-models",
-            reference(ONBOARDING_DOCK_TOP + 8, 4, 29),
+            reference(DOCK_TOP + 4, 4, 29),
             "summary",
             Some(action(
                 "action.onboarding.other-models",
@@ -342,7 +309,7 @@ fn render_onboarding(
             fixture_id,
             "cancel-action",
             "action.onboarding.back",
-            reference(ONBOARDING_DOCK_TOP + 9, 4, 43),
+            reference(DOCK_TOP + 5, 4, 16),
             "summary",
             Some(action("action.onboarding.back", "Back", false)),
         ),
@@ -1345,22 +1312,6 @@ fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {
     )?;
     canvas.write(
         DOCK_TOP + 6,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    Ok(())
-}
-
-fn write_onboarding_dock_border(canvas: &mut Canvas) -> Result<(), String> {
-    canvas.write(
-        ONBOARDING_DOCK_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        ONBOARDING_DOCK_TOP + 12,
         2,
         &format!("╰{}╯", "─".repeat(114)),
         TextStyle::muted(),

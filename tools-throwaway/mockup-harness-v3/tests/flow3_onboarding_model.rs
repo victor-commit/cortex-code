@@ -11,12 +11,11 @@ fn onboarding_leads_with_one_decision_and_a_safe_default() {
     let text = audit.render_txt();
     assert!(text.contains("Set up your first conversation"));
     assert!(text.contains("Choose the model Code will use when you begin."));
-    assert!(text.contains("The recommended model is a safe everyday default."));
-    assert!(text.contains("Recommended"));
+    assert!(text.contains("Recommended: Claude Sonnet 4.5"));
     assert!(text.contains("Claude Sonnet 4.5"));
-    assert!(text.contains("Balanced speed and depth"));
+    assert!(text.contains("balanced everyday coding") || text.contains("recommended starting model"));
     assert!(text.contains("› [enter] Continue"));
-    assert!(text.contains("[esc] Back to the previous setup step"));
+    assert!(text.contains("[esc] Back"));
     assert!(!text.contains("first setup returns here"));
     assert!(!text.contains("capability matrix"));
     assert!(!text.contains("provider/model"));

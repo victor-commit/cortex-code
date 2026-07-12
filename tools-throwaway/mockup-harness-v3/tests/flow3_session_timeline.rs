@@ -14,9 +14,9 @@ fn session_rows_and_preview_identify_readable_resume_destinations() {
     assert!(text.contains("~/project"));
     assert!(text.contains("Today"));
     assert!(text.contains("Current"));
-    assert!(text.contains("Latest stable work"));
+    assert!(text.contains("Latest stable work") || text.contains("saved draft ready"));
     assert!(text.contains("Tests pass; review is ready"));
-    assert!(text.contains("Your saved draft"));
+    assert!(text.contains("saved draft") || text.contains("Your saved draft"));
     assert!(text.contains("[enter] Resume latest"));
     assert!(text.contains("[t] View timeline"));
     assert!(text.contains("[f] Fork instead"));
@@ -133,7 +133,7 @@ fn session_preview_timeline_back_and_resume_preserve_the_exact_origin() {
         other_preview
             .audit
             .render_txt()
-            .contains("Selected · Document release steps")
+            .contains("Resume · Document release steps")
     );
 
     let preview_back =

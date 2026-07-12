@@ -299,6 +299,33 @@ impl StatusLine {
     }
 }
 
+/// Standard bottom action-dock band shared by pilot frames.
+/// Matches `SurfaceLayout::for_surface(ActionDock).action_dock()`: y=31 height=7.
+pub const ACTION_DOCK_TOP: u16 = 31;
+pub const ACTION_DOCK_BOTTOM: u16 = 37;
+pub const ACTION_DOCK_INNER_ROWS: u16 = 5;
+
+/// Geometry for the shared bottom action dock chrome (not a floating card).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActionDockGeometry {
+    pub top: u16,
+    pub bottom: u16,
+    pub inner_rows: u16,
+}
+
+/// Returns the fixed bottom dock band used by shared chrome helpers.
+pub const fn action_dock_geometry() -> ActionDockGeometry {
+    ActionDockGeometry {
+        top: ACTION_DOCK_TOP,
+        bottom: ACTION_DOCK_BOTTOM,
+        inner_rows: ACTION_DOCK_INNER_ROWS,
+    }
+}
+
+/// Hard ceiling for nonempty content lines on progressive-disclosure first frames.
+/// Higher is allowed only for temporary detail views that deliberately show evidence.
+pub const FIRST_FRAME_NONEMPTY_SOFT_CAP: usize = 22;
+
 /// A renderer-facing declaration that binds each composed screen to one of the
 /// four central arrangements and the one shared statusline policy.
 #[derive(Clone, Debug, Eq, PartialEq)]

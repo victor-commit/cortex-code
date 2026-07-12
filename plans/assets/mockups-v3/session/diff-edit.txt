@@ -18,23 +18,23 @@
           43  +    backoff = backoff + jitter                                                                           
           44  +    log_retry_window(jitter)                                                                             
                                                                                                                         
-    Hunk @@ -88,2 +89,2                                                                                                 
-      88  89  -assert_eq!(wait, 4)                                                                                      
-                                                                                                                        
-          89  +assert_eq!(wait, 5)                                                                                      
-          90  +assert_eq!(attempts, 1)                                                                                  
+    Second hunk · hunk.retry-test · @@ -88,2 +89,2 · open staging for lines                                             
                                                                                                                         
     Why this change: keep retry timing from repeating the same failed window.                                           
                                                                                                                         
-    The paused conversation and your draft stay unchanged until you decide.                                             
+    Paused conversation and draft stay unchanged until you decide.                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Pending edit · choose one next step                                                                              │  
+  │ Pending edit                                                                                                     │  
   │ › [enter] Review changes · open read-only staging detail                                                         │  
-  │   [a] Apply all · write this exact patch and resume the paused turn                                              │  
-  │   [esc] Cancel · write nothing and return to the paused conversation                                             │  
-  │ Review is read-only · editing is available inside staging detail                                                 │  
+  │   [a] Apply all · write this exact patch and resume                                                              │  
+  │   [esc] Cancel · write nothing                                                                                   │  
+  │                                                                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    
