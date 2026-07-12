@@ -5314,10 +5314,10 @@ fn model_to_work_style_bridge() -> (
         "autonomous-changes",
         "work-style-selection",
         Some("pending.work-style.autonomous"),
-        "return-to-onboarding",
+        "return-to-configuration",
         1,
     );
-    apply_flow3_onboarding_identity(&mut after);
+    apply_flow3_current_identity(&mut after);
     let action = ActionEvidence {
         action_id: "action.storyboard.open-work-style-after-model".to_owned(),
         label: "Review how Code should work".to_owned(),
@@ -5329,7 +5329,7 @@ fn model_to_work_style_bridge() -> (
         from_screen_id: before.screen_id.clone(),
         to_screen_id: after.screen_id.clone(),
         kind: "illustrative_detour".to_owned(),
-        path: "after the model applies and returns to onboarding, the explicit next configuration action opens How Code should work"
+        path: "after the model applies and returns to onboarding, the explicit next configuration action opens How Code should work for the current conversation chapter"
             .to_owned(),
     };
     let attempt = AttemptEvidence {
@@ -5558,11 +5558,11 @@ fn work_style_access_cancel() -> (
         "autonomous-changes",
         "access-confirmation",
         Some("pending.work-style.autonomous"),
-        "return-to-onboarding",
+        "return-to-configuration",
         0,
     );
     before.pending_work_style = Some("Autonomous changes".to_owned());
-    apply_flow3_onboarding_identity(&mut before);
+    apply_flow3_current_identity(&mut before);
     before.state_hash = state_hash(&before);
     let mut after = before.clone();
     after.screen_id = "agent-picker".to_owned();
@@ -5584,7 +5584,7 @@ fn work_style_access_cancel() -> (
         to_screen_id: after.screen_id.clone(),
         kind: "cancel".to_owned(),
         path:
-            "cancel discards the pending access change and returns to the work-style choice with Careful edits still applied while preserving the onboarding origin"
+            "cancel discards the pending access change and returns to the work-style choice with Careful edits still applied while preserving the current conversation origin"
                 .to_owned(),
     };
     let attempt = AttemptEvidence {
@@ -5787,21 +5787,21 @@ fn mode_switch_to_session_bridge() -> (
         "autonomous-changes",
         "access-confirmation",
         Some("pending.work-style.autonomous"),
-        "return-to-onboarding",
+        "return-to-configuration",
         0,
     );
     before.pending_work_style = Some("Autonomous changes".to_owned());
-    apply_flow3_onboarding_identity(&mut before);
+    apply_flow3_current_identity(&mut before);
     before.state_hash = state_hash(&before);
     let mut after = session_state(
         "session-picker",
         "all",
         "saved-conversations",
         Some("pending.session-picker"),
-        "return-to-onboarding",
+        "return-to-configuration",
         1,
     );
-    apply_flow3_onboarding_identity(&mut after);
+    apply_flow3_resume_identity(&mut after);
     after.origin_stack = before.origin_stack.clone();
     after.state_hash = state_hash(&after);
     let action = ActionEvidence {
@@ -5815,7 +5815,7 @@ fn mode_switch_to_session_bridge() -> (
         from_screen_id: before.screen_id.clone(),
         to_screen_id: after.screen_id.clone(),
         kind: "illustrative_detour".to_owned(),
-        path: "after the confirmed work style returns to onboarding, the explicit session action opens saved conversations"
+        path: "after the confirmed work style returns to configuration, the explicit session action opens saved conversations for the current conversation chapter"
             .to_owned(),
     };
     let attempt = AttemptEvidence {
@@ -6266,9 +6266,9 @@ fn session_state(
 ) -> ScenarioState {
     let mut state = state(
         screen_id,
-        vec!["onboarding", "session-picker"],
+        vec!["configuration", "session-picker"],
         "Continue the current draft while choosing a saved conversation.",
-        "first-run",
+        "resume-list",
         selection,
         if screen_id == "timeline" {
             "timeline-point"
@@ -6283,7 +6283,7 @@ fn session_state(
     state.queued_follow_up = format!("session-filter={filter}");
     state.work_style = "Careful edits".to_owned();
     state.access_scope = "asks before editing project files".to_owned();
-    apply_flow3_onboarding_identity(&mut state);
+    apply_flow3_resume_identity(&mut state);
     state.state_hash = state_hash(&state);
     state
 }
@@ -7868,6 +7868,26 @@ fn apply_flow3_onboarding_identity(state: &mut ScenarioState) {
     state.turn_id = "turn.configuration.1".to_owned();
     state.user_task = "Choose a model and how Code should work.".to_owned();
     state.visible_origin = "Work configuration · onboarding".to_owned();
+    state.state_hash = state_hash(state);
+}
+
+fn apply_flow3_current_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.configuration".to_owned();
+    state.transcript_id = "transcript.configuration".to_owned();
+    state.session_id = "session.configuration.1".to_owned();
+    state.turn_id = "turn.configuration.1".to_owned();
+    state.user_task = "Choose a model and how Code should work.".to_owned();
+    state.visible_origin = "Work configuration · current conversation".to_owned();
+    state.state_hash = state_hash(state);
+}
+
+fn apply_flow3_resume_identity(state: &mut ScenarioState) {
+    state.conversation_id = "conversation.configuration".to_owned();
+    state.transcript_id = "transcript.configuration".to_owned();
+    state.session_id = "session.configuration.1".to_owned();
+    state.turn_id = "turn.configuration.1".to_owned();
+    state.user_task = "Resume a conversation or inspect its history.".to_owned();
+    state.visible_origin = "Work configuration · current conversation".to_owned();
     state.state_hash = state_hash(state);
 }
 

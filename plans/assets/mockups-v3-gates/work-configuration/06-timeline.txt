@@ -1,10 +1,10 @@
                                                                                                                         
                                                                                                                         
-    Work configuration · onboarding                                                                                     
+    Work configuration · current conversation                                                                           
                                                                                                                         
     Retry policy review · Session history · Oldest first                                                                
                                                                                                                         
-    Choose a model and how Code should work.                                                                            
+    Resume a conversation or inspect its history.                                                                       
                                                                                                                         
                                                                                                                         
     Today, 09:14                                                                                                        

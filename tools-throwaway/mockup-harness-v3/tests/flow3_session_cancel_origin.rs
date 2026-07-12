@@ -9,9 +9,18 @@ fn work_configuration_step(screen_id: &str) -> &'static mockup_harness_v3::FlowS
 }
 
 #[test]
-fn published_session_frames_render_the_manifest_onboarding_origin() {
+fn published_session_frames_render_the_manifest_current_conversation_origin() {
     for screen_id in ["session-picker", "timeline"] {
         let step = work_configuration_step(screen_id);
+        assert_eq!(
+            step.visible_origin,
+            "Work configuration · current conversation"
+        );
+        assert_eq!(
+            step.user_task,
+            "Resume a conversation or inspect its history."
+        );
+
         let audit =
             audit_screen(screen_id, step.fixture_id).expect("published session frame must render");
         audit
@@ -20,17 +29,29 @@ fn published_session_frames_render_the_manifest_onboarding_origin() {
         let text = audit.render_txt();
         assert!(
             text.contains(step.visible_origin),
-            "{screen_id} must show its declared origin"
+            "{screen_id} must show its declared current-conversation origin"
+        );
+        assert!(
+            text.contains(step.user_task),
+            "{screen_id} must show the resume/history task"
+        );
+        assert!(
+            !text.contains("Work configuration · onboarding"),
+            "{screen_id} must not brand mature resume as first-run onboarding"
+        );
+        assert!(
+            !text.contains("Choose a model and how Code should work."),
+            "{screen_id} must not restate first-setup task copy"
         );
         assert!(
             !text.contains("Continue the paused conversation."),
-            "{screen_id} must not replace onboarding with a chat origin"
+            "{screen_id} must not replace configuration with a chat You-line for the gate chapter"
         );
         assert!(
             audit
                 .to_json()
-                .contains("\"visible_origin\":\"Work configuration · onboarding\""),
-            "{screen_id} audit must expose the declared origin"
+                .contains("\"visible_origin\":\"Work configuration · current conversation\""),
+            "{screen_id} audit must expose the chapter-true origin"
         );
         if screen_id == "session-picker" {
             assert!(audit.transitions.iter().any(|transition| {
@@ -46,6 +67,10 @@ fn published_session_frames_render_the_manifest_onboarding_origin() {
 fn mode_switch_cancel_metadata_matches_the_rendered_action_and_origin() {
     let step = work_configuration_step("mode-switch");
     assert_eq!(step.cancel_return, "agent-picker");
+    assert_eq!(
+        step.visible_origin,
+        "Work configuration · current conversation"
+    );
 
     let audit = audit_screen("mode-switch", step.fixture_id)
         .expect("published mode-switch frame must render");
@@ -53,6 +78,7 @@ fn mode_switch_cancel_metadata_matches_the_rendered_action_and_origin() {
         .validate()
         .expect("published mode-switch frame must validate");
     assert!(audit.render_txt().contains(step.visible_origin));
+    assert!(!audit.render_txt().contains("Work configuration · onboarding"));
     let cancel = audit
         .events
         .iter()
@@ -67,7 +93,6 @@ fn mode_switch_cancel_metadata_matches_the_rendered_action_and_origin() {
     assert_eq!(cancel.label, "Keep Careful edits");
     assert_eq!(cancel_transition.kind, "cancel");
     assert_eq!(cancel_transition.to_screen_id, step.cancel_return);
-    assert!(cancel_transition.path.contains("onboarding"));
 
     let replay = replay_case("work-style-access-cancel", 1)
         .expect("mode-switch cancel must be publicly replayable");
@@ -81,7 +106,7 @@ fn mode_switch_cancel_metadata_matches_the_rendered_action_and_origin() {
 }
 
 #[test]
-fn onboarding_origin_replays_survive_preview_timeline_back_and_resume() {
+fn current_conversation_origin_replays_survive_preview_timeline_back_and_resume() {
     for case_id in [
         "session-preview-open",
         "session-preview-back",
@@ -92,34 +117,39 @@ fn onboarding_origin_replays_survive_preview_timeline_back_and_resume() {
         let replay = replay_case(case_id, 1).expect("session origin replay must be public");
         assert_eq!(
             replay.before.visible_origin,
-            "Work configuration · onboarding"
+            "Work configuration · current conversation"
         );
         assert_eq!(
             replay.after.visible_origin,
-            "Work configuration · onboarding"
+            "Work configuration · current conversation"
+        );
+        assert_eq!(
+            replay.before.user_task,
+            "Resume a conversation or inspect its history."
         );
         assert_eq!(replay.before.origin_stack, replay.after.origin_stack);
         assert!(
             replay
                 .before
                 .origin_stack
-                .starts_with(&["onboarding".to_owned(), "session-picker".to_owned()])
+                .starts_with(&["configuration".to_owned(), "session-picker".to_owned()])
         );
         if case_id != "session-resume-latest" {
             assert_eq!(replay.before.draft, replay.after.draft);
             assert_eq!(replay.before.scroll_anchor, replay.after.scroll_anchor);
         }
-        assert!(
-            replay
-                .audit
-                .to_json()
-                .contains("\"visible_origin\":\"Work configuration · onboarding\"")
+        // Case fixtures are chat-return/detail surfaces; origin continuity lives on the
+        // scenario before/after state rather than gate branch ConversationIdentity.
+        assert_eq!(
+            replay.preserved_field_hashes["visible_origin"].before,
+            replay.preserved_field_hashes["visible_origin"].after
         );
+        assert!(!replay.audit.render_txt().contains("Work configuration · onboarding"));
     }
 }
 
 #[test]
-fn session_picker_and_timeline_fork_actions_keep_the_onboarding_origin() {
+fn session_picker_and_timeline_fork_actions_keep_the_current_conversation_origin() {
     for (screen_id, action_id, target) in [
         (
             "session-picker",
@@ -150,5 +180,6 @@ fn session_picker_and_timeline_fork_actions_keep_the_onboarding_origin() {
         assert_eq!(transition.to_screen_id, target);
         assert_eq!(transition.kind, "direct");
         assert!(audit.render_txt().contains(step.visible_origin));
+        assert!(!audit.render_txt().contains("Work configuration · onboarding"));
     }
 }

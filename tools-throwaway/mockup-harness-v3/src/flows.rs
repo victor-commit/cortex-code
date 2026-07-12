@@ -687,7 +687,9 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                         } else {
                             turn_id
                         };
-                        step.user_task = if manifest.name == "provider-and-mcp-connection"
+                        step.user_task = if manifest.name == "work-configuration" {
+                            flow3_user_task(step.screen_id)
+                        } else if manifest.name == "provider-and-mcp-connection"
                             && step.screen_id == "mcp"
                         {
                             "Fix the capabilities this conversation needs."
@@ -695,7 +697,7 @@ pub fn flow_manifests() -> &'static [FlowManifest] {
                             user_task
                         };
                         step.visible_origin = if manifest.name == "work-configuration" {
-                            "Work configuration · onboarding"
+                            flow3_visible_origin(step.screen_id)
                         } else if manifest.name == "provider-and-mcp-connection"
                             && step.screen_id == "mcp"
                         {
@@ -863,7 +865,8 @@ pub fn validate_flow_manifests(
             }
             if manifest.name == "work-configuration"
                 && (step.fixture_id != flow3_fixture(step.screen_id)
-                    || step.visible_origin != "Work configuration · onboarding"
+                    || step.visible_origin != flow3_visible_origin(step.screen_id)
+                    || step.user_task != flow3_user_task(step.screen_id)
                     || !WORK_CONFIGURATION_FIELDS
                         .iter()
                         .all(|field| step.preservation_fields.contains(field)))
@@ -1070,6 +1073,31 @@ fn flow3_fixture(screen_id: &str) -> &'static str {
         "mode-switch" => "gate.work-configuration.mode-switch",
         "session-picker" => "gate.work-configuration.session-picker",
         "timeline" => "gate.work-configuration.timeline",
+        _ => unreachable!("work-configuration contains only its six canonical frames"),
+    }
+}
+
+/// Early first-setup chapter keeps the onboarding origin. Later work-style and
+/// session/history chapters use the storyboard contract origin instead of locking
+/// every step to first-run onboarding copy.
+fn flow3_visible_origin(screen_id: &str) -> &'static str {
+    match screen_id {
+        "onboarding" | "model-picker" => "Work configuration · onboarding",
+        "agent-picker" | "mode-switch" | "session-picker" | "timeline" => {
+            "Work configuration · current conversation"
+        }
+        _ => unreachable!("work-configuration contains only its six canonical frames"),
+    }
+}
+
+/// Session resume / timeline frames use a resume-facing task. Earlier setup
+/// frames keep the first configuration decision.
+fn flow3_user_task(screen_id: &str) -> &'static str {
+    match screen_id {
+        "session-picker" | "timeline" => "Resume a conversation or inspect its history.",
+        "onboarding" | "model-picker" | "agent-picker" | "mode-switch" => {
+            "Choose a model and how Code should work."
+        }
         _ => unreachable!("work-configuration contains only its six canonical frames"),
     }
 }

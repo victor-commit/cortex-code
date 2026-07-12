@@ -19,8 +19,9 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Sonnet 4.5";
-const FLOW3_TASK: &str = "Choose a model and how Code should work.";
-const FLOW3_ORIGIN: &str = "Work configuration · onboarding";
+const FLOW3_SETUP_TASK: &str = "Choose a model and how Code should work.";
+const FLOW3_ONBOARDING_ORIGIN: &str = "Work configuration · onboarding";
+const FLOW3_CURRENT_ORIGIN: &str = "Work configuration · current conversation";
 const DOCK_TOP: u16 = 31;
 const ONBOARDING_DOCK_TOP: u16 = 25;
 const CODE_BANNER: [&str; 6] = [
@@ -126,8 +127,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 transcript_id: "transcript.configuration".to_owned(),
                 session_id: "session.configuration.1".to_owned(),
                 turn_id: "turn.configuration.1".to_owned(),
-                user_task: FLOW3_TASK.to_owned(),
-                visible_origin: FLOW3_ORIGIN.to_owned(),
+                user_task: FLOW3_SETUP_TASK.to_owned(),
+                visible_origin: FLOW3_CURRENT_ORIGIN.to_owned(),
                 submitted_prompt: None,
                 paused_activity_id: None,
                 later_draft: None,
@@ -408,9 +409,9 @@ fn render_model_picker(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let blocked = fixture_id.contains("blocked");
-    let gate_origin = is_onboarding_origin(fixture_id);
-    if gate_origin {
-        canvas.write(3, 4, "Work configuration · onboarding", TextStyle::muted())?;
+    let onboarding_chapter = is_onboarding_origin(fixture_id);
+    if onboarding_chapter {
+        canvas.write(3, 4, FLOW3_ONBOARDING_ORIGIN, TextStyle::muted())?;
         canvas.write(
             4,
             4,
@@ -618,7 +619,7 @@ fn render_model_picker(
     ];
     let target = if blocked {
         "connect-provider"
-    } else if gate_origin {
+    } else if onboarding_chapter {
         "onboarding"
     } else {
         "chat-turn"
@@ -646,7 +647,7 @@ fn render_model_picker(
                 "direct",
                 if blocked {
                     "the unavailable model opens provider connection without losing the conversation or draft"
-                } else if gate_origin {
+                } else if onboarding_chapter {
                     "the selected model applies once and returns to the onboarding configuration hub"
                 } else {
                     "the selected model applies once and returns to the exact conversation origin"
@@ -655,13 +656,13 @@ fn render_model_picker(
             transition(
                 "action.model-picker.cancel",
                 "model-picker",
-                if gate_origin {
+                if onboarding_chapter {
                     "onboarding"
                 } else {
                     "chat-turn"
                 },
                 "cancel",
-                if gate_origin {
+                if onboarding_chapter {
                     "cancel discards the pending model and restores the onboarding configuration hub"
                 } else {
                     "cancel discards the pending model and restores the exact conversation origin"
@@ -694,7 +695,7 @@ fn render_agent_picker(
         "Autonomous changes"
     };
     if gate_origin {
-        canvas.write(3, 4, FLOW3_ORIGIN, TextStyle::muted())?;
+        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
         canvas.write(
             4,
             4,
@@ -983,10 +984,10 @@ fn render_mode_switch(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    let onboarding_origin = is_gate_fixture(fixture_id);
-    if onboarding_origin {
-        canvas.write(3, 4, FLOW3_ORIGIN, TextStyle::muted())?;
-        canvas.write(4, 4, FLOW3_TASK, TextStyle::bright())?;
+    let gate_origin = is_gate_fixture(fixture_id);
+    if gate_origin {
+        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        canvas.write(4, 4, FLOW3_SETUP_TASK, TextStyle::bright())?;
     } else {
         canvas.write(
             4,
@@ -1157,8 +1158,8 @@ fn render_mode_switch(
                 "mode-switch",
                 "agent-picker",
                 "cancel",
-                if onboarding_origin {
-                    "cancel leaves Careful edits and its current access active, then returns to the work-style choice while preserving the onboarding origin"
+                if gate_origin {
+                    "cancel leaves Careful edits and its current access active, then returns to the work-style choice while preserving the current conversation origin"
                 } else {
                     "cancel leaves Careful edits and its current access active, then returns to the work-style choice"
                 },

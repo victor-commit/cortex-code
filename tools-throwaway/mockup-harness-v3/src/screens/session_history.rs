@@ -20,8 +20,8 @@ const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Sonnet 4.5";
 const DOCK_TOP: u16 = 30;
-const FLOW3_TASK: &str = "Choose a model and how Code should work.";
-const FLOW3_ORIGIN: &str = "Work configuration · onboarding";
+const FLOW3_RESUME_TASK: &str = "Resume a conversation or inspect its history.";
+const FLOW3_CURRENT_ORIGIN: &str = "Work configuration · current conversation";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -62,8 +62,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             transcript_id: "transcript.configuration".to_owned(),
             session_id: "session.configuration.1".to_owned(),
             turn_id: "turn.configuration.1".to_owned(),
-            user_task: FLOW3_TASK.to_owned(),
-            visible_origin: FLOW3_ORIGIN.to_owned(),
+            user_task: FLOW3_RESUME_TASK.to_owned(),
+            visible_origin: FLOW3_CURRENT_ORIGIN.to_owned(),
             submitted_prompt: None,
             paused_activity_id: None,
             later_draft: None,
@@ -87,8 +87,8 @@ fn render_session_picker(
     let docs_selected = fixture_id.contains("selected-docs");
     let selected_index = usize::from(docs_selected);
     if gate_origin {
-        canvas.write(3, 4, FLOW3_ORIGIN, TextStyle::muted())?;
-        canvas.write(4, 4, FLOW3_TASK, TextStyle::bright())?;
+        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        canvas.write(4, 4, FLOW3_RESUME_TASK, TextStyle::bright())?;
     } else {
         canvas.write(
             3,
@@ -364,7 +364,7 @@ fn render_session_picker(
                 },
                 "cancel",
                 if gate_origin {
-                    "back restores the onboarding configuration hub without applying a session"
+                    "back restores the configuration hub without applying a session and without claiming first-run onboarding"
                 } else {
                     "back restores the exact conversation origin, draft, focus, and reading position"
                 },
@@ -655,14 +655,14 @@ fn render_timeline(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     if is_gate_fixture(fixture_id) {
-        canvas.write(2, 4, FLOW3_ORIGIN, TextStyle::muted())?;
+        canvas.write(2, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
         canvas.write(
             4,
             4,
             "Retry policy review · Session history · Oldest first",
             TextStyle::bright(),
         )?;
-        canvas.write(6, 4, FLOW3_TASK, TextStyle::text())?;
+        canvas.write(6, 4, FLOW3_RESUME_TASK, TextStyle::text())?;
     } else {
         canvas.write(2, 4, "Retry policy review", TextStyle::bright())?;
         canvas.write(

@@ -33,8 +33,8 @@ Then explain the failure path that still needs coverage before the merge; includ
 Keep the summary short before we merge.";
 const FLOW2_LATER_DRAFT: &str = "Add a short note about the remaining test hunk.";
 const FLOW2_ACTIVITY_ID: &str = "activity.retry-policy-edit.18";
-const FLOW3_TASK: &str = "Choose a model and how Code should work.";
-const FLOW3_ORIGIN: &str = "Work configuration · onboarding";
+const FLOW3_RESUME_TASK: &str = "Resume a conversation or inspect its history.";
+const FLOW3_CURRENT_ORIGIN: &str = "Work configuration · current conversation";
 const FLOW5_TASK: &str = "Finish the release notes without losing the current work.";
 const FLOW5_ORIGIN: &str = "Recovery · paused conversation";
 const FLOW5_USER_PROMPT: &str =
@@ -74,7 +74,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (visible_origin, user_task) = if flow2_storyboard {
         (FLOW2_ORIGIN, FLOW2_TASK)
     } else if flow3_session_return {
-        (FLOW3_ORIGIN, FLOW3_TASK)
+        (FLOW3_CURRENT_ORIGIN, FLOW3_RESUME_TASK)
     } else if flow5_recovery {
         (FLOW5_ORIGIN, FLOW5_TASK)
     } else if flow6_mission_return {
@@ -167,8 +167,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 transcript_id: "transcript.configuration".to_owned(),
                 session_id: "session.retry-policy-review".to_owned(),
                 turn_id: "turn.configuration.1".to_owned(),
-                user_task: FLOW3_TASK.to_owned(),
-                visible_origin: FLOW3_ORIGIN.to_owned(),
+                user_task: FLOW3_RESUME_TASK.to_owned(),
+                visible_origin: FLOW3_CURRENT_ORIGIN.to_owned(),
                 submitted_prompt: None,
                 paused_activity_id: Some("activity.retry-policy-review.latest".to_owned()),
                 later_draft: Some("Add the final review note.".to_owned()),

@@ -1,8 +1,8 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Work configuration · onboarding                                                                                     
-    Choose a model and how Code should work.                                                                            
+    Work configuration · current conversation                                                                           
+    Resume a conversation or inspect its history.                                                                       
                                                                                                                         
     Resume a conversation                                                                                               
                                                                                                                         

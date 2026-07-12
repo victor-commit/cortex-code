@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Work configuration · onboarding                                                                                     
+    Work configuration · current conversation                                                                           
     Choose a model and how Code should work.                                                                            
                                                                                                                         
                                                                                                                         

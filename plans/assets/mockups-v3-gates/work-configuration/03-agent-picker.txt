@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Work configuration · onboarding                                                                                     
+    Work configuration · current conversation                                                                           
     Choose how Code should work for this conversation.                                                                  
                                                                                                                         
                                                                                                                         

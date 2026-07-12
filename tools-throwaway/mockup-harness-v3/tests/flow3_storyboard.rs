@@ -156,6 +156,115 @@ fn published_onboarding_and_model_frames_bind_the_declared_origin_and_continuati
 }
 
 #[test]
+fn work_configuration_chapters_use_chapter_true_origin_and_task() {
+    let flow = work_configuration();
+    let expected = [
+        (
+            "onboarding",
+            "Work configuration · onboarding",
+            "Choose a model and how Code should work.",
+            true,
+        ),
+        (
+            "model-picker",
+            "Work configuration · onboarding",
+            "Choose a model and how Code should work.",
+            true,
+        ),
+        (
+            "agent-picker",
+            "Work configuration · current conversation",
+            "Choose a model and how Code should work.",
+            true,
+        ),
+        (
+            "mode-switch",
+            "Work configuration · current conversation",
+            "Choose a model and how Code should work.",
+            true,
+        ),
+        (
+            "session-picker",
+            "Work configuration · current conversation",
+            "Resume a conversation or inspect its history.",
+            false,
+        ),
+        (
+            "timeline",
+            "Work configuration · current conversation",
+            "Resume a conversation or inspect its history.",
+            false,
+        ),
+    ];
+
+    assert_eq!(flow.steps.len(), expected.len());
+    for (step, (screen_id, origin, task, keep_setup_task)) in flow.steps.iter().zip(expected) {
+        assert_eq!(step.screen_id, screen_id);
+        assert_eq!(step.visible_origin, origin);
+        assert_eq!(step.user_task, task);
+        assert!(
+            step.preservation_fields.contains(&"visible_origin"),
+            "{screen_id} must preserve visible_origin"
+        );
+
+        let audit = audit_screen(step.screen_id, step.fixture_id)
+            .unwrap_or_else(|error| panic!("{screen_id} must render: {error}"));
+        let text = audit.render_txt();
+        if screen_id == "onboarding" {
+            // Entry brand screen: journey chip is omitted in favor of the ASCII entry brand.
+            assert!(text.contains("Set up your first conversation"));
+            assert!(!text.contains("Work configuration · current conversation"));
+        } else {
+            assert!(
+                text.contains(origin),
+                "{screen_id} must render chapter-true origin `{origin}`"
+            );
+        }
+        if matches!(
+            screen_id,
+            "agent-picker" | "mode-switch" | "session-picker" | "timeline"
+        ) {
+            assert!(
+                !text.contains("Work configuration · onboarding"),
+                "{screen_id} must not brand a mature chapter as onboarding"
+            );
+        }
+        if !keep_setup_task {
+            assert!(
+                text.contains(task),
+                "{screen_id} must use resume-facing task language"
+            );
+            assert!(
+                !text.contains("Choose a model and how Code should work."),
+                "{screen_id} must not claim the first-setup task while resuming sessions"
+            );
+        } else if matches!(screen_id, "agent-picker" | "mode-switch") {
+            assert!(
+                text.contains(task)
+                    || text.contains("Choose how Code should work for this conversation.")
+                    || text.contains("Review a work-style change"),
+                "{screen_id} setup chapter must keep first-setup configuration language"
+            );
+        }
+
+        if let Some(conversation) = audit.conversation.as_ref() {
+            assert_eq!(conversation.visible_origin, origin);
+            assert_eq!(conversation.user_task, task);
+        }
+    }
+
+    // storyboard_identity contract for the journey root is current conversation;
+    // only the earliest chapter may still show onboarding.
+    assert_eq!(
+        flow.steps[0].visible_origin,
+        "Work configuration · onboarding"
+    );
+    assert!(flow.steps[2..]
+        .iter()
+        .all(|step| step.visible_origin == "Work configuration · current conversation"));
+}
+
+#[test]
 fn work_configuration_gate_reconciles_one_applied_work_style() {
     let flow = work_configuration();
     let mut applied: Option<String> = None;
