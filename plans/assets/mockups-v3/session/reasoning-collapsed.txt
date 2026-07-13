@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Daily work · current conversation                                                                                   
+    Find where the server applies the rate limit and explain the safe path.                                             
+    You · Find where the server applies the rate limit and explain the safe path.                                       
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    › Why this answer · checked the shared rate-limit guard path  [enter] Expand rationale                              
+                                                                                                                        
+                                                                                                                        
+    The shared request guard applies the limit before route work begins.                                                
+    Login and API routes reuse it, so the same safety rule stays in place.                                              
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Reply to Code                                                                                                     
+                                                                                                                        
+                                                                                                                        
+    [enter] Send reply                                                                                                  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

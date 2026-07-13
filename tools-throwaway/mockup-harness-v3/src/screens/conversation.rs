@@ -12,7 +12,9 @@ use crate::{
         SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        components::{ActivityRow, ActivityState, Component},
+        components::{
+            ActivityRow, ActivityState, Component, DisclosureBlock, DisclosureState,
+        },
         layout::{CANVAS_ROWS, StatusLine},
         tokens::TextStyle,
     },
@@ -292,10 +294,18 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     };
     let (visible_origin, user_task) = match chat_turn_journey {
         Some(journey) => chat_turn_origin_and_task(journey),
-        None => {
-            // Non-chat-turn conversation screens stay on the daily journey frame.
-            (DAILY_WORK_ORIGIN, DAILY_WORK_TASK)
-        }
+        None => match screen_id {
+            "tool-task" | "tool-task-expanded" => (
+                DAILY_WORK_ORIGIN,
+                "Audit the auth module and add the rate-limit tests.",
+            ),
+            "compact" | "chat-long-scroll" => (
+                DAILY_WORK_ORIGIN,
+                "Continue from the compacted conversation summary.",
+            ),
+            // Other non-chat-turn conversation screens stay on the daily journey frame.
+            _ => (DAILY_WORK_ORIGIN, DAILY_WORK_TASK),
+        },
     };
     canvas.write(2, 4, visible_origin, TextStyle::muted())?;
     canvas.write(3, 4, user_task, TextStyle::bright())?;
@@ -370,9 +380,19 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             }
         },
         "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
+        "reasoning-collapsed" => render_reasoning_collapsed(&mut canvas, screen_id, fixture_id)?,
+        "reasoning" => render_reasoning(&mut canvas, screen_id, fixture_id)?,
         "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
         "tool-success" => render_tool_success(&mut canvas, screen_id, fixture_id)?,
+        "tool-success-expanded" => {
+            render_tool_success_expanded(&mut canvas, screen_id, fixture_id)?
+        }
+        "tool-calls" => render_tool_calls(&mut canvas, screen_id, fixture_id)?,
+        "tool-task" => render_tool_task(&mut canvas, screen_id, fixture_id)?,
+        "tool-task-expanded" => render_tool_task_expanded(&mut canvas, screen_id, fixture_id)?,
         "rich-response" => render_rich_response(&mut canvas, screen_id, fixture_id)?,
+        "compact" => render_compact(&mut canvas, screen_id, fixture_id)?,
+        "chat-long-scroll" => render_chat_long_scroll(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown conversation pilot screen: {screen_id}")),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -383,9 +403,14 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             conversation_id: "conversation.daily-work".to_owned(),
             transcript_id: "transcript.daily-work".to_owned(),
             session_id: "session.daily-work.1".to_owned(),
-            turn_id: "turn.daily-work.18".to_owned(),
-            user_task: DAILY_WORK_TASK.to_owned(),
-            visible_origin: DAILY_WORK_ORIGIN.to_owned(),
+            turn_id: match screen_id {
+                "tool-task" | "tool-task-expanded" => "turn.daily-work.task-audit.22",
+                "compact" | "chat-long-scroll" => "turn.daily-work.compact.19",
+                _ => "turn.daily-work.18",
+            }
+            .to_owned(),
+            user_task: user_task.to_owned(),
+            visible_origin: visible_origin.to_owned(),
             submitted_prompt: None,
             paused_activity_id: None,
             later_draft: None,
@@ -2465,6 +2490,14 @@ fn render_tool_success(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    // Gate / Flow 1 frames keep the compact pilot chrome. Focused expand detail
+    // is available on dedicated disclosure fixtures so approved gate hashes stay stable.
+    let disclosure_fixture = fixture_id.contains("disclosure")
+        || fixture_id.contains("tool-success-expand")
+        || fixture_id.contains("tool-success-collapse")
+        || fixture_id.starts_with("case.tool-success-expand")
+        || fixture_id.starts_with("case.tool-success-collapse");
+
     canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
@@ -2488,6 +2521,14 @@ fn render_tool_success(
         "Tool finished · continue this same response with the full answer.",
         TextStyle::muted(),
     )?;
+    if disclosure_fixture {
+        canvas.write(
+            17,
+            4,
+            "› Result details · 3 focused matches  [enter] Expand",
+            TextStyle::text(),
+        )?;
+    }
     composer(canvas, "Reply to Code", Some("Continue response"))?;
 
     let request = semantic(
@@ -2548,21 +2589,50 @@ fn render_tool_success(
         "summary",
         None,
     );
-    let pairs = [request, result, summary, continue_phase, composer, status];
-    Ok((
-        pairs
-            .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .collect(),
-        pairs.iter().map(|(_, event)| event.clone()).collect(),
-        vec![transition(
-            "action.tool-success.continue",
+    let mut candidates = vec![
+        request.0.clone(),
+        result.0.clone(),
+        summary.0.clone(),
+        continue_phase.0.clone(),
+        composer.0.clone(),
+        status.0.clone(),
+    ];
+    let mut events = vec![
+        request.1.clone(),
+        result.1.clone(),
+        summary.1.clone(),
+        continue_phase.1.clone(),
+        composer.1.clone(),
+        status.1.clone(),
+    ];
+    let mut transitions = vec![transition(
+        "action.tool-success.continue",
+        "tool-success",
+        "rich-response",
+        "direct",
+        "the open turn continues from the tool result into the completed answer",
+    )];
+    if disclosure_fixture {
+        let expand = semantic(
+            screen_id,
+            fixture_id,
+            "disclosure",
+            "tool-search-detail",
+            reference(17, 4, 56),
+            "summary",
+            Some(action("action.tool-success.expand", "Expand", false)),
+        );
+        candidates.insert(4, expand.0);
+        events.insert(4, expand.1);
+        transitions.push(transition(
+            "action.tool-success.expand",
             "tool-success",
-            "rich-response",
+            "tool-success-expanded",
             "direct",
-            "the open turn continues from the tool result into the completed answer",
-        )],
-    ))
+            "focused matches open under the same completed search activity",
+        ));
+    }
+    Ok((candidates, events, transitions))
 }
 
 fn render_rich_response(
@@ -2808,11 +2878,1010 @@ fn render_tool_interrupted_chat_turn(
     ))
 }
 
+fn render_reasoning_collapsed(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    let disclosure = DisclosureBlock::new(
+        "Why this answer · checked the shared rate-limit guard path",
+        DisclosureState::Collapsed,
+    )
+    .with_action_labels("Expand rationale", "Collapse");
+    write_component(canvas, 9, 4, &disclosure)?;
+    canvas.write(
+        12,
+        4,
+        "The shared request guard applies the limit before route work begins.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "Login and API routes reuse it, so the same safety rule stays in place.",
+        TextStyle::text(),
+    )?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let rationale = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "reasoning-rationale",
+        reference(9, 4, 78),
+        "summary",
+        Some(action(
+            "action.reasoning.expand",
+            "Expand rationale",
+            false,
+        )),
+    );
+    let answer = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "final-answer",
+        reference(12, 4, 76),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.reasoning.continue",
+        reference(COMPOSER_TOP, 4, 29),
+        "summary",
+        Some(action("action.reasoning.continue", "Send reply", false)),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, rationale, answer, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.reasoning.expand",
+            "reasoning-collapsed",
+            "reasoning",
+            "direct",
+            "expanded rationale opens beside the same turn and answer",
+        )],
+    ))
+}
+
+fn render_reasoning(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    let disclosure = DisclosureBlock::new(
+        "Why this answer · checked the shared rate-limit guard path",
+        DisclosureState::Expanded,
+    )
+    .with_action_labels("Expand rationale", "Collapse")
+    .with_expanded_lines([
+        "Limit checks run once before any route handler.",
+        "Login and API both call the same shared guard.",
+        "That keeps one safety rule instead of per-route copies.",
+    ]);
+    write_component(canvas, 9, 4, &disclosure)?;
+    canvas.write(
+        15,
+        4,
+        "The shared request guard applies the limit before route work begins.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "Login and API routes reuse it, so the same safety rule stays in place.",
+        TextStyle::text(),
+    )?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let rationale = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "reasoning-rationale",
+        reference(9, 4, 74),
+        "focused",
+        Some(action(
+            "action.reasoning.collapse",
+            "Collapse",
+            false,
+        )),
+    );
+    let answer = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "final-answer",
+        reference(15, 4, 76),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.reasoning.continue",
+        reference(COMPOSER_TOP, 4, 29),
+        "summary",
+        Some(action("action.reasoning.continue", "Send reply", false)),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, rationale, answer, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.reasoning.collapse",
+            "reasoning",
+            "reasoning-collapsed",
+            "direct",
+            "collapse restores the same transcript position, answer, and draft",
+        )],
+    ))
+}
+
+fn render_tool_success_expanded(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "The result shows the shared guard applied by both login and API routes.",
+        TextStyle::text(),
+    )?;
+    let success = ActivityRow::new(
+        "Search project code",
+        ActivityState::Expanded,
+        "3 matches in 400 files",
+    )
+    .with_elapsed("0.4s")
+    .compact();
+    write_component(canvas, 12, 4, &success)?;
+    canvas.write(
+        14,
+        4,
+        "▾ Result details · 3 focused matches  [enter] Collapse",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "  middleware/rate_limit.rs:42 · shared enforce() entry",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "  routes/login.rs:88 · login quota path",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "  routes/api.rs:17 · API quota path",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        19,
+        4,
+        "Tool finished · continue this same response with the full answer.",
+        TextStyle::muted(),
+    )?;
+    composer(canvas, "Reply to Code", Some("Continue response"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let result = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "tool-search",
+        reference(12, 4, 83),
+        "summary",
+        None,
+    );
+    let detail = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "tool-search-detail",
+        reference(14, 4, 56),
+        "focused",
+        Some(action(
+            "action.tool-success.collapse",
+            "Collapse",
+            false,
+        )),
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.tool-success.continue",
+        reference(COMPOSER_TOP, 4, 33),
+        "summary",
+        Some(action(
+            "action.tool-success.continue",
+            "Continue response",
+            false,
+        )),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, result, detail, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.tool-success.collapse",
+            "tool-success-expanded",
+            "tool-success",
+            "direct",
+            "collapse restores the compact terminal result without mutating matches",
+        )],
+    ))
+}
+
+fn render_tool_calls(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "I am checking the shared rules, then the failing suite, while scanning code.",
+        TextStyle::text(),
+    )?;
+    let completed = ActivityRow::new(
+        "Read session rules",
+        ActivityState::Succeeded,
+        "found the shared guard",
+    )
+    .with_elapsed("0.2s")
+    .compact();
+    write_component(canvas, 12, 4, &completed)?;
+    let failed = ActivityRow::new(
+        "Run rate-limit tests",
+        ActivityState::Failed,
+        "2 of 38 tests failed",
+    )
+    .with_elapsed("41s")
+    .compact();
+    write_component(canvas, 14, 4, &failed)?;
+    canvas.write(
+        15,
+        6,
+        "Tests assert the wrong recovery message. [r] Retry tests",
+        TextStyle::text(),
+    )?;
+    let running = ActivityRow::new(
+        "Search project code",
+        ActivityState::Running,
+        "118 of 240 files · 1 match so far",
+    )
+    .with_elapsed("12s elapsed")
+    .compact();
+    write_component(canvas, 17, 4, &running)?;
+    composer(canvas, "Reply to Code", Some("Send reply"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 57),
+        "summary",
+        None,
+    );
+    let a1 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "tool-read-rules",
+        reference(12, 4, 70),
+        "summary",
+        None,
+    );
+    let a2 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "tool-run-tests",
+        reference(14, 4, 66),
+        "summary",
+        None,
+    );
+    let recovery = semantic(
+        screen_id,
+        fixture_id,
+        "recovery",
+        "tool-run-tests",
+        reference(15, 6, 62),
+        "summary",
+        Some(action(
+            "action.tool-calls.retry-tests",
+            "Retry tests",
+            false,
+        )),
+    );
+    let a3 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "tool-search",
+        reference(17, 4, 84),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.tool-calls.continue",
+        reference(COMPOSER_TOP, 4, 29),
+        "summary",
+        Some(action("action.tool-calls.continue", "Send reply", false)),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, a1, a2, recovery, a3, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.tool-calls.retry-tests",
+            "tool-calls",
+            "tool-running",
+            "direct",
+            "retry only restarts the failed tests while completed sibling results stay",
+        )],
+    ))
+}
+
+fn render_tool_task(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Audit the auth module and add the rate-limit tests.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "I split the audit from the test work so findings can guide the patch.",
+        TextStyle::text(),
+    )?;
+    let audit_task = ActivityRow::new(
+        "Audit the auth module",
+        ActivityState::Succeeded,
+        "6 findings ready",
+    )
+    .with_elapsed("3m12s")
+    .compact();
+    write_component(canvas, 12, 4, &audit_task)?;
+    canvas.write(
+        13,
+        4,
+        "› Task details · expand findings  [enter] Expand",
+        TextStyle::text(),
+    )?;
+    let tests = ActivityRow::new(
+        "Add rate-limit tests",
+        ActivityState::Running,
+        "2 of 3 files · in progress",
+    )
+    .with_elapsed("48s elapsed")
+    .compact();
+    write_component(canvas, 15, 4, &tests)?;
+    let queued = ActivityRow::new(
+        "Build the test suite",
+        ActivityState::Waiting,
+        "queued after the test files",
+    )
+    .compact();
+    write_component(canvas, 17, 4, &queued)?;
+    let blocked = ActivityRow::new(
+        "Review refresh session risk",
+        ActivityState::Failed,
+        "Blocked · needs a decision",
+    )
+    .compact();
+    write_component(canvas, 19, 4, &blocked)?;
+    composer(
+        canvas,
+        "Type a follow-up, it will wait until this turn finishes",
+        None,
+    )?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 58),
+        "summary",
+        None,
+    );
+    let t1 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-audit-auth",
+        reference(12, 4, 68),
+        "summary",
+        None,
+    );
+    let expand = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "task-audit-auth",
+        reference(13, 4, 50),
+        "summary",
+        Some(action("action.tool-task.expand", "Expand", false)),
+    );
+    let t2 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-add-tests",
+        reference(15, 4, 74),
+        "summary",
+        None,
+    );
+    let t3 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-build-suite",
+        reference(17, 4, 70),
+        "summary",
+        None,
+    );
+    let t4 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-refresh-risk",
+        reference(19, 4, 74),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "queued-input",
+        "follow-up",
+        reference(COMPOSER_TOP, 4, 63),
+        "summary",
+        None,
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, t1, expand, t2, t3, t4, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.tool-task.expand",
+            "tool-task",
+            "tool-task-expanded",
+            "direct",
+            "findings open under the completed audit task while sibling states stay visible",
+        )],
+    ))
+}
+
+fn render_tool_task_expanded(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Audit the auth module and add the rate-limit tests.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "I split the audit from the test work so findings can guide the patch.",
+        TextStyle::text(),
+    )?;
+    let audit_task = ActivityRow::new(
+        "Audit the auth module",
+        ActivityState::Expanded,
+        "6 findings ready",
+    )
+    .with_elapsed("3m12s")
+    .compact();
+    write_component(canvas, 12, 4, &audit_task)?;
+    canvas.write(
+        13,
+        4,
+        "▾ Task details · findings for this audit  [enter] Collapse",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "  ✗ Needs attention · Refresh tokens skip revoked sessions.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "  ✗ Needs attention · Test helper creates a session without token state.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "  ● Review · Login retries share no per-user limit.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "  ✓ Complete · Logout already invalidates the active token.",
+        TextStyle::text(),
+    )?;
+    let tests = ActivityRow::new(
+        "Add rate-limit tests",
+        ActivityState::Running,
+        "2 of 3 files · in progress",
+    )
+    .with_elapsed("48s elapsed")
+    .compact();
+    write_component(canvas, 19, 4, &tests)?;
+    let queued = ActivityRow::new(
+        "Build the test suite",
+        ActivityState::Waiting,
+        "queued after the test files",
+    )
+    .compact();
+    write_component(canvas, 21, 4, &queued)?;
+    let blocked = ActivityRow::new(
+        "Review refresh session risk",
+        ActivityState::Failed,
+        "Blocked · needs a decision",
+    )
+    .compact();
+    write_component(canvas, 23, 4, &blocked)?;
+    composer(
+        canvas,
+        "Type a follow-up, it will wait until this turn finishes",
+        None,
+    )?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 58),
+        "summary",
+        None,
+    );
+    let t1 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-audit-auth",
+        reference(12, 4, 70),
+        "focused",
+        None,
+    );
+    let findings = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "task-audit-auth",
+        reference(13, 4, 60),
+        "focused",
+        Some(action("action.tool-task.collapse", "Collapse", false)),
+    );
+    let t2 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-add-tests",
+        reference(19, 4, 74),
+        "summary",
+        None,
+    );
+    let t3 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-build-suite",
+        reference(21, 4, 70),
+        "summary",
+        None,
+    );
+    let t4 = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "task-refresh-risk",
+        reference(23, 4, 74),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "queued-input",
+        "follow-up",
+        reference(COMPOSER_TOP, 4, 63),
+        "summary",
+        None,
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, t1, findings, t2, t3, t4, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.tool-task.collapse",
+            "tool-task-expanded",
+            "tool-task",
+            "direct",
+            "collapse keeps attributed findings available under the same audit task",
+        )],
+    ))
+}
+
+fn render_compact(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(4, 4, "You · /compact", TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, "Conversation compacted", TextStyle::bright())?;
+    canvas.write(
+        11,
+        4,
+        "→ Found the shared rate-limit guard and the two route call sites.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        4,
+        "→ Confirmed login and API reuse one safety rule.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "→ Next: write a short regression note, then run the focused suite.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "The full transcript is preserved in this session.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "› 18 earlier turns stay available  [enter] Expand full history",
+        TextStyle::text(),
+    )?;
+    composer(canvas, "Resume from the compacted summary", Some("Send reply"))?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 16),
+        "summary",
+        None,
+    );
+    let summary = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "compaction-summary",
+        reference(9, 4, 23),
+        "summary",
+        None,
+    );
+    let preserve = semantic(
+        screen_id,
+        fixture_id,
+        "preservation",
+        "full-history",
+        reference(15, 4, 53),
+        "summary",
+        None,
+    );
+    let expand = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "history-restore",
+        reference(17, 4, 63),
+        "summary",
+        Some(action(
+            "action.compact.expand-history",
+            "Expand full history",
+            false,
+        )),
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.compact.continue",
+        reference(COMPOSER_TOP, 4, 43),
+        "summary",
+        Some(action("action.compact.continue", "Send reply", false)),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, summary, preserve, expand, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.compact.expand-history",
+            "compact",
+            "chat-long-scroll",
+            "direct",
+            "full history restores earlier turns in order with the same draft",
+        )],
+    ))
+}
+
+fn render_chat_long_scroll(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(4, 4, "Earlier history restored · same session", TextStyle::muted())?;
+    canvas.write(
+        6,
+        4,
+        "Turn 1 · You · Find the shared rate-limit guard.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        7,
+        4,
+        "Turn 1 · Code · Found middleware/rate_limit.rs as the single owner.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        9,
+        4,
+        "Turn 8 · You · Confirm login and API both call it.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Turn 8 · Code · Yes. Both reuse one safety rule.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        4,
+        "Turn 18 · You · Find where the server applies the rate limit and explain the safe path.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "Turn 18 · Code · The shared request guard applies the limit before route work begins.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "▾ Full history open  [enter] Return to compact summary",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "18 turns restored in order · draft and reading position kept.",
+        TextStyle::muted(),
+    )?;
+    composer(canvas, "Resume from the compacted summary", Some("Send reply"))?;
+
+    let restore = semantic(
+        screen_id,
+        fixture_id,
+        "disclosure",
+        "history-restore",
+        reference(15, 4, 56),
+        "focused",
+        Some(action(
+            "action.compact.collapse-history",
+            "Return to compact summary",
+            false,
+        )),
+    );
+    let turns = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "restored-history",
+        reference(6, 4, 50),
+        "focused",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.chat-long-scroll.continue",
+        reference(COMPOSER_TOP, 4, 43),
+        "summary",
+        Some(action(
+            "action.chat-long-scroll.continue",
+            "Send reply",
+            false,
+        )),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [turns, restore, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.compact.collapse-history",
+            "chat-long-scroll",
+            "compact",
+            "direct",
+            "return restores the same compact summary and draft without reordering turns",
+        )],
+    ))
+}
+
 fn daily_user_request(fixture_id: &str) -> &'static str {
     if fixture_id == "canonical.chat-turn" {
         "You · Check retry_policy.rs before we merge."
     } else if fixture_id == "conversation-completed" {
         "You · Why are stale sessions rejected after a password change?"
+    } else if fixture_id.contains("task") {
+        "You · Audit the auth module and add the rate-limit tests."
     } else {
         "You · Find where the server applies the rate limit and explain the safe path."
     }

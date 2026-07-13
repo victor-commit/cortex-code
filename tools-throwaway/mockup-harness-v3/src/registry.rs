@@ -161,7 +161,9 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        // Minimal restored-history view used by compact disclosure round trips.
+        // Deeper long-history navigation remains milestone work for shell/history.
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "streaming",
@@ -175,14 +177,14 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "reasoning-collapsed",
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "rich-response",
@@ -196,7 +198,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "tool-running",
@@ -217,7 +219,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "tool-failed",
@@ -231,14 +233,14 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "tool-task-expanded",
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "diff-edit",
@@ -280,7 +282,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "slash-menu",

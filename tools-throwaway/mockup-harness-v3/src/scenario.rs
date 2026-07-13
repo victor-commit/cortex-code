@@ -1056,6 +1056,14 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "tool-running-interrupt" => tool_running_interrupt(),
         "tool-running-complete" => tool_running_complete(),
         "tool-success-continue" => tool_success_continue(),
+        "reasoning-expand" => reasoning_expand(),
+        "reasoning-collapse" => reasoning_collapse(),
+        "tool-success-expand" => tool_success_expand(),
+        "tool-success-collapse" => tool_success_collapse(),
+        "tool-task-expand" => tool_task_expand(),
+        "tool-task-collapse" => tool_task_collapse(),
+        "compact-expand-history" => compact_expand_history(),
+        "compact-collapse-history" => compact_collapse_history(),
         "file-mention-insert" => file_mention_insert(),
         "file-mention-dismiss" => file_mention_dismiss(),
         "file-mention-no-results" => file_mention_no_results(),
@@ -1160,6 +1168,19 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
+    if matches!(
+        case_id,
+        "compact-expand-history" | "compact-collapse-history"
+    ) {
+        let order = "turn-1,turn-8,turn-18";
+        preserved_field_hashes.insert(
+            "history_order".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(order.as_bytes()),
+                after: sha256_hex(order.as_bytes()),
+            },
+        );
+    }
     match case_id {
         "checkpoint-undo-success" => insert_checkpoint_file_hashes(
             &mut preserved_field_hashes,
@@ -7246,6 +7267,484 @@ fn tool_success_continue() -> (
         "response-completion",
         "completed",
         "one completed response added prose, a table, and code to the same turn",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn disclosure_base(
+    screen_id: &str,
+    draft: &str,
+    scroll_anchor: &str,
+    selection: &str,
+    focus: &str,
+    pending: Option<&str>,
+    tick: u32,
+) -> ScenarioState {
+    let mut s = state(
+        screen_id,
+        vec!["home", "chat-turn", "streaming", "tool-running"],
+        draft,
+        scroll_anchor,
+        selection,
+        focus,
+        pending,
+        "return-to-same-turn",
+        tick,
+    );
+    s.transcript =
+        "User asked for the rate-limit path. Code found the shared request guard.".to_owned();
+    s.queued_follow_up = "Also list the tests that should cover the search.".to_owned();
+    s.draft = draft.to_owned();
+    s.state_hash = state_hash(&s);
+    s
+}
+
+fn reasoning_expand() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "reasoning-collapsed",
+        "Follow up after reading the rationale.",
+        "turn-reasoning-rate-limit",
+        "reasoning-summary",
+        "reasoning-expand",
+        Some("disclosure.reasoning"),
+        0,
+    );
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "reasoning".to_owned();
+    after.selection = "reasoning-detail".to_owned();
+    after.focus = "reasoning-collapse".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.reasoning.expand".to_owned(),
+        label: "Expand rationale".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "expanded rationale opens beside the same turn".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.reasoning.expand.1".to_owned(),
+        owner_id: "disclosure.reasoning".to_owned(),
+        count: 1,
+        outcome: "expanded".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.reasoning.expand",
+        "disclosure",
+        "expanded",
+        "concise rationale became visible without private traces",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn reasoning_collapse() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "reasoning",
+        "Follow up after reading the rationale.",
+        "turn-reasoning-rate-limit",
+        "reasoning-detail",
+        "reasoning-collapse",
+        Some("disclosure.reasoning"),
+        0,
+    );
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "reasoning-collapsed".to_owned();
+    after.selection = "reasoning-summary".to_owned();
+    after.focus = "reasoning-expand".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.reasoning.collapse".to_owned(),
+        label: "Collapse".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "collapse restores the same transcript position and draft".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.reasoning.collapse.1".to_owned(),
+        owner_id: "disclosure.reasoning".to_owned(),
+        count: 1,
+        outcome: "collapsed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.reasoning.collapse",
+        "disclosure",
+        "collapsed",
+        "rationale collapsed without mutating the answer or draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_success_expand() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "tool-success",
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "tool-result-summary",
+        "tool-success-expand",
+        Some("activity.tool.search"),
+        0,
+    );
+    before.transcript =
+        "Checked session rules completed. Search project code completed with 3 matches in 400 files."
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "tool-success-expanded".to_owned();
+    after.selection = "tool-result-detail".to_owned();
+    after.focus = "tool-success-collapse".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-success.expand".to_owned(),
+        label: "Expand".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "focused matches open under the same completed search".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-success.expand.1".to_owned(),
+        owner_id: "activity.tool.search".to_owned(),
+        count: 1,
+        outcome: "expanded".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-success.expand",
+        "disclosure",
+        "expanded",
+        "three focused matches were disclosed under the search row",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_success_collapse() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "tool-success-expanded",
+        "Also list the tests that should cover the search.",
+        "tool-search-rate-limit",
+        "tool-result-detail",
+        "tool-success-collapse",
+        Some("activity.tool.search"),
+        0,
+    );
+    before.transcript =
+        "Checked session rules completed. Search project code completed with 3 matches in 400 files."
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "tool-success".to_owned();
+    after.selection = "tool-result-summary".to_owned();
+    after.focus = "tool-success-expand".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-success.collapse".to_owned(),
+        label: "Collapse".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "collapse restores the compact terminal result".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-success.collapse.1".to_owned(),
+        owner_id: "activity.tool.search".to_owned(),
+        count: 1,
+        outcome: "collapsed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-success.collapse",
+        "disclosure",
+        "collapsed",
+        "focused matches collapsed without mutating the terminal summary",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_task_expand() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "tool-task",
+        "Follow up after the delegated audit finishes.",
+        "task-audit-auth",
+        "task-audit-summary",
+        "tool-task-expand",
+        Some("activity.task.audit-auth"),
+        0,
+    );
+    before.user_task = "Audit the auth module and add the rate-limit tests.".to_owned();
+    before.transcript =
+        "Delegated audit complete with 6 findings. Rate-limit tests still running.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "tool-task-expanded".to_owned();
+    after.selection = "task-audit-findings".to_owned();
+    after.focus = "tool-task-collapse".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-task.expand".to_owned(),
+        label: "Expand".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "findings open under the completed audit task".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-task.expand.1".to_owned(),
+        owner_id: "activity.task.audit-auth".to_owned(),
+        count: 1,
+        outcome: "expanded".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-task.expand",
+        "disclosure",
+        "expanded",
+        "audit findings opened while sibling task states remained visible",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_task_collapse() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "tool-task-expanded",
+        "Follow up after the delegated audit finishes.",
+        "task-audit-auth",
+        "task-audit-findings",
+        "tool-task-collapse",
+        Some("activity.task.audit-auth"),
+        0,
+    );
+    before.user_task = "Audit the auth module and add the rate-limit tests.".to_owned();
+    before.transcript =
+        "Delegated audit complete with 6 findings. Rate-limit tests still running.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "tool-task".to_owned();
+    after.selection = "task-audit-summary".to_owned();
+    after.focus = "tool-task-expand".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-task.collapse".to_owned(),
+        label: "Collapse".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "collapse keeps the audit findings available under the same task".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-task.collapse.1".to_owned(),
+        owner_id: "activity.task.audit-auth".to_owned(),
+        count: 1,
+        outcome: "collapsed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-task.collapse",
+        "disclosure",
+        "collapsed",
+        "expanded findings collapsed without changing sibling state",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn compact_expand_history() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "compact",
+        "Resume from the compacted summary",
+        "compact-summary",
+        "compact-summary",
+        "compact-expand",
+        Some("disclosure.compact-history"),
+        0,
+    );
+    before.transcript =
+        "Conversation compacted. Found the shared rate-limit guard. Full history preserved."
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-long-scroll".to_owned();
+    after.selection = "restored-history".to_owned();
+    after.focus = "compact-collapse".to_owned();
+    after.pending_action = None;
+    after.scroll_anchor = "turn-1".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Turn 1 through turn 18 restored in original order. Draft and reading position kept."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.compact.expand-history".to_owned(),
+        label: "Expand full history".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "full history restores earlier turns in order with the same draft".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.compact.expand-history.1".to_owned(),
+        owner_id: "history.session.order".to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.compact.expand-history",
+        "history-restore",
+        "restored",
+        "18 earlier turns restored in order while the draft stayed stable",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn compact_collapse_history() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-long-scroll",
+        "Resume from the compacted summary",
+        "turn-1",
+        "restored-history",
+        "compact-collapse",
+        Some("disclosure.compact-history"),
+        0,
+    );
+    before.transcript =
+        "Turn 1 through turn 18 restored in original order. Draft and reading position kept."
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "compact".to_owned();
+    after.selection = "compact-summary".to_owned();
+    after.focus = "compact-expand".to_owned();
+    after.pending_action = None;
+    after.scroll_anchor = "compact-summary".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Conversation compacted. Found the shared rate-limit guard. Full history preserved."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.compact.collapse-history".to_owned(),
+        label: "Return to compact summary".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return restores the same compact summary and draft".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.compact.collapse-history.1".to_owned(),
+        owner_id: "history.session.order".to_owned(),
+        count: 1,
+        outcome: "collapsed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.compact.collapse-history",
+        "history-restore",
+        "collapsed",
+        "compact summary returned without reordering turns or losing the draft",
     );
     (before, after, action, transition, attempt, effect)
 }

@@ -40,10 +40,18 @@ const GATE_STATIC_FILES: &[&str] = &[".gitkeep"];
 const IMPLEMENTED_RENDERERS: &[&str] = &[
     "home",
     "chat-turn",
+    "chat-long-scroll",
     "streaming",
+    "reasoning",
+    "reasoning-collapsed",
     "tool-running",
     "tool-success",
+    "tool-success-expanded",
+    "tool-calls",
+    "tool-task",
+    "tool-task-expanded",
     "rich-response",
+    "compact",
     "file-mention",
     "composer-multiline",
     "permission-shell",
@@ -1371,11 +1379,11 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 35);
+        assert_eq!(implemented.canonical_ids().count(), 43);
         assert!(
             preflight_render(&PublicSelector::All)
                 .expect_err("full render must reject missing renderers")
-                .contains("chat-long-scroll")
+                .contains("tool-failed")
         );
     }
 

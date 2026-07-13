@@ -55,10 +55,18 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("session", "home"),
         ("session", "onboarding"),
         ("session", "chat-turn"),
+        ("session", "chat-long-scroll"),
         ("session", "streaming"),
+        ("session", "reasoning"),
+        ("session", "reasoning-collapsed"),
         ("session", "tool-running"),
         ("session", "tool-success"),
+        ("session", "tool-success-expanded"),
+        ("session", "tool-calls"),
+        ("session", "tool-task"),
+        ("session", "tool-task-expanded"),
         ("session", "rich-response"),
+        ("session", "compact"),
         ("input", "file-mention"),
         ("input", "composer-multiline"),
         ("input", "model-picker"),
@@ -92,7 +100,7 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
 #[test]
 fn every_render_selector_preflights_missing_renderers_before_writing() {
     let _test_lock = renderer_test_lock();
-    assert_registry_failure(&["--all"], "chat-long-scroll");
+    assert_registry_failure(&["--all"], "tool-failed");
     assert_registry_failure(&["input"], "slash-menu");
 
     let path = "/projects/cortex-code/plans/assets/mockups-v3/input/slash-menu.txt";
@@ -109,10 +117,18 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("session", "home"),
         ("session", "onboarding"),
         ("session", "chat-turn"),
+        ("session", "chat-long-scroll"),
         ("session", "streaming"),
+        ("session", "reasoning"),
+        ("session", "reasoning-collapsed"),
         ("session", "tool-running"),
         ("session", "tool-success"),
+        ("session", "tool-success-expanded"),
+        ("session", "tool-calls"),
+        ("session", "tool-task"),
+        ("session", "tool-task-expanded"),
         ("session", "rich-response"),
+        ("session", "compact"),
         ("input", "file-mention"),
         ("input", "composer-multiline"),
         ("input", "model-picker"),
@@ -180,7 +196,7 @@ fn invalid_full_render_keeps_the_last_complete_canonical_publication() {
     assert_eq!(rejected.status.code(), Some(3));
     assert!(rejected.stdout.is_empty());
     assert!(String::from_utf8_lossy(&rejected.stderr)
-        .contains("canonical ID has no implemented renderer: chat-long-scroll"));
+        .contains("canonical ID has no implemented renderer: tool-failed"));
     assert_eq!(
         fs::read(output_root.join(".renderer-manifest-v1"))
             .expect("a rejected selector must retain the complete gallery"),

@@ -193,7 +193,9 @@ pub enum DisclosureState {
 pub struct DisclosureBlock {
     summary: String,
     state: DisclosureState,
-    expanded_detail: Option<String>,
+    expanded_lines: Vec<String>,
+    expand_label: String,
+    collapse_label: String,
 }
 
 impl DisclosureBlock {
@@ -201,12 +203,30 @@ impl DisclosureBlock {
         Self {
             summary: summary.to_owned(),
             state,
-            expanded_detail: None,
+            expanded_lines: Vec::new(),
+            expand_label: "Expand".to_owned(),
+            collapse_label: "Collapse".to_owned(),
         }
     }
 
     pub fn with_expanded_detail(mut self, detail: &str) -> Self {
-        self.expanded_detail = Some(detail.to_owned());
+        self.expanded_lines = vec![detail.to_owned()];
+        self
+    }
+
+    /// Focused multi-line expansion under the same summary row.
+    pub fn with_expanded_lines<I, S>(mut self, lines: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.expanded_lines = lines.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_action_labels(mut self, expand: &str, collapse: &str) -> Self {
+        self.expand_label = expand.to_owned();
+        self.collapse_label = collapse.to_owned();
         self
     }
 }
@@ -215,15 +235,15 @@ impl Component for DisclosureBlock {
     fn lines(&self) -> Vec<ComponentLine> {
         match self.state {
             DisclosureState::Collapsed => vec![ComponentLine::new(
-                format!("› {}  [enter] Expand", self.summary),
+                format!("› {}  [enter] {}", self.summary, self.expand_label),
                 TextStyle::text(),
             )],
             DisclosureState::Expanded => {
                 let mut lines = vec![ComponentLine::new(
-                    format!("▾ {}  [enter] Collapse", self.summary),
+                    format!("▾ {}  [enter] {}", self.summary, self.collapse_label),
                     TextStyle::text(),
                 )];
-                if let Some(detail) = &self.expanded_detail {
+                for detail in &self.expanded_lines {
                     lines.push(ComponentLine::new(
                         format!("  {detail}"),
                         TextStyle::muted(),
