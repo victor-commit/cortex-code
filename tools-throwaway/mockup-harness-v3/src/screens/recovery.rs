@@ -1,5 +1,5 @@
 //! Flow 5 pilot states for turn, tool, blocked-command, network, rate-limit,
-//! and checkpoint recovery.
+//! context exhaustion, and checkpoint recovery.
 //!
 //! Turn failures keep partial replies inline with one adjacent primary recovery.
 //! Tool failures keep the exact invocation, completed siblings, partial output,
@@ -9,6 +9,8 @@
 //! Network failures preserve work, hide attempts behind evidence, distinguish
 //! automatic bounded backoff from manual retry, and route connection inspection
 //! without losing recovery origin or submitting more than once.
+//! Context exhaustion preserves the refactor state, keeps token detail under
+//! Evidence, and offers Compact and continue as the only primary recovery.
 //! Rate-limit owns one automatic countdown with optional secondary Retry now.
 //! Checkpoint undo names exact file effects, preserves unrelated work, and
 //! offers symmetric redo with conflict and no-op safety.
@@ -68,6 +70,15 @@ const BLOCKED_POLICY_CAUSE: &str = "The current work style does not allow write 
 const BLOCKED_PERMISSION_CAUSE: &str = "This command needs approval before it can run";
 const BLOCKED_COMPLETED_WORK: &str =
     "Completed earlier · retry window copy accepted for the release branch.";
+const CONTEXT_CAUSE: &str = "This conversation is too large to continue as-is";
+const CONTEXT_SAVED: &str = "Your transcript, draft, and completed edits are saved.";
+const CONTEXT_COMPLETED_EDITS: &str = "Completed edits · notes/release.md · notes/risks.md";
+const CONTEXT_PENDING_TASK: &str = "Pending · finish the short risk note before publish";
+const CONTEXT_CONSEQUENCE: &str =
+    "A summary replaces older visible context. Full history stays preserved.";
+const CONTEXT_PRIMARY: &str = "Compact and continue";
+const CONTEXT_SECONDARY: &str = "Start new session";
+const CONTEXT_PENDING: &str = "pending.context.release-notes";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -83,6 +94,12 @@ enum NetworkVariant {
     Offline,
     Backoff,
     Exhausted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContextVariant {
+    Collapsed,
+    Evidence,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,6 +140,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let surface = match screen_id {
         "turn-error"
         | "error-network"
+        | "error-context"
         | "rate-limit"
         | "checkpoint-undo"
         | "tool-failed"
@@ -134,6 +152,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (candidates, events, transitions) = match screen_id {
         "turn-error" => render_turn_error(&mut canvas, screen_id, fixture_id)?,
         "error-network" => render_error_network(&mut canvas, screen_id, fixture_id)?,
+        "error-context" => render_error_context(&mut canvas, screen_id, fixture_id)?,
         "rate-limit" => render_rate_limit(&mut canvas, screen_id, fixture_id)?,
         "checkpoint-undo" => render_checkpoint_undo(&mut canvas, screen_id, fixture_id)?,
         "tool-failed" => render_tool_failed(&mut canvas, screen_id, fixture_id)?,
@@ -141,6 +160,11 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
+    let paused_activity = if screen_id == "error-context" {
+        CONTEXT_PENDING
+    } else {
+        PENDING_NETWORK
+    };
     Ok(AuditDocument {
         screen_id: screen_id.to_owned(),
         fixture_id: fixture_id.to_owned(),
@@ -158,10 +182,321 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             user_task: RECOVERY_TASK.to_owned(),
             visible_origin: RECOVERY_ORIGIN.to_owned(),
             submitted_prompt: Some(USER_PROMPT.trim_start_matches("You · ").to_owned()),
-            paused_activity_id: Some(PENDING_NETWORK.to_owned()),
+            paused_activity_id: Some(paused_activity.to_owned()),
             later_draft: Some(DRAFT.to_owned()),
         }),
     })
+}
+
+fn context_variant(fixture_id: &str) -> ContextVariant {
+    if fixture_id.contains("evidence") {
+        ContextVariant::Evidence
+    } else {
+        ContextVariant::Collapsed
+    }
+}
+
+fn render_error_context(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let variant = context_variant(fixture_id);
+    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, PARTIAL_REPLY, TextStyle::text())?;
+    canvas.write(11, 4, CONTEXT_COMPLETED_EDITS, TextStyle::muted())?;
+    canvas.write(12, 4, CONTEXT_PENDING_TASK, TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        "────────────────────────────────────────────────────────",
+        TextStyle::muted(),
+    )?;
+    canvas.write(15, 4, &format!("✗ {CONTEXT_CAUSE}"), TextStyle::bright())?;
+    canvas.write(16, 4, CONTEXT_SAVED, TextStyle::text())?;
+    canvas.write(
+        17,
+        4,
+        "Transcript, draft, pending task, and completed edits stay readable.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        "Draft kept · Keep the risk note short before we publish.",
+        TextStyle::muted(),
+    )?;
+    match variant {
+        ContextVariant::Collapsed => {
+            canvas.write(
+                20,
+                4,
+                "› Evidence  [enter] Expand technical details",
+                TextStyle::muted(),
+            )?;
+        }
+        ContextVariant::Evidence => {
+            canvas.write(20, 4, "▾ Evidence", TextStyle::text())?;
+            canvas.write(
+                21,
+                4,
+                "  Tokens used · 178k of 200k · about 89% of the model limit",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                22,
+                4,
+                "  Breakdown · earlier turns, tool results, and open draft",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                23,
+                4,
+                "  Compacting keeps full history while freeing room to continue",
+                TextStyle::muted(),
+            )?;
+        }
+    }
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Recover from full context",
+        TextStyle::bright(),
+    )?;
+    dock_line(canvas, DOCK_TOP + 2, CONTEXT_CONSEQUENCE, TextStyle::text())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        &format!("› [enter] {CONTEXT_PRIMARY}"),
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        &format!("  [n] {CONTEXT_SECONDARY}"),
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "  [esc] Cancel · keep this conversation paused",
+        TextStyle::muted(),
+    )?;
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "paused-conversation",
+            reference(2, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-request",
+            "release-notes-prompt",
+            reference(5, 4, 70),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "partial-reply",
+            "interrupted-answer",
+            reference(9, 4, 95),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "completed-work",
+            "completed-edits",
+            reference(11, 4, 4 + CONTEXT_COMPLETED_EDITS.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-task",
+            "risk-note-task",
+            reference(12, 4, 4 + CONTEXT_PENDING_TASK.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "recovery-cause",
+            "context-exhaustion",
+            reference(15, 4, 4 + CONTEXT_CAUSE.chars().count() as u16 + 2),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "context-work-saved",
+            reference(16, 4, 4 + CONTEXT_SAVED.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "composer-draft",
+            "risk-note-draft",
+            reference(18, 4, 58),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.error-context.compact-continue",
+            reference(DOCK_TOP + 3, 4, 4 + CONTEXT_PRIMARY.chars().count() as u16 + 10),
+            "focused",
+            Some(action(
+                "action.error-context.compact-continue",
+                CONTEXT_PRIMARY,
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.error-context.new-session",
+            reference(DOCK_TOP + 4, 4, 4 + CONTEXT_SECONDARY.chars().count() as u16 + 6),
+            "summary",
+            Some(action(
+                "action.error-context.new-session",
+                CONTEXT_SECONDARY,
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.error-context.cancel",
+            reference(DOCK_TOP + 5, 4, 48),
+            "summary",
+            Some(action("action.error-context.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+
+    match variant {
+        ContextVariant::Collapsed => {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "disclosure",
+                "action.error-context.expand-evidence",
+                reference(20, 4, 48),
+                "summary",
+                Some(action(
+                    "action.error-context.expand-evidence",
+                    "Expand technical details",
+                    false,
+                )),
+            ));
+        }
+        ContextVariant::Evidence => {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "evidence",
+                "token-usage",
+                reference(21, 4, 62),
+                "evidence",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "disclosure",
+                "action.error-context.collapse-evidence",
+                reference(20, 4, 16),
+                "evidence",
+                Some(action(
+                    "action.error-context.collapse-evidence",
+                    "Collapse technical details",
+                    false,
+                )),
+            ));
+        }
+    }
+
+    let mut transitions = vec![
+        transition(
+            "action.error-context.compact-continue",
+            "error-context",
+            "compact",
+            "direct",
+            "explicit compact replaces older visible context while full history stays recoverable",
+        ),
+        transition(
+            "action.error-context.new-session",
+            "error-context",
+            "home",
+            "direct",
+            "start new session is secondary only and never automatic",
+        ),
+        transition(
+            "action.error-context.cancel",
+            "error-context",
+            "error-context",
+            "cancel",
+            "cancel keeps the paused conversation and all refactor state intact",
+        ),
+    ];
+    match variant {
+        ContextVariant::Collapsed => transitions.push(transition(
+            "action.error-context.expand-evidence",
+            "error-context",
+            "error-context",
+            "direct",
+            "evidence discloses token usage after the cause and primary action",
+        )),
+        ContextVariant::Evidence => transitions.push(transition(
+            "action.error-context.collapse-evidence",
+            "error-context",
+            "error-context",
+            "direct",
+            "collapsing evidence restores progressive disclosure without losing state",
+        )),
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
 }
 
 fn tool_failed_variant(fixture_id: &str) -> ToolFailedVariant {

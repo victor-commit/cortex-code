@@ -92,6 +92,7 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "mcp",
     "turn-error",
     "error-network",
+    "error-context",
     "rate-limit",
     "checkpoint-undo",
     "workflow-launch",

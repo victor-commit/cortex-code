@@ -192,6 +192,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "mcp",
             "turn-error",
             "error-network",
+            "error-context",
             "rate-limit",
             "checkpoint-undo",
             "tool-failed",

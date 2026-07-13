@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                                                                      
+    Finish the release notes without losing the current work.                                                           
+                                                                                                                        
+    You · Summarize the remaining release notes and the still-open risks.                                               
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The release notes cover the auth race fix, the retry window change, and one open risk…                              
+                                                                                                                        
+    Completed edits · notes/release.md · notes/risks.md                                                                 
+    Pending · finish the short risk note before publish                                                                 
+    ────────────────────────────────────────────────────────                                                            
+                                                                                                                        
+    ✗ This conversation is too large to continue as-is                                                                  
+    Your transcript, draft, and completed edits are saved.                                                              
+    Transcript, draft, pending task, and completed edits stay readable.                                                 
+    Draft kept · Keep the risk note short before we publish.                                                            
+                                                                                                                        
+    › Evidence  [enter] Expand technical details                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Recover from full context                                                                                        │  
+  │ A summary replaces older visible context. Full history stays preserved.                                          │  
+  │ › [enter] Compact and continue                                                                                   │  
+  │   [n] Start new session                                                                                          │  
+  │   [esc] Cancel · keep this conversation paused                                                                   │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

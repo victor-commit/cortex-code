@@ -97,6 +97,7 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("views", "sidebar-mcp"),
         ("views", "sidebar-queue"),
         ("views", "help"),
+        ("states", "error-context"),
     ] {
         assert!(
             Path::new(&format!(
@@ -123,13 +124,13 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
 #[test]
 fn every_render_selector_preflights_missing_renderers_before_writing() {
     let _test_lock = renderer_test_lock();
-    // Next unimplemented inventory gap after sidebar-mcp is error-context.
-    assert_registry_failure(&["--all"], "error-context");
+    // Next unimplemented inventory gap after error-context is interrupt.
+    assert_registry_failure(&["--all"], "interrupt");
     // `states` still has unimplemented screens; stream order surfaces the first
     // inventory gap for that category rather than writing partial artifacts.
-    assert_registry_failure(&["states"], "error-context");
+    assert_registry_failure(&["states"], "interrupt");
 
-    let path = "/projects/cortex-code/plans/assets/mockups-v3/states/error-context.txt";
+    let path = "/projects/cortex-code/plans/assets/mockups-v3/states/interrupt.txt";
     assert!(
         !Path::new(path).exists(),
         "preflight must finish before any artifact is written: {path}"
@@ -188,6 +189,7 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("views", "theme-gallery-dark"),
         ("views", "theme-gallery-light"),
         ("states", "empty"),
+        ("states", "error-context"),
     ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);
@@ -248,7 +250,7 @@ fn invalid_full_render_keeps_the_last_complete_canonical_publication() {
     assert_eq!(rejected.status.code(), Some(3));
     assert!(rejected.stdout.is_empty());
     assert!(String::from_utf8_lossy(&rejected.stderr)
-        .contains("canonical ID has no implemented renderer: error-context"));
+        .contains("canonical ID has no implemented renderer: interrupt"));
     assert_eq!(
         fs::read(output_root.join(".renderer-manifest-v1"))
             .expect("a rejected selector must retain the complete gallery"),

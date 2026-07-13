@@ -543,6 +543,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         screen_id,
         "turn-error"
             | "error-network"
+            | "error-context"
             | "rate-limit"
             | "checkpoint-undo"
             | "tool-failed"

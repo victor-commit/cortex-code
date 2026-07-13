@@ -1140,6 +1140,12 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "tool-task-collapse" => tool_task_collapse(),
         "compact-expand-history" => compact_expand_history(),
         "compact-collapse-history" => compact_collapse_history(),
+        "context-preventive-compact" => context_preventive_compact(),
+        "error-context-no-auto" => error_context_no_auto(),
+        "error-context-compact-continue" => error_context_compact_continue(),
+        "compact-context-resume-chat" => compact_context_resume_chat(),
+        "error-context-evidence-open" => error_context_evidence_open(),
+        "error-context-evidence-close" => error_context_evidence_close(),
         "shell-interrupt" => shell_interrupt(),
         "shell-complete" => shell_complete(),
         "todo-progress" => todo_progress(),
@@ -1510,7 +1516,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     }
     if matches!(
         case_id,
-        "compact-expand-history" | "compact-collapse-history"
+        "compact-expand-history"
+            | "compact-collapse-history"
+            | "error-context-compact-continue"
+            | "compact-context-resume-chat"
+            | "context-preventive-compact"
     ) {
         let order = "turn-1,turn-8,turn-18";
         preserved_field_hashes.insert(
@@ -1518,6 +1528,32 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             PreservedFieldHash {
                 before: sha256_hex(order.as_bytes()),
                 after: sha256_hex(order.as_bytes()),
+            },
+        );
+    }
+    if matches!(
+        case_id,
+        "context-preventive-compact"
+            | "error-context-no-auto"
+            | "error-context-compact-continue"
+            | "compact-context-resume-chat"
+            | "error-context-evidence-open"
+            | "error-context-evidence-close"
+    ) {
+        let completed_edits = "notes/release.md|notes/risks.md|accepted-retry-window";
+        let pending_task = "finish-short-risk-note-before-publish";
+        preserved_field_hashes.insert(
+            "completed_edits".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(completed_edits.as_bytes()),
+                after: sha256_hex(completed_edits.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "pending_task".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(pending_task.as_bytes()),
+                after: sha256_hex(pending_task.as_bytes()),
             },
         );
     }
@@ -2439,12 +2475,30 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "checkpoint-redo-stale"
             | "checkpoint-continue-chat"
             | "chat-turn-open-checkpoint-undo"
+            | "context-preventive-compact"
+            | "error-context-no-auto"
+            | "error-context-compact-continue"
+            | "compact-context-resume-chat"
+            | "error-context-evidence-open"
+            | "error-context-evidence-close"
     ) {
         match (case_id, after.screen_id.as_str()) {
             ("turn-error-retry", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
             ("turn-error-cancel", "turn-error") => "gate.recovery.turn-error".to_owned(),
             ("turn-error-inspect-connection", "error-network") => {
                 "gate.recovery.error-network".to_owned()
+            }
+            ("context-preventive-compact", "compact") => "session.disclosure.compact".to_owned(),
+            ("error-context-no-auto", "error-context") => "canonical.error-context".to_owned(),
+            ("error-context-compact-continue", "compact") => {
+                "session.disclosure.compact".to_owned()
+            }
+            ("compact-context-resume-chat", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
+            ("error-context-evidence-open", "error-context") => {
+                "error-context.evidence".to_owned()
+            }
+            ("error-context-evidence-close", "error-context") => {
+                "canonical.error-context".to_owned()
             }
             ("tool-failed-retry-safe", "tool-running") => "canonical.tool-running".to_owned(),
             ("tool-failed-retry-completed-effect", "tool-failed") => {
@@ -18439,6 +18493,394 @@ fn large_output_close() -> (
         "large-output",
         "returned",
         "exact return to compact bounded summary with complete output still available",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn apply_context_recovery_identity(state: &mut ScenarioState) {
+    apply_flow5_identity(state);
+    state.paused_activity_id = "pending.context.release-notes".to_owned();
+    state.transcript = format!(
+        "You · Summarize the remaining release notes and the still-open risks.\n{FLOW5_PARTIAL}\nCompleted edits · notes/release.md · notes/risks.md\nPending · finish the short risk note before publish"
+    );
+    state.scroll_anchor = "context-exhaustion".to_owned();
+    state.state_hash = state_hash(state);
+}
+
+fn context_preventive_compact() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "chat-turn",
+        vec!["chat-turn"],
+        FLOW5_DRAFT,
+        "turn-near-limit",
+        "continue-reply",
+        "composer",
+        Some("pending.context.release-notes"),
+        "stay-in-conversation",
+        0,
+    );
+    apply_context_recovery_identity(&mut before);
+    let mut after = state(
+        "compact",
+        vec!["chat-turn"],
+        FLOW5_DRAFT,
+        "compact-summary",
+        "compact-summary",
+        "compact-continue",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "pending.context.release-notes".to_owned();
+    after.scroll_anchor = "compact-summary".to_owned();
+    after.focus = "compact-continue".to_owned();
+    after.selection = "compact-summary".to_owned();
+    after.transcript =
+        "You · Summarize the remaining release notes and the still-open risks.\nConversation compacted. Completed edits and full history stay preserved."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.context.preventive-compact".to_owned(),
+        label: "Compact before exhaustion".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "preventive compaction may run automatically before visible exhaustion"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.context.preventive-compact.1".to_owned(),
+        owner_id: "pending.context.release-notes".to_owned(),
+        count: 1,
+        outcome: "compacted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.context.preventive-compact",
+        "context-compact",
+        "preventive",
+        "automatic compact preserved draft, edits, and full history before exhaustion became visible",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn error_context_no_auto() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-context",
+        vec!["chat-turn", "error-context"],
+        FLOW5_DRAFT,
+        "context-exhaustion",
+        "compact-continue",
+        "context-recovery",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_context_recovery_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "context-recovery".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-context.wait".to_owned(),
+        label: "No automatic recovery".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "visible exhaustion never auto-compacts or opens a new session".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.error-context.auto.0".to_owned(),
+        owner_id: "pending.context.release-notes".to_owned(),
+        count: 0,
+        outcome: "held".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.error-context.no-auto",
+        "context-compact",
+        "no-automatic-compact",
+        "visible error-context held all refactor state until an explicit compact action",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn error_context_compact_continue() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-context",
+        vec!["chat-turn", "error-context", "compact"],
+        FLOW5_DRAFT,
+        "context-exhaustion",
+        "compact-continue",
+        "context-recovery",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_context_recovery_identity(&mut before);
+    let mut after = state(
+        "compact",
+        vec!["chat-turn", "error-context", "compact"],
+        FLOW5_DRAFT,
+        "compact-summary",
+        "compact-summary",
+        "compact-continue",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "pending.context.release-notes".to_owned();
+    after.scroll_anchor = "compact-summary".to_owned();
+    after.selection = "compact-summary".to_owned();
+    after.focus = "compact-continue".to_owned();
+    after.transcript =
+        "You · Summarize the remaining release notes and the still-open risks.\nConversation compacted. Older visible turns became a summary. Full history preserved."
+            .to_owned();
+    after.partial_response = String::new();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-context.compact-continue".to_owned(),
+        label: "Compact and continue".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "explicit compact replaces older visible context while full history stays recoverable"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.error-context.compact.1".to_owned(),
+        owner_id: "pending.context.release-notes".to_owned(),
+        count: 1,
+        outcome: "compacted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.error-context.compact-continue",
+        "context-compact",
+        "compacted",
+        "compact kept completed edits, pending task, draft, and full transcript recovery",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn compact_context_resume_chat() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "compact",
+        vec!["chat-turn", "error-context", "compact"],
+        FLOW5_DRAFT,
+        "compact-summary",
+        "compact-summary",
+        "compact-continue",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_context_recovery_identity(&mut before);
+    before.transcript =
+        "You · Summarize the remaining release notes and the still-open risks.\nConversation compacted. Older visible turns became a summary. Full history preserved."
+            .to_owned();
+    before.partial_response = String::new();
+    before.scroll_anchor = "compact-summary".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "error-context", "compact"],
+        FLOW5_DRAFT,
+        "turn-resume",
+        "composer",
+        "composer",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "pending.context.release-notes".to_owned();
+    after.scroll_anchor = "turn-resume".to_owned();
+    after.selection = "composer".to_owned();
+    after.focus = "composer".to_owned();
+    after.draft = FLOW5_DRAFT.to_owned();
+    after.transcript =
+        "You · Summarize the remaining release notes and the still-open risks.\nResumed the same release-notes work from the compact summary with the same draft."
+            .to_owned();
+    after.partial_response = String::new();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.compact.continue-context".to_owned(),
+        label: "Continue from compact summary".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "compact returns to the exact paused request and restored composer draft"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.compact.continue-context.1".to_owned(),
+        owner_id: "pending.context.release-notes".to_owned(),
+        count: 1,
+        outcome: "resumed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.compact.continue-context",
+        "context-compact",
+        "resumed",
+        "returned to chat-turn with the same draft, task, and recoverable full history",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn error_context_evidence_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-context",
+        vec!["chat-turn", "error-context"],
+        FLOW5_DRAFT,
+        "context-exhaustion",
+        "expand-evidence",
+        "context-recovery",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_context_recovery_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "token-evidence".to_owned();
+    after.focus = "evidence".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-context.expand-evidence".to_owned(),
+        label: "Expand technical details".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "evidence discloses token usage after the cause and primary action".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.error-context.expand-evidence.1".to_owned(),
+        owner_id: "pending.context.release-notes".to_owned(),
+        count: 1,
+        outcome: "evidence".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.error-context.expand-evidence",
+        "context-evidence",
+        "expanded",
+        "token totals were disclosed only after Evidence expanded",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn error_context_evidence_close() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "error-context",
+        vec!["chat-turn", "error-context"],
+        FLOW5_DRAFT,
+        "context-exhaustion",
+        "token-evidence",
+        "evidence",
+        Some("pending.context.release-notes"),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_context_recovery_identity(&mut before);
+    before.selection = "token-evidence".to_owned();
+    before.focus = "evidence".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "compact-continue".to_owned();
+    after.focus = "context-recovery".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.error-context.collapse-evidence".to_owned(),
+        label: "Collapse technical details".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "collapsing evidence restores progressive disclosure without losing state"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.error-context.collapse-evidence.1".to_owned(),
+        owner_id: "pending.context.release-notes".to_owned(),
+        count: 1,
+        outcome: "collapsed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.error-context.collapse-evidence",
+        "context-evidence",
+        "collapsed",
+        "token diagnostics hid again while draft, edits, and pending task stayed preserved",
     );
     (before, after, action, transition, attempt, effect)
 }
