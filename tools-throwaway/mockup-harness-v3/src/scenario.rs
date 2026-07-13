@@ -456,6 +456,11 @@ pub(crate) fn diff_evidence_for_fixture(fixture_id: &str) -> Option<DiffEvidence
         "staging-include-hunk" => staging_include_hunk().1,
         "staging-exclude-hunk" => staging_exclude_hunk().1,
         "staging-include-all" => staging_include_all().1,
+        "permission-file-edit-allow-once" => permission_file_edit_allow_once().1,
+        "permission-file-edit-deny" => permission_file_edit_deny().1,
+        "permission-file-edit-review-detail" => permission_file_edit_review_detail().1,
+        "permission-file-edit-cancel" => permission_file_edit_cancel().1,
+        "permission-file-edit-persistent-scope" => permission_file_edit_persistent_scope().1,
         "staging-apply-partial-failure"
         | "staging-apply-failure"
         | "staging-finish-failed"
@@ -1056,6 +1061,16 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "permission-persistent-scope-outside" => permission_persistent_scope_outside(),
         "permission-shell-unsafe-byte" => permission_shell_unsafe_byte(),
         "permission-deny" => permission_deny(),
+        "permission-deny-send-reason" => permission_deny_send_reason(),
+        "permission-deny-skip-reason" => permission_deny_skip_reason(),
+        "permission-file-edit-allow-once" => permission_file_edit_allow_once(),
+        "permission-file-edit-deny" => permission_file_edit_deny(),
+        "permission-file-edit-review-detail" => permission_file_edit_review_detail(),
+        "permission-file-edit-cancel" => permission_file_edit_cancel(),
+        "permission-file-edit-persistent-scope" => permission_file_edit_persistent_scope(),
+        "permission-file-edit-persistent-scope-outside" => {
+            permission_file_edit_persistent_scope_outside()
+        }
         "permission-cancel" => permission_cancel(),
         "automatic-retry" => automatic_retry(),
         "streaming-interrupt" => streaming_interrupt(),
@@ -1558,6 +1573,24 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             },
         );
     }
+    if case_id == "permission-deny-send-reason" {
+        preserved_field_hashes.insert(
+            "denial_reason".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b""),
+                after: sha256_hex(b"timeout risk on this shell check"),
+            },
+        );
+    }
+    if case_id == "permission-deny-skip-reason" {
+        preserved_field_hashes.insert(
+            "denial_reason".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b""),
+                after: sha256_hex(b""),
+            },
+        );
+    }
     if case_id.starts_with("session-") {
         preserved_field_hashes.insert(
             "source_history".to_owned(),
@@ -1806,6 +1839,20 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "flow2-queue-manager-conflict".to_owned()
     } else if case_id == "queue-refresh" {
         "flow2-queue-manager-refresh".to_owned()
+    } else if case_id == "permission-file-edit-persistent-scope-outside" {
+        "flow2-permission-file-edit-outside".to_owned()
+    } else if case_id == "permission-file-edit-deny" {
+        "flow2-permission-file-edit-denied".to_owned()
+    } else if matches!(
+        case_id,
+        "permission-file-edit-allow-once"
+            | "permission-file-edit-cancel"
+            | "permission-file-edit-review-detail"
+            | "permission-file-edit-persistent-scope"
+            | "permission-deny-send-reason"
+            | "permission-deny-skip-reason"
+    ) {
+        format!("case.{case_id}.tick.{tick}")
     } else {
         audit_fixture
     };
@@ -7180,6 +7227,460 @@ fn permission_deny() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn permission_deny_send_reason() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = flow2_state(
+        "permission-deny-reason",
+        vec!["chat-turn", "permission-shell"],
+        "turn-18",
+        "deny-reason",
+        "reason-input",
+        None,
+        "return-to-paused-turn",
+        0,
+    );
+    let mut after = flow2_state(
+        "chat-turn",
+        vec!["chat-turn", "permission-shell"],
+        "turn-18",
+        "deny-reason-sent",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    after.transcript = format!(
+        "{} · Denial reason: timeout risk on this shell check",
+        before.transcript
+    );
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.send-reason".to_owned(),
+        label: "Send reason".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "sending the exact optional reason returns to the same transcript without executing"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.send-reason.1".to_owned(),
+        owner_id: "pending.shell.project-check".to_owned(),
+        count: 0,
+        outcome: "denied-with-reason".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.permission.reason-sent",
+        "permission-decision",
+        "reason-appended",
+        "denial reason timeout risk on this shell check appended without execution",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_deny_skip_reason() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = flow2_state(
+        "permission-deny-reason",
+        vec!["chat-turn", "permission-shell"],
+        "turn-18",
+        "deny-reason",
+        "reason-input",
+        None,
+        "return-to-paused-turn",
+        0,
+    );
+    let after = flow2_state(
+        "chat-turn",
+        vec!["chat-turn", "permission-shell"],
+        "turn-18",
+        "deny-reason-skipped",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.permission.skip-reason".to_owned(),
+        label: "Skip".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "skipping returns without inventing a reason and without executing the denied action"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.skip-reason.1".to_owned(),
+        owner_id: "pending.shell.project-check".to_owned(),
+        count: 0,
+        outcome: "denied-without-reason".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.permission.reason-skipped",
+        "permission-decision",
+        "no-execution",
+        "skip restored origin without a reason payload or invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_file_edit_pending_state(
+    selection: &str,
+    focus: &str,
+    virtual_tick: u32,
+) -> ScenarioState {
+    let mut state = flow2_state(
+        "permission-file-edit",
+        vec!["chat-turn", "permission-file-edit"],
+        "turn-18",
+        selection,
+        focus,
+        Some("pending.edit.patch-retry-18"),
+        "return-to-paused-turn",
+        virtual_tick,
+    );
+    state.requested_command = "edit:src/net/retry_policy.rs".to_owned();
+    state.permission_request_status = "permission needed".to_owned();
+    state.staging_hunk_states = ["Included".to_owned(), "Included".to_owned()];
+    state.focused_hunk = "hunk.retry-guard".to_owned();
+    state.state_hash = state_hash(&state);
+    state
+}
+
+fn permission_file_edit_allow_once() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = permission_file_edit_pending_state("allow-once", "permission-choice", 0);
+    let mut after = flow2_state(
+        "chat-turn",
+        vec!["chat-turn", "permission-file-edit"],
+        "turn-18",
+        "allow-once",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    after.requested_command = before.requested_command.clone();
+    after.staging_hunk_states = ["Included".to_owned(), "Included".to_owned()];
+    after.focused_hunk = "hunk.retry-guard".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.allow-once".to_owned(),
+        label: "Allow once".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "allow once writes only the disclosed patch and resumes the paused activity"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.file-edit.allow-once.1".to_owned(),
+        owner_id: "pending.edit.patch-retry-18".to_owned(),
+        count: 1,
+        outcome: "approved".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-edit.applied-once",
+        "permission-decision",
+        "executed-once",
+        "disclosed patch written once without broadening scope",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_file_edit_deny() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = permission_file_edit_pending_state("deny", "permission-choice", 0);
+    let mut after = flow2_state(
+        "permission-deny-reason",
+        vec!["chat-turn", "permission-file-edit"],
+        "turn-18",
+        "deny",
+        "reason-input",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    after.requested_command = before.requested_command.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.deny".to_owned(),
+        label: "Deny".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "denial writes nothing and opens the optional reason dock with denied file context"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.file-edit.deny.1".to_owned(),
+        owner_id: "pending.edit.patch-retry-18".to_owned(),
+        count: 0,
+        outcome: "denied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-edit.denied",
+        "permission-decision",
+        "no-execution",
+        "file-edit denial performed zero writes",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_file_edit_review_detail() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = permission_file_edit_pending_state("review-detail", "permission-choice", 0);
+    let mut after = flow2_state(
+        "diff-viewer-staging",
+        vec!["chat-turn", "permission-file-edit"],
+        "turn-18",
+        "hunk.retry-guard",
+        "staging-detail",
+        Some("pending.edit.patch-retry-18"),
+        "return-to-permission-file-edit",
+        1,
+    );
+    after.requested_command = before.requested_command.clone();
+    after.staging_hunk_states = ["Included".to_owned(), "Pending".to_owned()];
+    after.focused_hunk = "hunk.retry-guard".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.review-detail".to_owned(),
+        label: "Review full patch".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "review opens exact patch detail without writing or approving the edit".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.file-edit.review.1".to_owned(),
+        owner_id: "pending.edit.patch-retry-18".to_owned(),
+        count: 0,
+        outcome: "opened-read-only".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-edit.review",
+        "patch-review",
+        "no-write",
+        "reviewing the pending file edit did not write or approve",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_file_edit_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = permission_file_edit_pending_state("cancel", "permission-choice", 0);
+    let mut after = flow2_state(
+        "chat-turn",
+        vec!["chat-turn", "permission-file-edit"],
+        "turn-18",
+        "cancel",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    after.requested_command = before.requested_command.clone();
+    after.permission_request_status = "pending".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel leaves the request pending and restores the exact paused conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.file-edit.cancel.1".to_owned(),
+        owner_id: "pending.edit.patch-retry-18".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-edit.cancelled",
+        "permission-decision",
+        "no-execution",
+        "file-edit cancellation wrote nothing and kept the request pending",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_file_edit_persistent_scope() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = permission_file_edit_pending_state("persistent-scope", "permission-choice", 0);
+    before.permission_request_status = "existing rule is available".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = flow2_state(
+        "chat-turn",
+        vec!["chat-turn", "permission-file-edit"],
+        "turn-18",
+        "persistent-scope",
+        "composer",
+        None,
+        "return-to-paused-turn",
+        1,
+    );
+    after.requested_command = before.requested_command.clone();
+    after.staging_hunk_states = ["Included".to_owned(), "Included".to_owned()];
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.allow-persistent".to_owned(),
+        label: "Allow for this project".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "persistent allow stores only the disclosed file matcher, duration, project root, work style, and child cap"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.file-edit.persistent.1".to_owned(),
+        owner_id: "pending.edit.patch-retry-18".to_owned(),
+        count: 1,
+        outcome: "approved-with-rule".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-edit.persistent-scope",
+        "permission-decision",
+        "executed-once",
+        "persistent file-edit rule stored and disclosed patch applied once",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn permission_file_edit_persistent_scope_outside() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let (mut before, _, _, _, _, _) = permission_file_edit_persistent_scope();
+    before.screen_id = "permission-file-edit".to_owned();
+    before.selection = "persistent-scope".to_owned();
+    before.focus = "permission-choice".to_owned();
+    before.pending_action = Some("pending.edit.patch-retry-18".to_owned());
+    before.virtual_tick = 0;
+    before.requested_command = "edit:src/net/retry_policy.rs".to_owned();
+    before.requested_working_directory = "~/project".to_owned();
+    before.permission_request_status = "existing rule is available".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "out-of-scope-request".to_owned();
+    after.pending_action = Some("pending.edit.release-notes".to_owned());
+    after.requested_command = "edit:src/docs/release_notes.md".to_owned();
+    after.requested_working_directory = "~/other-project".to_owned();
+    after.permission_request_status = "new permission required".to_owned();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.permission.scope-outside".to_owned(),
+        label: "Request permission again".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "an edit outside the matcher, root, work style, child cap, or duration requests permission again"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.permission.file-edit.scope-outside.1".to_owned(),
+        owner_id: "pending.edit.release-notes".to_owned(),
+        count: 0,
+        outcome: "permission-requested".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.file-edit.scope-outside",
+        "permission-decision",
+        "no-execution",
+        "out-of-scope file edit requested a fresh permission decision",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 fn permission_cancel() -> (
     ScenarioState,
     ScenarioState,
@@ -11739,6 +12240,11 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
             | "apply-partial-failure"
             | "staging-cancel"
             | "staging-back"
+            | "permission-file-edit-allow-once"
+            | "permission-file-edit-deny"
+            | "permission-file-edit-review-detail"
+            | "permission-file-edit-cancel"
+            | "permission-file-edit-persistent-scope"
     ) {
         return None;
     }
@@ -11753,7 +12259,11 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
             | "apply-partial-failure"
     );
     let applied_hunks = match case_id {
-        "diff-apply-all" => vec!["hunk.retry-guard".to_owned(), "hunk.retry-test".to_owned()],
+        "diff-apply-all"
+        | "permission-file-edit-allow-once"
+        | "permission-file-edit-persistent-scope" => {
+            vec!["hunk.retry-guard".to_owned(), "hunk.retry-test".to_owned()]
+        }
         "staging-finish" => vec!["hunk.retry-guard".to_owned()],
         _ => vec![],
     };
@@ -11769,7 +12279,13 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
             }
         })
         .collect::<Vec<_>>();
-    let write_count = u32::from(matches!(case_id, "diff-apply-all" | "staging-finish"));
+    let write_count = u32::from(matches!(
+        case_id,
+        "diff-apply-all"
+            | "staging-finish"
+            | "permission-file-edit-allow-once"
+            | "permission-file-edit-persistent-scope"
+    ));
     let before_bytes = diff_fixture_file_bytes();
     let working_tree_before = sha256_hex(&before_bytes);
     let hunks = diff_hunks(states.clone());
@@ -11842,6 +12358,7 @@ fn permission_evidence_at_offset(case_id: &str, byte_offset: usize) -> Option<Pe
     use crate::screens::input_and_approval::{
         LONG_SHELL_COMMAND, SHORT_SHELL_COMMAND, UNSAFE_SHELL_COMMAND,
     };
+    let file_edit = case_id.starts_with("permission-file-edit");
     let (execution_bytes, display_notation) = if case_id.contains("unsafe-byte") {
         (
             UNSAFE_SHELL_COMMAND.to_vec(),
@@ -11851,6 +12368,16 @@ fn permission_evidence_at_offset(case_id: &str, byte_offset: usize) -> Option<Pe
         (
             LONG_SHELL_COMMAND.to_vec(),
             command_notation(LONG_SHELL_COMMAND, false),
+        )
+    } else if file_edit && case_id.contains("scope-outside") {
+        (
+            b"edit:src/docs/release_notes.md".to_vec(),
+            command_notation(b"edit:src/docs/release_notes.md", false),
+        )
+    } else if file_edit {
+        (
+            b"edit:src/net/retry_policy.rs".to_vec(),
+            command_notation(b"edit:src/net/retry_policy.rs", false),
         )
     } else if case_id.contains("scope-outside") {
         (
@@ -11863,15 +12390,27 @@ fn permission_evidence_at_offset(case_id: &str, byte_offset: usize) -> Option<Pe
             command_notation(SHORT_SHELL_COMMAND, false),
         )
     };
-    let persistent_scope =
-        (case_id == "permission-persistent-scope").then(|| PersistentPermissionScope {
+    let persistent_scope = if case_id == "permission-persistent-scope" {
+        Some(PersistentPermissionScope {
             matcher: "git diff -- src/net/*".to_owned(),
             duration: "this session".to_owned(),
             project_root: "~/project".to_owned(),
             work_style: "Careful edits".to_owned(),
             child_inheritance: "children inherit only read-only checks".to_owned(),
             child_cap: "read-only, same project root, same session".to_owned(),
-        });
+        })
+    } else if case_id == "permission-file-edit-persistent-scope" {
+        Some(PersistentPermissionScope {
+            matcher: "src/net/retry_policy.rs".to_owned(),
+            duration: "this session".to_owned(),
+            project_root: "~/project".to_owned(),
+            work_style: "Careful edits".to_owned(),
+            child_inheritance: "children inherit only read-only checks".to_owned(),
+            child_cap: "no write elevation".to_owned(),
+        })
+    } else {
+        None
+    };
     let visible_total_length = execution_bytes.len();
     let page_end = (byte_offset + PERMISSION_PAGE_SIZE).min(visible_total_length);
     let page_notation = command_notation(
@@ -11905,18 +12444,33 @@ fn permission_evidence_at_offset(case_id: &str, byte_offset: usize) -> Option<Pe
         },
         invocation_count: if case_id == "permission-allow-once"
             || case_id == "permission-persistent-scope"
+            || case_id == "permission-file-edit-allow-once"
+            || case_id == "permission-file-edit-persistent-scope"
             || case_id.contains("unsafe-byte")
         {
             1
         } else {
             0
         },
-        persisted_rule_count: u32::from(case_id == "permission-persistent-scope"),
-        verdict: if case_id == "permission-deny" {
+        persisted_rule_count: u32::from(
+            case_id == "permission-persistent-scope"
+                || case_id == "permission-file-edit-persistent-scope",
+        ),
+        verdict: if matches!(
+            case_id,
+            "permission-deny"
+                | "permission-deny-send-reason"
+                | "permission-deny-skip-reason"
+                | "permission-file-edit-deny"
+        ) {
             "denied"
         } else if matches!(
             case_id,
-            "permission-cancel" | "permission-persistent-scope-outside"
+            "permission-cancel"
+                | "permission-persistent-scope-outside"
+                | "permission-file-edit-cancel"
+                | "permission-file-edit-review-detail"
+                | "permission-file-edit-persistent-scope-outside"
         ) {
             "pending"
         } else {

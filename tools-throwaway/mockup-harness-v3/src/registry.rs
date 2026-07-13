@@ -414,7 +414,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Input,
         flow: FlowOwner::InputAndApproval,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "permission-deny-reason",

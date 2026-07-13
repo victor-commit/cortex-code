@@ -469,6 +469,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "export-picker"
             | "queue-manager"
             | "permission-shell"
+            | "permission-file-edit"
             | "permission-deny-reason"
             | "diff-edit"
             | "diff-viewer-staging"
@@ -1052,6 +1053,22 @@ fn screen_action(screen_id: &str) -> (ActionEvidence, TransitionTrace) {
             "direct",
             "permission approval opens the pending edit",
         ),
+        "permission-file-edit" => (
+            "action.permission.allow-once",
+            "Allow once",
+            false,
+            "chat-turn",
+            "direct",
+            "file-edit approval applies only the disclosed patch and resumes",
+        ),
+        "permission-deny-reason" => (
+            "action.permission.send-reason",
+            "Send reason",
+            false,
+            "chat-turn",
+            "direct",
+            "sending the optional reason returns to the paused transcript",
+        ),
         "rate-limit" => (
             "action.recovery.retry-window",
             "Wait for retry",
@@ -1096,6 +1113,8 @@ fn screen_action(screen_id: &str) -> (ActionEvidence, TransitionTrace) {
 fn title_for_screen(screen_id: &str) -> &'static str {
     match screen_id {
         "permission-shell" => "Allow this project check?",
+        "permission-file-edit" => "Allow this file edit?",
+        "permission-deny-reason" => "Optional reason for the denial",
         "diff-edit" => "Review the pending change",
         "rate-limit" => "Connection is waiting to retry",
         "chat-turn" => "Continue the conversation",
@@ -1106,6 +1125,8 @@ fn title_for_screen(screen_id: &str) -> &'static str {
 fn description_for_screen(screen_id: &str) -> &'static str {
     match screen_id {
         "permission-shell" => "Code wants to check the project files before continuing.",
+        "permission-file-edit" => "Code wants to edit a project file before continuing.",
+        "permission-deny-reason" => "The denied action was not run; optionally tell Code why.",
         "diff-edit" => "The change is waiting for review and has not been applied.",
         "rate-limit" => "Code will retry once when the safe waiting window ends.",
         _ => "One clear next action keeps this work moving.",

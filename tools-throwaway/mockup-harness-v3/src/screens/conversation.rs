@@ -356,9 +356,27 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 render_permission_unsafe_turn(&mut canvas, screen_id, fixture_id)?
             }
             ChatTurnJourney::Flow2InputAndApproval
-                if fixture_id.starts_with("case.permission-cancel") =>
+                if fixture_id.starts_with("case.permission-cancel")
+                    || fixture_id.starts_with("case.permission-file-edit-cancel") =>
             {
                 render_permission_cancel_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.permission-deny-send-reason")
+                    || fixture_id.starts_with("case.permission-deny-skip-reason") =>
+            {
+                render_permission_deny_reason_result(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.permission-file-edit-allow-once") =>
+            {
+                render_diff_applied_turn(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::Flow2InputAndApproval
+                if fixture_id.starts_with("case.permission-file-edit-persistent-scope")
+                    && !fixture_id.contains("outside") =>
+            {
+                render_permission_file_edit_applied_turn(&mut canvas, screen_id, fixture_id)?
             }
             ChatTurnJourney::Flow2InputAndApproval
                 if fixture_id.starts_with("case.staging-finish")
@@ -1212,12 +1230,21 @@ fn render_permission_cancel_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let file_edit = fixture_id.contains("file-edit");
     permission_outcome_transcript(
         canvas,
         "Permission request still pending",
-        "Cancel kept the request open. The command was not run and nothing was denied.",
+        if file_edit {
+            "Cancel kept the request open. The file write did not run and nothing was denied."
+        } else {
+            "Cancel kept the request open. The command was not run and nothing was denied."
+        },
         "Return to the paused turn when you are ready to choose.",
-        "Working directory: ~/project · scope: this command only",
+        if file_edit {
+            "Target: src/net/retry_policy.rs · scope: this edit only"
+        } else {
+            "Working directory: ~/project · scope: this command only"
+        },
         "Draft and transcript are unchanged",
         "Reply to Code",
     )?;
@@ -1271,6 +1298,201 @@ fn render_permission_cancel_turn(
             "streaming",
             "direct",
             "the unchanged paused turn can continue after the pending permission choice",
+        )],
+    ))
+}
+
+fn render_permission_deny_reason_result(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let sent = fixture_id.contains("send-reason");
+    permission_outcome_transcript(
+        canvas,
+        if sent {
+            "Denial reason sent"
+        } else {
+            "Denial reason skipped"
+        },
+        if sent {
+            "Denied · command was not run · reason added to the denied activity once."
+        } else {
+            "Denied · command was not run · no reason was invented or uploaded."
+        },
+        if sent {
+            "Reason: timeout risk on this shell check."
+        } else {
+            "Skip restored the same paused transcript without leaving reason text."
+        },
+        "Draft and origin match the moment the permission dock opened.",
+        "No invocation occurred and Allow/Deny are no longer active.",
+        "Reply to Code",
+    )?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            if sent {
+                "denial-reason-sent"
+            } else {
+                "denial-reason-skipped"
+            },
+            reference(9, 4, 78),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "denial-reason",
+            if sent {
+                "timeout-risk"
+            } else {
+                "no-reason"
+            },
+            reference(13, 4, 72),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "send and skip each resume the same paused conversation once",
+        )],
+    ))
+}
+
+fn render_permission_file_edit_applied_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let persistent = fixture_id.contains("persistent-scope")
+        && !fixture_id.contains("outside");
+    if fixture_id.contains("allow-once") {
+        // Diff application evidence owns the allow-once destination anatomy.
+        return render_diff_applied_turn(canvas, screen_id, fixture_id);
+    }
+    permission_outcome_transcript(
+        canvas,
+        if persistent {
+            "Permission saved for this file edit"
+        } else {
+            "File edit applied once"
+        },
+        if persistent {
+            "The disclosed patch wrote once and one bounded rule remains for this session."
+        } else {
+            "The disclosed patch was written exactly once to src/net/retry_policy.rs."
+        },
+        if persistent {
+            "Matcher: src/net/retry_policy.rs · duration: this session"
+        } else {
+            "Working tree updated once · Git index unchanged"
+        },
+        if persistent {
+            "Project root: ~/project · work style: Careful edits"
+        } else {
+            "Draft and paused activity restored with the completed write"
+        },
+        if persistent {
+            "Children inherit only read-only checks · cap: no write elevation"
+        } else {
+            "No reusable permission was stored for other files"
+        },
+        "Reply to Code",
+    )?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            if persistent {
+                "file-edit-persistent-result"
+            } else {
+                "file-edit-applied-once"
+            },
+            reference(9, 4, 78),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            if persistent {
+                "persistent-scope"
+            } else {
+                "applied-edit"
+            },
+            if persistent {
+                "exact-file-session-scope"
+            } else {
+                "src/net/retry_policy.rs"
+            },
+            reference(13, 4, 78),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.send-reply",
+            reference(COMPOSER_TOP, 4, 30),
+            "summary",
+            Some(action("action.chat-turn.send-reply", "Send reply", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the file-edit outcome returns to the same paused conversation",
         )],
     ))
 }

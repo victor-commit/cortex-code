@@ -167,6 +167,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "queue-manager",
             "model-picker",
             "permission-shell",
+            "permission-file-edit",
             "permission-deny-reason",
             "diff-edit",
             "diff-viewer-staging",

@@ -323,6 +323,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "export-picker" => render_export_picker(&mut canvas, screen_id, fixture_id)?,
         "queue-manager" => render_queue_manager(&mut canvas, screen_id, fixture_id)?,
         "permission-shell" => render_permission_shell(&mut canvas, screen_id, fixture_id)?,
+        "permission-file-edit" => render_permission_file_edit(&mut canvas, screen_id, fixture_id)?,
         "permission-deny-reason" => {
             render_permission_deny_reason(&mut canvas, screen_id, fixture_id)?
         }
@@ -1627,19 +1628,413 @@ fn permission_transcript(canvas: &mut Canvas, unsafe_bytes: bool) -> Result<(), 
     Ok(())
 }
 
+fn render_permission_file_edit(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let out_of_scope = fixture_id.contains("scope-outside") || fixture_id.contains("outside");
+    let persistent_supported = !out_of_scope
+        && (fixture_id.contains("persistent")
+            || fixture_id.contains("flow2-permission-file-edit")
+            || fixture_id.contains("canonical.permission-file-edit")
+            || fixture_id.contains("public-audit")
+            || fixture_id.contains("flow2.input-and-approval.stable"));
+    let hunks = validated_diff_hunks_for_render()?;
+    let guard = &hunks[0];
+    let test = &hunks[1];
+    let target_file = if out_of_scope {
+        "src/docs/release_notes.md"
+    } else {
+        "src/net/retry_policy.rs"
+    };
+
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    canvas.write(
+        7,
+        4,
+        "Code paused · File edit needs your approval",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        9,
+        4,
+        "Why Code needs it: to keep retry timing from repeating the same failed window.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        "What applying it will do: write the disclosed patch into the project file once.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        4,
+        &format!("File: {target_file} · revision: patch-retry-18"),
+        TextStyle::text(),
+    )?;
+    canvas.write(13, 4, "Patch summary +4 -3 · 2 hunks", TextStyle::text())?;
+    canvas.write(
+        14,
+        4,
+        &format!(
+            "Hunk @@ -{},{} +{},{}",
+            guard.old_start, guard.old_lines, guard.new_start, guard.new_lines
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        6,
+        &format!(
+            "{}  {:>2}  -{}",
+            guard.old_start, guard.new_start, guard.old_payload[0]
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        6,
+        &format!(
+            "{}  {:>2}  -{}",
+            guard.old_start + 1,
+            guard.new_start + 1,
+            guard.old_payload[1]
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        6,
+        &format!("    {:>2}  +{}", guard.new_start, guard.new_payload[0]),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        18,
+        6,
+        &format!("    {:>2}  +{}", guard.new_start + 1, guard.new_payload[1]),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        19,
+        6,
+        &format!("    {:>2}  +{}", guard.new_start + 2, guard.new_payload[2]),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        &format!(
+            "Second hunk · hunk.retry-test · @@ -{},{} +{},{} · [e] Review full patch",
+            test.old_start, test.old_lines, test.new_start, test.new_lines
+        ),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        21,
+        4,
+        "Scope: this edit only · project root ~/project · work style Careful edits",
+        TextStyle::muted(),
+    )?;
+    if persistent_supported {
+        canvas.write(
+            22,
+            4,
+            "Persistent: this session · matcher src/net/retry_policy.rs · Careful edits",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            23,
+            4,
+            "Children inherit only read-only checks · child cap: no write elevation",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(
+            22,
+            4,
+            "Persistent Allow: unavailable · request is outside the saved scope",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            23,
+            4,
+            "new permission required · children remain capped by the parent",
+            TextStyle::muted(),
+        )?;
+    }
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Permission choices",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "› [enter] Allow once · apply only the disclosed patch",
+        TextStyle::accent(),
+    )?;
+    if persistent_supported {
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "  [p] Allow for this project · save the exact scope shown above",
+            TextStyle::text(),
+        )?;
+    } else {
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "  Note · Persistent Allow unavailable for this outside request",
+            TextStyle::muted(),
+        )?;
+    }
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [d] Deny · do not write the file",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "[e] Review full patch · [esc] Cancel · keep request pending",
+        TextStyle::muted(),
+    )?;
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "paused-activity",
+            "file-edit.retry-policy",
+            reference(7, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "purpose",
+            "why-edit-requested",
+            reference(9, 4, 86),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "effect",
+            "edit-effect",
+            reference(11, 4, 86),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "file",
+            target_file,
+            reference(12, 4, 58),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-guard",
+            reference(14, 4, 45),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-test",
+            reference(20, 4, 88),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "execution-scope",
+            "this-edit-only",
+            reference(21, 4, 78),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "persistent-scope",
+            if persistent_supported {
+                "exact-file-session-scope"
+            } else {
+                "persistent-allow-unavailable"
+            },
+            reference(22, 4, 78),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.permission.allow-once",
+            reference(DOCK_TOP + 2, 4, 64),
+            "focused",
+            Some(action("action.permission.allow-once", "Allow once", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.permission.deny",
+            reference(DOCK_TOP + 4, 4, 38),
+            "summary",
+            Some(action("action.permission.deny", "Deny", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.permission.cancel",
+            reference(DOCK_TOP + 5, 4, 62),
+            "summary",
+            Some(action(
+                "action.permission.cancel",
+                "Cancel, keep request pending",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.permission.review-detail",
+            reference(DOCK_TOP + 5, 4, 24),
+            "summary",
+            Some(action(
+                "action.permission.review-detail",
+                "Review full patch",
+                false,
+            )),
+        ),
+    ];
+    if persistent_supported {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.permission.allow-persistent",
+            reference(DOCK_TOP + 3, 4, 73),
+            "summary",
+            Some(action(
+                "action.permission.allow-persistent",
+                "Allow for this project",
+                false,
+            )),
+        ));
+    }
+    let mut transitions = vec![
+        transition(
+            "action.permission.allow-once",
+            "permission-file-edit",
+            "chat-turn",
+            "direct",
+            "allow once writes only the disclosed patch and resumes the paused activity",
+        ),
+        transition(
+            "action.permission.deny",
+            "permission-file-edit",
+            "permission-deny-reason",
+            "direct",
+            "denial writes nothing and opens the optional reason dock with denied edit context",
+        ),
+        transition(
+            "action.permission.cancel",
+            "permission-file-edit",
+            "chat-turn",
+            "cancel",
+            "cancel leaves the request pending and restores the exact paused conversation",
+        ),
+        transition(
+            "action.permission.review-detail",
+            "permission-file-edit",
+            "diff-viewer-staging",
+            "direct",
+            "review opens exact patch detail without writing or approving the edit",
+        ),
+    ];
+    if persistent_supported {
+        transitions.push(transition(
+            "action.permission.allow-persistent",
+            "permission-file-edit",
+            "chat-turn",
+            "direct",
+            "persistent allow stores only the disclosed matcher, duration, project root, work style, and child cap",
+        ));
+    }
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
 fn render_permission_deny_reason(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    permission_transcript(canvas, false)?;
-    canvas.write(13, 4, "Denied · command was not run", TextStyle::text())?;
-    canvas.write(
-        15,
-        4,
-        "Denied command: printf '%s\\n' \"retry check\"",
-        TextStyle::text(),
-    )?;
+    let file_edit_denial = fixture_id.contains("file-edit");
+    if file_edit_denial {
+        canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+        canvas.write(
+            7,
+            4,
+            "Code paused · File edit needs your approval",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            9,
+            4,
+            "Why Code needs it: to keep retry timing from repeating the same failed window.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            11,
+            4,
+            "What applying it will do: write the disclosed patch into the project file once.",
+            TextStyle::text(),
+        )?;
+        canvas.write(13, 4, "Denied · file edit was not applied", TextStyle::text())?;
+        canvas.write(
+            15,
+            4,
+            "Denied file edit: src/net/retry_policy.rs · patch-retry-18",
+            TextStyle::text(),
+        )?;
+    } else {
+        permission_transcript(canvas, false)?;
+        canvas.write(13, 4, "Denied · command was not run", TextStyle::text())?;
+        canvas.write(
+            15,
+            4,
+            "Denied command: printf '%s\\n' \"retry check\"",
+            TextStyle::text(),
+        )?;
+    }
     canvas.write(
         17,
         4,
@@ -1673,12 +2068,22 @@ fn render_permission_deny_reason(
         TextStyle::muted(),
     )?;
 
+    let denied_subject = if file_edit_denial {
+        "file-edit.retry-policy"
+    } else {
+        "shell.project-check"
+    };
+    let denied_command_subject = if file_edit_denial {
+        "src/net/retry_policy.rs"
+    } else {
+        "printf-retry-check"
+    };
     let pairs = [
         semantic(
             screen_id,
             fixture_id,
             "denied-activity",
-            "shell.project-check",
+            denied_subject,
             reference(13, 4, 40),
             "summary",
             None,
@@ -1687,8 +2092,8 @@ fn render_permission_deny_reason(
             screen_id,
             fixture_id,
             "denied-command",
-            "printf-retry-check",
-            reference(15, 4, 49),
+            denied_command_subject,
+            reference(15, 4, 58),
             "focused",
             None,
         ),
@@ -1752,7 +2157,7 @@ fn render_permission_deny_reason(
                 "permission-deny-reason",
                 "chat-turn",
                 "cancel",
-                "skipping returns without adding a reason or executing the denied command",
+                "skipping returns without adding a reason or executing the denied action",
             ),
             transition(
                 "action.permission.cancel-reason",
