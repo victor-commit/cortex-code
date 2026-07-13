@@ -1286,6 +1286,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mcp-retry-running" => mcp_retry_running(),
         "mcp-retry-ready" => mcp_retry_ready(),
         "mcp-retry-failed" => mcp_retry_failed(),
+        "mcp-progress-success" => mcp_progress_success(),
+        "mcp-progress-failed" => mcp_progress_failed(),
+        "mcp-progress-cancel-setup" => mcp_progress_cancel_setup(),
+        "mcp-progress-cancel-auth" => mcp_progress_cancel_auth(),
+        "mcp-progress-cancel-reconnect" => mcp_progress_cancel_reconnect(),
+        "mcp-progress-cancel-invocation" => mcp_progress_cancel_invocation(),
+        "mcp-details-open" => mcp_details_open(),
+        "mcp-details-back" => mcp_details_back(),
+        "mcp-diagnostics-open" => mcp_diagnostics_open(),
+        "mcp-diagnostics-close" => mcp_diagnostics_close(),
+        "mcp-diagnostics-failed-open" => mcp_diagnostics_failed_open(),
+        "mcp-diagnostics-failed-close" => mcp_diagnostics_failed_close(),
         "turn-error-retry" => turn_error_retry(),
         "turn-error-cancel" => turn_error_cancel(),
         "turn-error-inspect-connection" => turn_error_inspect_connection(),
@@ -2044,6 +2056,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mcp-retry-running"
             | "mcp-retry-ready"
             | "mcp-retry-failed"
+            | "mcp-progress-success"
+            | "mcp-progress-failed"
+            | "mcp-progress-cancel-setup"
+            | "mcp-progress-cancel-auth"
+            | "mcp-progress-cancel-reconnect"
+            | "mcp-progress-cancel-invocation"
+            | "mcp-details-open"
+            | "mcp-details-back"
+            | "mcp-diagnostics-open"
+            | "mcp-diagnostics-close"
+            | "mcp-diagnostics-failed-open"
+            | "mcp-diagnostics-failed-close"
             | "login-choose-provider"
             | "connect-method-oauth"
             | "connect-oauth-finish"
@@ -2166,6 +2190,70 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                 "views.mcp.retry-failed".to_owned()
             }
             ("mcp-retry-failed", "mcp") => "views.mcp.failed-tracker".to_owned(),
+            ("mcp-progress-success", "mcp") if after.focus.contains("ready") => {
+                "views.mcp.progress-success".to_owned()
+            }
+            ("mcp-progress-success", "mcp") => {
+                "views.mcp.progress-invocation.tick-1".to_owned()
+            }
+            ("mcp-progress-failed", "mcp") if after.focus.contains("failed") => {
+                "views.mcp.progress-failed".to_owned()
+            }
+            ("mcp-progress-failed", "mcp") => {
+                "views.mcp.progress-invocation.tick-1".to_owned()
+            }
+            ("mcp-progress-cancel-setup", "mcp") if after.focus.contains("setup") => {
+                "views.mcp.setup-browser".to_owned()
+            }
+            ("mcp-progress-cancel-setup", "mcp") => {
+                "views.mcp.progress-setup.tick-1".to_owned()
+            }
+            ("mcp-progress-cancel-auth", "mcp") if after.focus.contains("auth") => {
+                "views.mcp.auth-docs".to_owned()
+            }
+            ("mcp-progress-cancel-auth", "mcp") => {
+                "views.mcp.progress-auth.tick-1".to_owned()
+            }
+            ("mcp-progress-cancel-reconnect", "mcp")
+                if after.focus.contains("failed") || after.focus.contains("restored") =>
+            {
+                "views.mcp.failed-tracker".to_owned()
+            }
+            ("mcp-progress-cancel-reconnect", "mcp") => {
+                "views.mcp.progress-reconnect.tick-1".to_owned()
+            }
+            ("mcp-progress-cancel-invocation", "mcp")
+                if after.focus.contains("ready") || after.focus.contains("cancel") =>
+            {
+                "views.mcp.progress-cancelled".to_owned()
+            }
+            ("mcp-progress-cancel-invocation", "mcp") => {
+                "views.mcp.progress-invocation.tick-1".to_owned()
+            }
+            ("mcp-details-open", "mcp") if after.focus.contains("detail") => {
+                "views.mcp.detail-docs".to_owned()
+            }
+            ("mcp-details-open", "mcp") => "views.mcp.auth-docs-ready".to_owned(),
+            ("mcp-details-back", "mcp") if after.focus.contains("detail") => {
+                "views.mcp.detail-docs".to_owned()
+            }
+            ("mcp-details-back", "mcp") => "views.mcp.auth-docs-ready".to_owned(),
+            ("mcp-diagnostics-open", "mcp") if after.focus.contains("diagnostics") => {
+                "views.mcp.diagnostics-docs".to_owned()
+            }
+            ("mcp-diagnostics-open", "mcp") => "views.mcp.detail-docs".to_owned(),
+            ("mcp-diagnostics-close", "mcp") if after.focus.contains("diagnostics") => {
+                "views.mcp.diagnostics-docs".to_owned()
+            }
+            ("mcp-diagnostics-close", "mcp") => "views.mcp.detail-docs".to_owned(),
+            ("mcp-diagnostics-failed-open", "mcp") if after.focus.contains("diagnostics") => {
+                "views.mcp.diagnostics-failed".to_owned()
+            }
+            ("mcp-diagnostics-failed-open", "mcp") => "views.mcp.failed-tracker".to_owned(),
+            ("mcp-diagnostics-failed-close", "mcp") if after.focus.contains("diagnostics") => {
+                "views.mcp.diagnostics-failed".to_owned()
+            }
+            ("mcp-diagnostics-failed-close", "mcp") => "views.mcp.failed-tracker".to_owned(),
             (_, "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
             (_, "model-picker") => "gate.work-configuration.model-picker".to_owned(),
             (_, "onboarding") => "auth.onboarding.return".to_owned(),
@@ -8510,6 +8598,733 @@ fn mcp_retry_failed() -> (
         "mcp-capability",
         "failed",
         "issue-tracker failed again after retry with a fresh plain-English cause",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_progress_success() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "issue-tracker",
+        "mcp-progress-invocation",
+        Some("pending.capability.issue-tracker"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.issue-tracker".to_owned();
+    before.selection = "issue-tracker".to_owned();
+    before.focus = "mcp-progress-invocation".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "issue-tracker".to_owned();
+    after.focus = "mcp-ready".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.progress-complete".to_owned(),
+        label: "Complete invocation".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "successful invocation collapses to one ready row without stale progress"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.progress-success.1".to_owned(),
+        owner_id: "pending.capability.issue-tracker".to_owned(),
+        count: 1,
+        outcome: "ready".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.progress-success",
+        "mcp-capability",
+        "ready",
+        "issue-tracker invocation finished and collapsed to ready; no live progress stayed",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_progress_failed() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "issue-tracker",
+        "mcp-progress-invocation",
+        Some("pending.capability.issue-tracker"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.issue-tracker".to_owned();
+    before.selection = "issue-tracker".to_owned();
+    before.focus = "mcp-progress-invocation".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "issue-tracker".to_owned();
+    after.focus = "mcp-progress-failed".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.progress-fail".to_owned(),
+        label: "Invocation failed".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "failed invocation becomes an attention-first failed row with Retry".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.progress-failed.1".to_owned(),
+        owner_id: "pending.capability.issue-tracker".to_owned(),
+        count: 1,
+        outcome: "failed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.progress-failed",
+        "mcp-capability",
+        "failed",
+        "issue-tracker failed after live progress; stale progress cleared",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_progress_cancel_setup() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "browser-automation",
+        "mcp-progress-setup",
+        Some("pending.capability.browser-automation"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.browser-automation".to_owned();
+    before.selection = "browser-automation".to_owned();
+    before.focus = "mcp-progress-setup".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "browser-automation".to_owned();
+    after.focus = "mcp-setup-needed".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.cancel-setup".to_owned(),
+        label: "Cancel setup".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "setup cancel rolls back provisional state without adding a connection"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.cancel-setup.1".to_owned(),
+        owner_id: "pending.capability.browser-automation".to_owned(),
+        count: 0,
+        outcome: "setup-rolled-back".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.cancel-setup",
+        "mcp-capability",
+        "setup-rolled-back",
+        "setup cancel discarded provisional configuration and restored needs-setup",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_progress_cancel_auth() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-progress-auth",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.project-docs".to_owned();
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-progress-auth".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "project-docs".to_owned();
+    after.focus = "mcp-auth-needed".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.cancel-auth".to_owned(),
+        label: "Cancel sign-in".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "auth cancel stops authentication and restores the unsigned-in capability"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.cancel-auth.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 0,
+        outcome: "auth-stopped".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.cancel-auth",
+        "mcp-capability",
+        "auth-stopped",
+        "authentication stopped without tokens; project-docs remains sign-in needed",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_progress_cancel_reconnect() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "issue-tracker",
+        "mcp-progress-reconnect",
+        Some("pending.capability.issue-tracker"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.issue-tracker".to_owned();
+    before.selection = "issue-tracker".to_owned();
+    before.focus = "mcp-progress-reconnect".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "issue-tracker".to_owned();
+    after.focus = "mcp-failed-restored".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.cancel-reconnect".to_owned(),
+        label: "Cancel reconnect".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "reconnect cancel restores the pre-reconnect failed state for that capability"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.cancel-reconnect.1".to_owned(),
+        owner_id: "pending.capability.issue-tracker".to_owned(),
+        count: 0,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.cancel-reconnect",
+        "mcp-capability",
+        "restored|pre-reconnect",
+        "reconnect cancelled; issue-tracker restored to its prior failed usable state",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_progress_cancel_invocation() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "issue-tracker",
+        "mcp-progress-invocation",
+        Some("pending.capability.issue-tracker"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.issue-tracker".to_owned();
+    before.selection = "issue-tracker".to_owned();
+    before.focus = "mcp-progress-invocation".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "issue-tracker".to_owned();
+    after.focus = "mcp-progress-cancelled|ready".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.cancel-invocation".to_owned(),
+        label: "Cancel invocation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "invocation cancel stops only the active call while preserving the connection"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.cancel-invocation.1".to_owned(),
+        owner_id: "pending.capability.issue-tracker".to_owned(),
+        count: 0,
+        outcome: "invocation-cancelled|connection-kept".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.cancel-invocation",
+        "mcp-capability",
+        "invocation-cancelled|connection-kept",
+        "invocation cancelled; issue-tracker connection remains ready and usable",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_details_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-list",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-list".to_owned();
+    before.scroll_anchor = "project-docs:2".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "project-docs".to_owned();
+    after.focus = "mcp-detail".to_owned();
+    after.scroll_anchor = "project-docs:2".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.details".to_owned(),
+        label: "Details".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Details opens capability-led focused detail for the selected row".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.details-open.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 1,
+        outcome: "detail-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.details-open",
+        "mcp-capability",
+        "detail-open",
+        "project-docs focused detail opened without raw protocol dump",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_details_back() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-detail",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-detail".to_owned();
+    before.scroll_anchor = "project-docs:2".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "project-docs".to_owned();
+    after.focus = "mcp-list".to_owned();
+    after.scroll_anchor = "project-docs:2".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.details-back".to_owned(),
+        label: "Back to list".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Back restores the selected capability row and scroll position".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.details-back.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 0,
+        outcome: "list-restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.details-back",
+        "mcp-capability",
+        "list-restored",
+        "focused detail closed; selected project-docs row and scroll survive",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_diagnostics_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-detail",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-detail".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "project-docs".to_owned();
+    after.focus = "mcp-diagnostics-open".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.diagnostics".to_owned(),
+        label: "Open diagnostics".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Open diagnostics discloses the technical record for the same capability"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.diagnostics-open.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 1,
+        outcome: "diagnostics-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.diagnostics-open",
+        "mcp-capability",
+        "diagnostics-open",
+        "diagnostics opened with redacted technical evidence for project-docs",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_diagnostics_close() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-diagnostics-open",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-diagnostics-open".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "project-docs".to_owned();
+    after.focus = "mcp-detail".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.diagnostics-close".to_owned(),
+        label: "Close diagnostics".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "closing diagnostics restores the same focused capability detail".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.diagnostics-close.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 0,
+        outcome: "detail-restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.diagnostics-close",
+        "mcp-capability",
+        "detail-restored",
+        "diagnostics closed; project-docs focused detail restored",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_diagnostics_failed_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "issue-tracker",
+        "mcp-failed",
+        Some("pending.capability.issue-tracker"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.issue-tracker".to_owned();
+    before.selection = "issue-tracker".to_owned();
+    before.focus = "mcp-failed".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "issue-tracker".to_owned();
+    after.focus = "mcp-diagnostics-failed-open".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.diagnostics".to_owned(),
+        label: "Open diagnostics".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "opening diagnostics on a failed row keeps Retry as the primary recovery action"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.diagnostics-failed-open.1".to_owned(),
+        owner_id: "pending.capability.issue-tracker".to_owned(),
+        count: 1,
+        outcome: "diagnostics-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.diagnostics-failed-open",
+        "mcp-capability",
+        "diagnostics-open",
+        "failed diagnostics opened while Retry remains primary for issue-tracker",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_diagnostics_failed_close() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "issue-tracker",
+        "mcp-diagnostics-failed-open",
+        Some("pending.capability.issue-tracker"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.issue-tracker".to_owned();
+    before.selection = "issue-tracker".to_owned();
+    before.focus = "mcp-diagnostics-failed-open".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "issue-tracker".to_owned();
+    after.focus = "mcp-failed".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.diagnostics-close".to_owned(),
+        label: "Close diagnostics".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "closing diagnostics restores the same failed recovery row".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.diagnostics-failed-close.1".to_owned(),
+        owner_id: "pending.capability.issue-tracker".to_owned(),
+        count: 0,
+        outcome: "failed-row-restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.diagnostics-failed-close",
+        "mcp-capability",
+        "failed-row-restored",
+        "diagnostics closed; issue-tracker stays selected with Retry recovery",
     );
     (before, after, action, transition, attempt, effect)
 }

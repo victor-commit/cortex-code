@@ -2716,6 +2716,68 @@ enum McpViewKind {
     RetryRunning,
     RetryReady,
     RetryFailed,
+    ProgressLive,
+    ProgressSuccess,
+    ProgressFailed,
+    ProgressCancelled,
+    FocusedDetail,
+    Diagnostics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProgressOperation {
+    Setup,
+    Authentication,
+    Reconnect,
+    Invocation,
+}
+
+impl ProgressOperation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Setup => "Setup",
+            Self::Authentication => "Authentication",
+            Self::Reconnect => "Reconnect",
+            Self::Invocation => "Invocation",
+        }
+    }
+
+    fn cancel_action_id(self) -> &'static str {
+        match self {
+            Self::Setup => "action.mcp.cancel-setup",
+            Self::Authentication => "action.mcp.cancel-auth",
+            Self::Reconnect => "action.mcp.cancel-reconnect",
+            Self::Invocation => "action.mcp.cancel-invocation",
+        }
+    }
+
+    fn cancel_label(self) -> &'static str {
+        match self {
+            Self::Setup => "Cancel setup",
+            Self::Authentication => "Cancel sign-in",
+            Self::Reconnect => "Cancel reconnect",
+            Self::Invocation => "Cancel invocation",
+        }
+    }
+
+    fn cancel_consequence(self) -> &'static str {
+        match self {
+            Self::Setup => "Cancel rolls back provisional setup without adding a connection.",
+            Self::Authentication => "Cancel stops authentication and leaves the capability unsigned-in.",
+            Self::Reconnect => "Cancel restores the pre-reconnect state for this capability only.",
+            Self::Invocation => "Cancel stops only this invocation and keeps the connection ready.",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProgressInfo {
+    operation: ProgressOperation,
+    owner_id: &'static str,
+    owner_name: &'static str,
+    phase: &'static str,
+    percent: u8,
+    elapsed: &'static str,
 }
 
 #[derive(Clone, Debug)]
@@ -2730,11 +2792,17 @@ struct McpView {
     support_line: &'static str,
     /// Focused setup/auth body replaces the row list when present.
     focus_body: Option<&'static [&'static str]>,
+    /// Optional multi-section body for focused detail / diagnostics.
+    detail_sections: Option<&'static [(&'static str, &'static [&'static str])]>,
+    progress: Option<ProgressInfo>,
     primary_label: &'static str,
     primary_action_id: &'static str,
     secondary_label: &'static str,
     secondary_action_id: &'static str,
     diagnostics_closed: bool,
+    /// Tertiary cancel/back label shown for progress cancel or detail close.
+    tertiary_label: Option<&'static str>,
+    tertiary_action_id: Option<&'static str>,
 }
 
 fn mcp_view(fixture_id: &str) -> McpView {
@@ -2750,11 +2818,15 @@ fn mcp_view(fixture_id: &str) -> McpView {
             intro_line: "Connect external tools so Code can use capabilities outside this project.",
             support_line: "This path stays on capabilities and never opens model provider connection.",
             focus_body: None,
+            detail_sections: None,
+            progress: None,
             primary_label: "Setup connection",
             primary_action_id: "action.mcp.setup-connection",
             secondary_label: "Open diagnostics",
             secondary_action_id: "action.mcp.diagnostics",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
     if lower.contains("setup-browser") || lower.contains("setup_focus") {
@@ -2782,11 +2854,15 @@ fn mcp_view(fixture_id: &str) -> McpView {
                 "Requested   Read pages and capture screenshots",
                 "Scope       This project only",
             ]),
+            detail_sections: None,
+            progress: None,
             primary_label: "Connect",
             primary_action_id: "action.mcp.setup-connect",
             secondary_label: "Advanced setup",
             secondary_action_id: "action.mcp.advanced-setup",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
     if lower.contains("auth-docs-ready") {
@@ -2825,11 +2901,15 @@ fn mcp_view(fixture_id: &str) -> McpView {
             intro_line: "Project docs is ready after sign-in. Attention items still lead.",
             support_line: "Connection details and raw tools stay under diagnostics.",
             focus_body: None,
+            detail_sections: None,
+            progress: None,
             primary_label: "Details",
             primary_action_id: "action.mcp.details",
             secondary_label: "Open diagnostics",
             secondary_action_id: "action.mcp.diagnostics",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
     if lower.contains("auth-docs") {
@@ -2860,11 +2940,15 @@ fn mcp_view(fixture_id: &str) -> McpView {
             intro_line: "One capability needs sign-in. Authorization stays inside the MCP branch.",
             support_line: "Sign in stays on this capability and never exposes tokens by default.",
             focus_body: None,
+            detail_sections: None,
+            progress: None,
             primary_label: "Sign in",
             primary_action_id: "action.mcp.sign-in",
             secondary_label: "Open diagnostics",
             secondary_action_id: "action.mcp.diagnostics",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
     if lower.contains("retry-ready") {
@@ -2903,11 +2987,15 @@ fn mcp_view(fixture_id: &str) -> McpView {
             intro_line: "Retry restored Issue tracker. Sibling capabilities stayed unchanged.",
             support_line: "Connection details and raw tools stay under diagnostics.",
             focus_body: None,
+            detail_sections: None,
+            progress: None,
             primary_label: "Details",
             primary_action_id: "action.mcp.details",
             secondary_label: "Open diagnostics",
             secondary_action_id: "action.mcp.diagnostics",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
     if lower.contains("retry-failed") {
@@ -2938,11 +3026,15 @@ fn mcp_view(fixture_id: &str) -> McpView {
             intro_line: "Retry finished with a new plain-English failure on Issue tracker only.",
             support_line: "Connection details and raw tools stay under diagnostics.",
             focus_body: None,
+            detail_sections: None,
+            progress: None,
             primary_label: "Retry",
             primary_action_id: "action.mcp.retry",
             secondary_label: "Open diagnostics",
             secondary_action_id: "action.mcp.diagnostics",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
     if lower.contains("retry-running") || lower.contains("retrying") {
@@ -2973,11 +3065,15 @@ fn mcp_view(fixture_id: &str) -> McpView {
             intro_line: "Only Issue tracker is retrying. Sibling capabilities stay put.",
             support_line: "Connection details and raw tools stay under diagnostics.",
             focus_body: None,
+            detail_sections: None,
+            progress: None,
             primary_label: "Wait for retry",
             primary_action_id: "action.mcp.wait-retry",
             secondary_label: "Open diagnostics",
             secondary_action_id: "action.mcp.diagnostics",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
     if lower.contains("failed-tracker") || lower.contains("failed_row") {
@@ -3008,13 +3104,51 @@ fn mcp_view(fixture_id: &str) -> McpView {
             intro_line: "One capability failed. Retry acts only on the selected row.",
             support_line: "Connection details and raw tools stay under diagnostics.",
             focus_body: None,
+            detail_sections: None,
+            progress: None,
             primary_label: "Retry",
             primary_action_id: "action.mcp.retry",
             secondary_label: "Open diagnostics",
             secondary_action_id: "action.mcp.diagnostics",
             diagnostics_closed: true,
+            tertiary_label: None,
+            tertiary_action_id: None,
         };
     }
+
+    // Progress / detail / diagnostics fixtures (VAL-V3-F4-035..040, 056).
+    if lower.contains("progress-invocation")
+        || lower.contains("progress-setup")
+        || lower.contains("progress-auth")
+        || lower.contains("progress-reconnect")
+    {
+        return progress_live_view(&lower);
+    }
+    if lower.contains("progress-success") {
+        return progress_success_view();
+    }
+    if lower.contains("progress-failed") {
+        return progress_failed_view();
+    }
+    if lower.contains("progress-cancelled") {
+        return progress_cancelled_view();
+    }
+    if lower.contains("diagnostics-failed") {
+        return diagnostics_failed_view();
+    }
+    if lower.contains("diagnostics-auth") {
+        return diagnostics_auth_view();
+    }
+    if lower.contains("diagnostics-hostile") {
+        return diagnostics_hostile_view();
+    }
+    if lower.contains("diagnostics-docs") || lower.contains("diagnostics_open") {
+        return diagnostics_docs_view();
+    }
+    if lower.contains("detail-docs") || lower.contains("detail_docs") || lower.contains("focused-detail") {
+        return focused_detail_docs_view();
+    }
+
     if lower.contains("mixed") || lower.contains("views.mcp") {
         return mixed_mcp_view();
     }
@@ -3067,12 +3201,16 @@ fn gate_pilot_mcp_view() -> McpView {
         intro_line: "Not a continuation of the blocked-model provider connection.",
         support_line: "Capabilities that need attention come first. Healthy ones stay collapsed.",
         focus_body: None,
+        detail_sections: None,
+        progress: None,
         // Gate pilot wording retained for approved storyboard hash stability.
         primary_label: "Fix setup",
         primary_action_id: "action.mcp.fix-setup",
         secondary_label: "Open diagnostics",
         secondary_action_id: "action.mcp.diagnostics",
         diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
     }
 }
 
@@ -3144,11 +3282,524 @@ fn mixed_mcp_view() -> McpView {
         intro_line: "MCP capabilities. Attention first; healthy rows stay collapsed.",
         support_line: "Connection details and raw tools stay under diagnostics.",
         focus_body: None,
+        detail_sections: None,
+        progress: None,
         primary_label: "Review policy",
         primary_action_id: "action.mcp.review-policy",
         secondary_label: "Open diagnostics",
         secondary_action_id: "action.mcp.diagnostics",
         diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn progress_tick_metrics(lower: &str) -> (u8, &'static str, &'static str) {
+    // Deterministic elapsed and percent for three ticks (0 < 1 < 2).
+    if lower.contains("tick-2") || lower.contains("tick.2") || lower.contains("later") {
+        (72, "0:18", "Writing response")
+    } else if lower.contains("tick-1") || lower.contains("tick.1") || lower.contains("mid") {
+        (41, "0:09", "Receiving results")
+    } else {
+        (12, "0:03", "Opening request")
+    }
+}
+
+fn progress_live_view(lower: &str) -> McpView {
+    let (operation, owner_id, owner_name, sibling_ready) = if lower.contains("progress-setup") {
+        (
+            ProgressOperation::Setup,
+            "browser-automation",
+            "Browser automation",
+            false,
+        )
+    } else if lower.contains("progress-auth") {
+        (
+            ProgressOperation::Authentication,
+            "project-docs",
+            "Project docs",
+            true,
+        )
+    } else if lower.contains("progress-reconnect") {
+        (
+            ProgressOperation::Reconnect,
+            "issue-tracker",
+            "Issue tracker",
+            true,
+        )
+    } else {
+        (
+            ProgressOperation::Invocation,
+            "issue-tracker",
+            "Issue tracker",
+            true,
+        )
+    };
+    let (percent, elapsed, phase) = progress_tick_metrics(lower);
+    let mut rows = vec![CapRow {
+        id: owner_id,
+        name: owner_name,
+        state: CapState::Retrying,
+        cause: "In progress - wait or cancel this operation.",
+        publisher: "Capability",
+        access: "Active operation",
+    }];
+    if sibling_ready {
+        rows.push(CapRow {
+            id: "code-search",
+            name: "Code search",
+            state: CapState::Ready,
+            cause: "Index is current.",
+            publisher: "Code Index",
+            access: "Search local symbols",
+        });
+    }
+    McpView {
+        kind: McpViewKind::ProgressLive,
+        rows: sorted_caps(&rows),
+        selected_id: owner_id,
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: match operation {
+            ProgressOperation::Setup => "Finish setup for Browser automation",
+            ProgressOperation::Authentication => "Authorize Project docs for this conversation",
+            ProgressOperation::Reconnect => "Reconnect Issue tracker",
+            ProgressOperation::Invocation => "Read open issues with Issue tracker",
+        },
+        intro_line: "One capability owns this live work. Sibling rows stay unchanged.",
+        support_line: operation.cancel_consequence(),
+        focus_body: None,
+        detail_sections: None,
+        progress: Some(ProgressInfo {
+            operation,
+            owner_id,
+            owner_name,
+            phase,
+            percent,
+            elapsed,
+        }),
+        primary_label: "Wait",
+        primary_action_id: "action.mcp.wait-progress",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: Some(operation.cancel_label()),
+        tertiary_action_id: Some(operation.cancel_action_id()),
+    }
+}
+
+fn progress_success_view() -> McpView {
+    McpView {
+        kind: McpViewKind::ProgressSuccess,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "issue-tracker",
+                name: "Issue tracker",
+                state: CapState::Ready,
+                cause: "Invocation finished. Connection stayed ready.",
+                publisher: "Tracker Cloud",
+                access: "Read issues and comments",
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+            },
+        ]),
+        selected_id: "issue-tracker",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: FLOW4_MCP_TASK,
+        intro_line: "Issue tracker finished and collapsed to one healthy line.",
+        support_line: "Connection details and raw tools stay under diagnostics.",
+        focus_body: None,
+        detail_sections: None,
+        progress: None,
+        primary_label: "Details",
+        primary_action_id: "action.mcp.details",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn progress_failed_view() -> McpView {
+    McpView {
+        kind: McpViewKind::ProgressFailed,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "issue-tracker",
+                name: "Issue tracker",
+                state: CapState::Failed,
+                cause: "Could not finish the request. The service closed the stream.",
+                publisher: "Tracker Cloud",
+                access: "Read issues and comments",
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+            },
+        ]),
+        selected_id: "issue-tracker",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: FLOW4_MCP_TASK,
+        intro_line: "Invocation ended with a plain-English failure on Issue tracker only.",
+        support_line: "Connection details and raw tools stay under diagnostics.",
+        focus_body: None,
+        detail_sections: None,
+        progress: None,
+        primary_label: "Retry",
+        primary_action_id: "action.mcp.retry",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn progress_cancelled_view() -> McpView {
+    McpView {
+        kind: McpViewKind::ProgressCancelled,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "issue-tracker",
+                name: "Issue tracker",
+                state: CapState::Ready,
+                cause: "Invocation cancelled. Connection remains ready.",
+                publisher: "Tracker Cloud",
+                access: "Read issues and comments",
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+            },
+        ]),
+        selected_id: "issue-tracker",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: FLOW4_MCP_TASK,
+        intro_line: "Cancel stopped only the active invocation. Connection stayed ready.",
+        support_line: "Connection details and raw tools stay under diagnostics.",
+        focus_body: None,
+        detail_sections: None,
+        progress: None,
+        primary_label: "Details",
+        primary_action_id: "action.mcp.details",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn focused_detail_docs_view() -> McpView {
+    McpView {
+        kind: McpViewKind::FocusedDetail,
+        rows: sorted_caps(&[CapRow {
+            id: "project-docs",
+            name: "Project docs",
+            state: CapState::Ready,
+            cause: "Workspace library is authorized.",
+            publisher: "Docs Workspace",
+            access: "Search project documentation",
+        }]),
+        selected_id: "project-docs",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Project docs",
+        intro_line: "Focused capability detail. Raw tools stay under diagnostics.",
+        support_line: "Back restores the selected list row and scroll position.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "What you can do",
+                &[
+                    "Search project documentation by plain question",
+                    "Open a matching document for reading",
+                    "Summarize a section you already located",
+                ],
+            ),
+            (
+                "Recent activity",
+                &[
+                    "Opened architecture overview · successful",
+                    "Searched auth notes · successful",
+                    "Listed section titles · successful",
+                ],
+            ),
+            (
+                "Enabled tools · by purpose",
+                &[
+                    "Search documents - find project answers",
+                    "Open document - read a selected page",
+                    "List sections - scan document structure",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Back to list",
+        primary_action_id: "action.mcp.details-back",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn diagnostics_docs_view() -> McpView {
+    McpView {
+        kind: McpViewKind::Diagnostics,
+        rows: sorted_caps(&[CapRow {
+            id: "project-docs",
+            name: "Project docs",
+            state: CapState::Ready,
+            cause: "Workspace library is authorized.",
+            publisher: "Docs Workspace",
+            access: "Search project documentation",
+        }]),
+        selected_id: "project-docs",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Project docs · diagnostics",
+        intro_line: "Advanced technical record. Secrets stay redacted.",
+        support_line: "Close diagnostics returns to the same focused detail.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "Capability state",
+                &[
+                    "State          Ready",
+                    "Publisher      Docs Workspace",
+                    "Access         Search project documentation",
+                ],
+            ),
+            (
+                "Technical record",
+                &[
+                    "Transport      stream (sanitized label)",
+                    "Endpoint       redacted project path",
+                    "Timeout        30 seconds",
+                    "Config source  project managed file",
+                    "Scopes         read:docs (sanitized, untrusted label)",
+                    "Raw tools      docs_search_query · docs_open_page",
+                    "Resources      docs://workspace/index",
+                    "Prompts        docs_summarize_section",
+                    "Schema         tools/list payload · sanitized",
+                    "Arguments      {q: \"auth\"} · sanitized",
+                    "Responses      last rank list · redacted tokens",
+                    "Secret fields  [redacted]",
+                    "Missing field  Not available",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Back to detail",
+        primary_action_id: "action.mcp.diagnostics-close",
+        secondary_label: "Collapse evidence",
+        secondary_action_id: "action.mcp.diagnostics-collapse",
+        diagnostics_closed: false,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn diagnostics_hostile_view() -> McpView {
+    McpView {
+        kind: McpViewKind::Diagnostics,
+        rows: sorted_caps(&[CapRow {
+            id: "project-docs",
+            name: "Project docs",
+            state: CapState::Ready,
+            cause: "Workspace library is authorized.",
+            publisher: "Docs Workspace",
+            access: "Search project documentation",
+        }]),
+        selected_id: "project-docs",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Project docs · diagnostics",
+        intro_line: "Hostile labels and secret scopes are sanitized with provenance.",
+        support_line: "Close diagnostics returns to the same focused detail.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "Capability state",
+                &["State          Ready", "Publisher      Docs Workspace (sanitized)"],
+            ),
+            (
+                "Technical record",
+                &[
+                    "Transport      stream (sanitized label)",
+                    "Endpoint       redacted project path",
+                    "Timeout        30 seconds",
+                    "Config source  project managed file",
+                    "Scopes         untrusted scope name · sanitized · provenance disclosed",
+                    "Raw tools      docs_search_query",
+                    "Resources      sanitized://resource",
+                    "Prompts        sanitized prompt label",
+                    "Schema         Not available",
+                    "Arguments      sanitized object · redacted secrets",
+                    "Responses      sanitized · redacted secrets",
+                    "Secret fields  [redacted]",
+                    "Missing field  Not available",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Back to detail",
+        primary_action_id: "action.mcp.diagnostics-close",
+        secondary_label: "Collapse evidence",
+        secondary_action_id: "action.mcp.diagnostics-collapse",
+        diagnostics_closed: false,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn diagnostics_failed_view() -> McpView {
+    McpView {
+        kind: McpViewKind::Diagnostics,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "issue-tracker",
+                name: "Issue tracker",
+                state: CapState::Failed,
+                cause: "Could not reach the issue service for this project.",
+                publisher: "Tracker Cloud",
+                access: "Read issues and comments",
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+            },
+        ]),
+        selected_id: "issue-tracker",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Issue tracker · diagnostics",
+        intro_line: "Readable cause and Retry stay primary. Technical evidence is secondary.",
+        support_line: "Collapse returns to the same failed row and recovery action.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "Recovery",
+                &[
+                    "Could not reach the issue service for this project.",
+                    "Retry acts only on Issue tracker.",
+                ],
+            ),
+            (
+                "Technical record",
+                &[
+                    "Transport      stream (sanitized label)",
+                    "Endpoint       redacted project path",
+                    "Timeout        20 seconds",
+                    "Config source  project managed file",
+                    "Scopes         Not available",
+                    "Raw tools      issues_list · issues_get",
+                    "Resources      Not available",
+                    "Prompts        Not available",
+                    "Schema         tools/list payload · sanitized",
+                    "Arguments      sanitized · redacted secrets",
+                    "Responses      connection refused · sanitized",
+                    "Secret fields  [redacted]",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Retry",
+        primary_action_id: "action.mcp.retry",
+        secondary_label: "Collapse evidence",
+        secondary_action_id: "action.mcp.diagnostics-collapse",
+        diagnostics_closed: false,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn diagnostics_auth_view() -> McpView {
+    McpView {
+        kind: McpViewKind::Diagnostics,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "project-docs",
+                name: "Project docs",
+                state: CapState::SignInNeeded,
+                cause: "This workspace library needs approval before use.",
+                publisher: "Docs Workspace",
+                access: "Search project documentation",
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+            },
+        ]),
+        selected_id: "project-docs",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Project docs · diagnostics",
+        intro_line: "Readable cause and Sign in stay primary. Technical evidence is secondary.",
+        support_line: "Collapse returns to the same auth-needed row and recovery action.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "Recovery",
+                &[
+                    "This workspace library needs approval before use.",
+                    "Sign in stays on Project docs and never exposes tokens by default.",
+                ],
+            ),
+            (
+                "Technical record",
+                &[
+                    "Transport      stream (sanitized label)",
+                    "Endpoint       redacted project path",
+                    "Timeout        30 seconds",
+                    "Config source  project managed file",
+                    "Scopes         read:docs (sanitized, untrusted label)",
+                    "Raw tools      docs_search_query",
+                    "Resources      docs://workspace/index",
+                    "Prompts        Not available",
+                    "Schema         Not available",
+                    "Arguments      Not available",
+                    "Responses      unauthorized · sanitized",
+                    "Secret fields  [redacted]",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Sign in",
+        primary_action_id: "action.mcp.sign-in",
+        secondary_label: "Collapse evidence",
+        secondary_action_id: "action.mcp.diagnostics-collapse",
+        diagnostics_closed: false,
+        tertiary_label: None,
+        tertiary_action_id: None,
     }
 }
 
@@ -3241,6 +3892,169 @@ fn render_mcp(
         )?;
         row_cursor += 2;
         canvas.write(row_cursor, 4, view.support_line, TextStyle::muted())?;
+    } else if let Some(progress) = view.progress {
+        canvas.write(row_cursor, 4, "Live MCP work", TextStyle::bright())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "surface",
+            "mcp-progress",
+            reference(row_cursor, 4, 14),
+            "summary",
+            None,
+        ));
+        row_cursor += 2;
+        canvas.write(row_cursor, 4, view.intro_line, TextStyle::muted())?;
+        row_cursor += 2;
+
+        let owner_line = format!(
+            "› ● {} · {} in progress",
+            progress.owner_name,
+            progress.operation.label()
+        );
+        canvas.write(row_cursor, 4, &owner_line, TextStyle::accent())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "progress-owner",
+            progress.owner_id,
+            reference(row_cursor, 4, owner_line.chars().count().min(80) as u16),
+            "focused",
+            None,
+        ));
+        row_cursor += 1;
+
+        let op_line = format!(
+            "Operation  {} · Phase  {}",
+            progress.operation.label(),
+            progress.phase
+        );
+        canvas.write(row_cursor, 6, &op_line, TextStyle::bright())?;
+        row_cursor += 1;
+
+        let filled = (progress.percent as usize * 20) / 100;
+        let empty = 20usize.saturating_sub(filled);
+        let bar = format!(
+            "Progress   {}{}  {}%",
+            "█".repeat(filled),
+            "░".repeat(empty),
+            progress.percent
+        );
+        canvas.write(row_cursor, 6, &bar, TextStyle::text())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "progress-metric",
+            progress.owner_id,
+            reference(row_cursor, 6, bar.chars().count().min(40) as u16),
+            "focused",
+            None,
+        ));
+        row_cursor += 1;
+
+        let elapsed_line = format!("Elapsed    {}", progress.elapsed);
+        canvas.write(row_cursor, 6, &elapsed_line, TextStyle::text())?;
+        row_cursor += 1;
+
+        canvas.write(
+            row_cursor,
+            6,
+            "You can wait, or Cancel this operation below.",
+            TextStyle::muted(),
+        )?;
+        row_cursor += 2;
+        canvas.write(row_cursor, 4, view.support_line, TextStyle::muted())?;
+        row_cursor += 2;
+
+        // Sibling ready rows stay collapsed and non-owner.
+        for cap in view.rows.iter().filter(|r| r.id != progress.owner_id) {
+            if row_cursor >= 28 {
+                break;
+            }
+            let line = format!("  ○ {} · {}", cap.name, cap.state.label());
+            canvas.write(row_cursor, 4, &line, TextStyle::muted())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "capability-row",
+                cap.id,
+                reference(row_cursor, 4, line.chars().count().min(80) as u16),
+                "summary",
+                None,
+            ));
+            row_cursor += 1;
+        }
+    } else if let Some(sections) = view.detail_sections {
+        let heading = if view.kind == McpViewKind::Diagnostics {
+            "Diagnostics"
+        } else {
+            "Capability detail"
+        };
+        canvas.write(row_cursor, 4, heading, TextStyle::bright())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "surface",
+            if view.kind == McpViewKind::Diagnostics {
+                "mcp-diagnostics"
+            } else {
+                "mcp-focused-detail"
+            },
+            reference(row_cursor, 4, heading.len() as u16),
+            "summary",
+            None,
+        ));
+        row_cursor += 1;
+        canvas.write(row_cursor, 4, view.intro_line, TextStyle::muted())?;
+        row_cursor += 2;
+
+        // Capability name is the focused heading context.
+        if let Some(cap) = view.rows.iter().find(|r| r.id == view.selected_id) {
+            let title = format!("{} · {}", cap.name, cap.state.label());
+            canvas.write(row_cursor, 4, &title, TextStyle::bright())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "capability-row",
+                cap.id,
+                reference(row_cursor, 4, title.chars().count().min(80) as u16),
+                "focused",
+                None,
+            ));
+            row_cursor += 2;
+        }
+
+        for (section_title, lines) in sections {
+            if row_cursor >= 28 {
+                break;
+            }
+            canvas.write(row_cursor, 4, section_title, TextStyle::bright())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "detail-section",
+                section_title,
+                reference(row_cursor, 4, section_title.len() as u16),
+                if view.kind == McpViewKind::Diagnostics {
+                    "evidence"
+                } else {
+                    "summary"
+                },
+                None,
+            ));
+            row_cursor += 1;
+            for line in *lines {
+                if row_cursor >= 28 {
+                    break;
+                }
+                canvas.write(row_cursor, 6, line, TextStyle::text())?;
+                row_cursor += 1;
+            }
+            row_cursor += 1;
+        }
+        if row_cursor < 29 {
+            canvas.write(row_cursor, 4, view.support_line, TextStyle::muted())?;
+        }
     } else if let Some(body) = view.focus_body {
         canvas.write(row_cursor, 4, "Guided setup", TextStyle::bright())?;
         pairs.push(semantic(
@@ -3435,6 +4249,22 @@ fn render_mcp(
             "summary",
             None,
         ));
+    } else {
+        canvas.write(
+            footer_row,
+            4,
+            "Diagnostics open · technical evidence is secondary to recovery.",
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "disclosure",
+            "diagnostics_open",
+            reference(footer_row, 4, 58),
+            "evidence",
+            None,
+        ));
     }
     canvas.write(
         30,
@@ -3504,6 +4334,220 @@ fn render_mcp(
             "cancel",
             "cancel rolls back provisional setup and restores the selected row",
         ));
+    } else if view.kind == McpViewKind::ProgressLive {
+        canvas.write(
+            32,
+            4,
+            &format!("  [d] {}", view.secondary_label),
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            view.secondary_action_id,
+            reference(32, 4, 25),
+            "summary",
+            Some(action(
+                view.secondary_action_id,
+                view.secondary_label,
+                false,
+            )),
+        ));
+        let cancel_id = view
+            .tertiary_action_id
+            .unwrap_or("action.mcp.cancel-invocation");
+        let cancel_label = view.tertiary_label.unwrap_or("Cancel");
+        canvas.write(
+            33,
+            4,
+            &format!("  [esc] {cancel_label}"),
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            cancel_id,
+            reference(33, 4, 18 + cancel_label.len() as u16),
+            "summary",
+            Some(action(cancel_id, cancel_label, false)),
+        ));
+        transitions.push(transition(
+            view.primary_action_id,
+            "mcp",
+            "mcp",
+            "direct",
+            "live progress remains owned by one capability while the user waits",
+        ));
+        transitions.push(transition(
+            cancel_id,
+            "mcp",
+            "mcp",
+            "cancel",
+            "cancel matches the operation and rolls back only that live work",
+        ));
+    } else if view.kind == McpViewKind::FocusedDetail {
+        canvas.write(
+            32,
+            4,
+            &format!("  [d] {}", view.secondary_label),
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            view.secondary_action_id,
+            reference(32, 4, 25),
+            "summary",
+            Some(action(
+                view.secondary_action_id,
+                view.secondary_label,
+                false,
+            )),
+        ));
+        // Primary already carries Back; avoid a second identical action identity.
+        canvas.write(33, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.mcp.return",
+            reference(33, 4, 33),
+            "summary",
+            Some(action(
+                "action.mcp.return",
+                "Return to conversation",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            view.primary_action_id,
+            "mcp",
+            "mcp",
+            "direct",
+            "Back restores the selected capability row and scroll position",
+        ));
+        transitions.push(transition(
+            "action.mcp.diagnostics",
+            "mcp",
+            "mcp",
+            "direct",
+            "Open diagnostics discloses technical evidence for the same capability",
+        ));
+        transitions.push(transition(
+            "action.mcp.return",
+            "mcp",
+            "chat-turn",
+            "direct",
+            "the capability view closes to its recorded conversation origin",
+        ));
+    } else if view.kind == McpViewKind::Diagnostics {
+        // Recovery diagnostics keep Retry/Sign in primary; close is secondary only.
+        // Healthy diagnostics keep "Back to detail" as primary/close without a
+        // duplicate action identity on the cancel row.
+        if matches!(view.primary_action_id, "action.mcp.retry" | "action.mcp.sign-in") {
+            canvas.write(
+                32,
+                4,
+                &format!("  [d] {}", view.secondary_label),
+                TextStyle::muted(),
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                view.secondary_action_id,
+                reference(32, 4, 28),
+                "summary",
+                Some(action(
+                    view.secondary_action_id,
+                    view.secondary_label,
+                    false,
+                )),
+            ));
+            canvas.write(33, 4, "  [esc] Close diagnostics", TextStyle::muted())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "cancel-action",
+                "action.mcp.diagnostics-close",
+                reference(33, 4, 28),
+                "summary",
+                Some(action(
+                    "action.mcp.diagnostics-close",
+                    "Close diagnostics",
+                    false,
+                )),
+            ));
+            transitions.push(transition(
+                view.primary_action_id,
+                "mcp",
+                "mcp",
+                "direct",
+                if view.primary_action_id == "action.mcp.retry" {
+                    "retry remains the primary recovery action while diagnostics are open"
+                } else {
+                    "sign-in remains the primary recovery action while diagnostics are open"
+                },
+            ));
+            transitions.push(transition(
+                "action.mcp.diagnostics-close",
+                "mcp",
+                "mcp",
+                "cancel",
+                "closing diagnostics restores the same recovery row",
+            ));
+        } else {
+            canvas.write(
+                32,
+                4,
+                &format!("  [d] {}", view.secondary_label),
+                TextStyle::muted(),
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                view.secondary_action_id,
+                reference(32, 4, 28),
+                "summary",
+                Some(action(
+                    view.secondary_action_id,
+                    view.secondary_label,
+                    false,
+                )),
+            ));
+            canvas.write(33, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "cancel-action",
+                "action.mcp.return",
+                reference(33, 4, 33),
+                "summary",
+                Some(action(
+                    "action.mcp.return",
+                    "Return to conversation",
+                    false,
+                )),
+            ));
+            transitions.push(transition(
+                view.primary_action_id,
+                "mcp",
+                "mcp",
+                "direct",
+                "closing diagnostics restores the same focused capability detail",
+            ));
+            transitions.push(transition(
+                "action.mcp.return",
+                "mcp",
+                "chat-turn",
+                "direct",
+                "the capability view closes to its recorded conversation origin",
+            ));
+        }
     } else {
         canvas.write(
             32,
@@ -3550,11 +4594,16 @@ fn render_mcp(
                 McpViewKind::AuthNeeded => {
                     "sign-in authorizes only the selected capability inside the MCP branch"
                 }
-                McpViewKind::FailedRow | McpViewKind::RetryFailed => {
+                McpViewKind::FailedRow
+                | McpViewKind::RetryFailed
+                | McpViewKind::ProgressFailed => {
                     "retry is scoped to the failed capability and leaves siblings unchanged"
                 }
                 McpViewKind::RetryRunning => {
                     "retry remains owned by the selected capability while it runs"
+                }
+                McpViewKind::ProgressSuccess | McpViewKind::ProgressCancelled => {
+                    "terminal progress states show one healthy or prior usable action"
                 }
                 _ => "the selected capability action stays row-scoped on the MCP branch",
             },
