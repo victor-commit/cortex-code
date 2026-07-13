@@ -2617,7 +2617,989 @@ fn render_connect_disconnect(
     ))
 }
 
+// ── MCP capability catalogue, ordering, and recovery fixtures ────────────
+
+/// Priority order for exception-first MCP listing (VAL-V3-F4-030).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum CapPriority {
+    PolicyBlocked = 0,
+    SignInNeeded = 1,
+    SetupNeeded = 2,
+    Failed = 3,
+    Retrying = 4,
+    Disabled = 5,
+    Ready = 6,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CapState {
+    PolicyBlocked,
+    SignInNeeded,
+    SetupNeeded,
+    Failed,
+    Retrying,
+    Disabled,
+    Ready,
+}
+
+impl CapState {
+    fn priority(self) -> CapPriority {
+        match self {
+            Self::PolicyBlocked => CapPriority::PolicyBlocked,
+            Self::SignInNeeded => CapPriority::SignInNeeded,
+            Self::SetupNeeded => CapPriority::SetupNeeded,
+            Self::Failed => CapPriority::Failed,
+            Self::Retrying => CapPriority::Retrying,
+            Self::Disabled => CapPriority::Disabled,
+            Self::Ready => CapPriority::Ready,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::PolicyBlocked => "Policy blocked",
+            Self::SignInNeeded => "Sign in needed",
+            Self::SetupNeeded => "Needs setup",
+            Self::Failed => "Failed",
+            Self::Retrying => "Retrying",
+            Self::Disabled => "Disabled",
+            Self::Ready => "Ready",
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::PolicyBlocked | Self::Failed => "✗",
+            Self::SignInNeeded | Self::SetupNeeded => "●",
+            Self::Retrying => "●",
+            Self::Disabled => "○",
+            Self::Ready => "○",
+        }
+    }
+
+    fn primary_action(self) -> Option<&'static str> {
+        match self {
+            Self::PolicyBlocked => Some("Review policy"),
+            Self::SignInNeeded => Some("Sign in"),
+            Self::SetupNeeded => Some("Setup"),
+            Self::Failed => Some("Retry"),
+            Self::Retrying => None,
+            Self::Disabled => Some("Enable"),
+            Self::Ready => Some("Details"),
+        }
+    }
+
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CapRow {
+    id: &'static str,
+    name: &'static str,
+    state: CapState,
+    cause: &'static str,
+    #[allow(dead_code)]
+    publisher: &'static str,
+    #[allow(dead_code)]
+    access: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum McpViewKind {
+    /// Pilot gate storyboard layout (byte-stable wording for approved frames).
+    GatePilot,
+    Empty,
+    MixedList,
+    SetupFocus,
+    AuthNeeded,
+    AuthReady,
+    FailedRow,
+    RetryRunning,
+    RetryReady,
+    RetryFailed,
+}
+
+#[derive(Clone, Debug)]
+struct McpView {
+    kind: McpViewKind,
+    rows: Vec<CapRow>,
+    selected_id: &'static str,
+    bridge_note: bool,
+    header_title: &'static str,
+    header_task: &'static str,
+    intro_line: &'static str,
+    support_line: &'static str,
+    /// Focused setup/auth body replaces the row list when present.
+    focus_body: Option<&'static [&'static str]>,
+    primary_label: &'static str,
+    primary_action_id: &'static str,
+    secondary_label: &'static str,
+    secondary_action_id: &'static str,
+    diagnostics_closed: bool,
+}
+
+fn mcp_view(fixture_id: &str) -> McpView {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("empty") {
+        return McpView {
+            kind: McpViewKind::Empty,
+            rows: Vec::new(),
+            selected_id: "setup-connection",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: "Connect external tools",
+            intro_line: "Connect external tools so Code can use capabilities outside this project.",
+            support_line: "This path stays on capabilities and never opens model provider connection.",
+            focus_body: None,
+            primary_label: "Setup connection",
+            primary_action_id: "action.mcp.setup-connection",
+            secondary_label: "Open diagnostics",
+            secondary_action_id: "action.mcp.diagnostics",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("setup-browser") || lower.contains("setup_focus") {
+        return McpView {
+            kind: McpViewKind::SetupFocus,
+            rows: vec![
+                CapRow {
+                    id: "browser-automation",
+                    name: "Browser automation",
+                    state: CapState::SetupNeeded,
+                    cause: "Missing local tools needed for page checks.",
+                    publisher: "Browser Tools",
+                    access: "Read pages and capture screenshots",
+                },
+            ],
+            selected_id: "browser-automation",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: "Finish setup for Browser automation",
+            intro_line: "Guided setup for one capability. Cancel rolls back provisional state.",
+            support_line: "Return stays on the MCP origin. Advanced setup is secondary only.",
+            focus_body: Some(&[
+                "Capability  Browser automation",
+                "Publisher   Browser Tools",
+                "Requested   Read pages and capture screenshots",
+                "Scope       This project only",
+            ]),
+            primary_label: "Connect",
+            primary_action_id: "action.mcp.setup-connect",
+            secondary_label: "Advanced setup",
+            secondary_action_id: "action.mcp.advanced-setup",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("auth-docs-ready") {
+        return McpView {
+            kind: McpViewKind::AuthReady,
+            rows: sorted_caps(&[
+                CapRow {
+                    id: "browser-automation",
+                    name: "Browser automation",
+                    state: CapState::SetupNeeded,
+                    cause: "Missing local tools needed for page checks.",
+                    publisher: "Browser Tools",
+                    access: "Read pages and capture screenshots",
+                },
+                CapRow {
+                    id: "project-docs",
+                    name: "Project docs",
+                    state: CapState::Ready,
+                    cause: "Workspace library is authorized.",
+                    publisher: "Docs Workspace",
+                    access: "Search project documentation",
+                },
+                CapRow {
+                    id: "code-search",
+                    name: "Code search",
+                    state: CapState::Ready,
+                    cause: "Index is current.",
+                    publisher: "Code Index",
+                    access: "Search local symbols",
+                },
+            ]),
+            selected_id: "project-docs",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: FLOW4_MCP_TASK,
+            intro_line: "Project docs is ready after sign-in. Attention items still lead.",
+            support_line: "Connection details and raw tools stay under diagnostics.",
+            focus_body: None,
+            primary_label: "Details",
+            primary_action_id: "action.mcp.details",
+            secondary_label: "Open diagnostics",
+            secondary_action_id: "action.mcp.diagnostics",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("auth-docs") {
+        return McpView {
+            kind: McpViewKind::AuthNeeded,
+            rows: sorted_caps(&[
+                CapRow {
+                    id: "project-docs",
+                    name: "Project docs",
+                    state: CapState::SignInNeeded,
+                    cause: "This workspace library needs approval before use.",
+                    publisher: "Docs Workspace",
+                    access: "Search project documentation",
+                },
+                CapRow {
+                    id: "code-search",
+                    name: "Code search",
+                    state: CapState::Ready,
+                    cause: "Index is current.",
+                    publisher: "Code Index",
+                    access: "Search local symbols",
+                },
+            ]),
+            selected_id: "project-docs",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: "Authorize Project docs for this conversation",
+            intro_line: "One capability needs sign-in. Authorization stays inside the MCP branch.",
+            support_line: "Sign in stays on this capability and never exposes tokens by default.",
+            focus_body: None,
+            primary_label: "Sign in",
+            primary_action_id: "action.mcp.sign-in",
+            secondary_label: "Open diagnostics",
+            secondary_action_id: "action.mcp.diagnostics",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("retry-ready") {
+        return McpView {
+            kind: McpViewKind::RetryReady,
+            rows: sorted_caps(&[
+                CapRow {
+                    id: "browser-automation",
+                    name: "Browser automation",
+                    state: CapState::SetupNeeded,
+                    cause: "Missing local tools needed for page checks.",
+                    publisher: "Browser Tools",
+                    access: "Read pages and capture screenshots",
+                },
+                CapRow {
+                    id: "issue-tracker",
+                    name: "Issue tracker",
+                    state: CapState::Ready,
+                    cause: "Connection restored after retry.",
+                    publisher: "Tracker Cloud",
+                    access: "Read issues and comments",
+                },
+                CapRow {
+                    id: "code-search",
+                    name: "Code search",
+                    state: CapState::Ready,
+                    cause: "Index is current.",
+                    publisher: "Code Index",
+                    access: "Search local symbols",
+                },
+            ]),
+            selected_id: "issue-tracker",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: FLOW4_MCP_TASK,
+            intro_line: "Retry restored Issue tracker. Sibling capabilities stayed unchanged.",
+            support_line: "Connection details and raw tools stay under diagnostics.",
+            focus_body: None,
+            primary_label: "Details",
+            primary_action_id: "action.mcp.details",
+            secondary_label: "Open diagnostics",
+            secondary_action_id: "action.mcp.diagnostics",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("retry-failed") {
+        return McpView {
+            kind: McpViewKind::RetryFailed,
+            rows: sorted_caps(&[
+                CapRow {
+                    id: "issue-tracker",
+                    name: "Issue tracker",
+                    state: CapState::Failed,
+                    cause: "Still unavailable after retry. The service refused the request.",
+                    publisher: "Tracker Cloud",
+                    access: "Read issues and comments",
+                },
+                CapRow {
+                    id: "code-search",
+                    name: "Code search",
+                    state: CapState::Ready,
+                    cause: "Index is current.",
+                    publisher: "Code Index",
+                    access: "Search local symbols",
+                },
+            ]),
+            selected_id: "issue-tracker",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: FLOW4_MCP_TASK,
+            intro_line: "Retry finished with a new plain-English failure on Issue tracker only.",
+            support_line: "Connection details and raw tools stay under diagnostics.",
+            focus_body: None,
+            primary_label: "Retry",
+            primary_action_id: "action.mcp.retry",
+            secondary_label: "Open diagnostics",
+            secondary_action_id: "action.mcp.diagnostics",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("retry-running") || lower.contains("retrying") {
+        return McpView {
+            kind: McpViewKind::RetryRunning,
+            rows: sorted_caps(&[
+                CapRow {
+                    id: "issue-tracker",
+                    name: "Issue tracker",
+                    state: CapState::Retrying,
+                    cause: "Retrying the failed connection for this capability only.",
+                    publisher: "Tracker Cloud",
+                    access: "Read issues and comments",
+                },
+                CapRow {
+                    id: "code-search",
+                    name: "Code search",
+                    state: CapState::Ready,
+                    cause: "Index is current.",
+                    publisher: "Code Index",
+                    access: "Search local symbols",
+                },
+            ]),
+            selected_id: "issue-tracker",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: FLOW4_MCP_TASK,
+            intro_line: "Only Issue tracker is retrying. Sibling capabilities stay put.",
+            support_line: "Connection details and raw tools stay under diagnostics.",
+            focus_body: None,
+            primary_label: "Wait for retry",
+            primary_action_id: "action.mcp.wait-retry",
+            secondary_label: "Open diagnostics",
+            secondary_action_id: "action.mcp.diagnostics",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("failed-tracker") || lower.contains("failed_row") {
+        return McpView {
+            kind: McpViewKind::FailedRow,
+            rows: sorted_caps(&[
+                CapRow {
+                    id: "issue-tracker",
+                    name: "Issue tracker",
+                    state: CapState::Failed,
+                    cause: "Could not reach the issue service for this project.",
+                    publisher: "Tracker Cloud",
+                    access: "Read issues and comments",
+                },
+                CapRow {
+                    id: "code-search",
+                    name: "Code search",
+                    state: CapState::Ready,
+                    cause: "Index is current.",
+                    publisher: "Code Index",
+                    access: "Search local symbols",
+                },
+            ]),
+            selected_id: "issue-tracker",
+            bridge_note: false,
+            header_title: FLOW4_MCP_ORIGIN,
+            header_task: FLOW4_MCP_TASK,
+            intro_line: "One capability failed. Retry acts only on the selected row.",
+            support_line: "Connection details and raw tools stay under diagnostics.",
+            focus_body: None,
+            primary_label: "Retry",
+            primary_action_id: "action.mcp.retry",
+            secondary_label: "Open diagnostics",
+            secondary_action_id: "action.mcp.diagnostics",
+            diagnostics_closed: true,
+        };
+    }
+    if lower.contains("mixed") || lower.contains("views.mcp") {
+        return mixed_mcp_view();
+    }
+    // Gate pilot + default production publication: keep approved pilot layout.
+    if is_gate_fixture(fixture_id)
+        || lower.contains("gate.provider-and-mcp.mcp")
+        || lower == "canonical.mcp"
+        || lower.is_empty()
+        || lower.starts_with("case.")
+        || lower.contains("provider-and-mcp")
+    {
+        return gate_pilot_mcp_view();
+    }
+    mixed_mcp_view()
+}
+
+fn gate_pilot_mcp_view() -> McpView {
+    McpView {
+        kind: McpViewKind::GatePilot,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "browser-automation",
+                name: "Browser automation",
+                state: CapState::SetupNeeded,
+                cause: "Missing local tools needed for page checks.",
+                publisher: "Browser Tools",
+                access: "Read pages and capture screenshots",
+            },
+            CapRow {
+                id: "project-docs",
+                name: "Project docs",
+                state: CapState::SignInNeeded,
+                cause: "This workspace library needs approval before use.",
+                publisher: "Docs Workspace",
+                access: "Search project documentation",
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+            },
+        ]),
+        selected_id: "browser-automation",
+        bridge_note: true,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: FLOW4_MCP_TASK,
+        intro_line: "Not a continuation of the blocked-model provider connection.",
+        support_line: "Capabilities that need attention come first. Healthy ones stay collapsed.",
+        focus_body: None,
+        // Gate pilot wording retained for approved storyboard hash stability.
+        primary_label: "Fix setup",
+        primary_action_id: "action.mcp.fix-setup",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+    }
+}
+
+fn mixed_mcp_view() -> McpView {
+    McpView {
+        kind: McpViewKind::MixedList,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "deploy-hooks",
+                name: "Deploy hooks",
+                state: CapState::PolicyBlocked,
+                cause: "Workspace policy blocks remote deploy actions.",
+                publisher: "Deploy Safe",
+                access: "Propose deploy hooks",
+            },
+            CapRow {
+                id: "project-docs",
+                name: "Project docs",
+                state: CapState::SignInNeeded,
+                cause: "This workspace library needs approval before use.",
+                publisher: "Docs Workspace",
+                access: "Search project documentation",
+            },
+            CapRow {
+                id: "browser-automation",
+                name: "Browser automation",
+                state: CapState::SetupNeeded,
+                cause: "Missing local tools needed for page checks.",
+                publisher: "Browser Tools",
+                access: "Read pages and capture screenshots",
+            },
+            CapRow {
+                id: "issue-tracker",
+                name: "Issue tracker",
+                state: CapState::Failed,
+                cause: "Could not reach the issue service for this project.",
+                publisher: "Tracker Cloud",
+                access: "Read issues and comments",
+            },
+            CapRow {
+                id: "metric-export",
+                name: "Metric export",
+                state: CapState::Disabled,
+                cause: "Paused for this project.",
+                publisher: "Metrics Lab",
+                access: "Export local metric snapshots",
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+            },
+            CapRow {
+                id: "enterprise-knowledge",
+                name: "Enterprise knowledge base for architecture decisions that span many teams",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Knowledge Hub",
+                access: "Search architecture notes",
+            },
+        ]),
+        selected_id: "deploy-hooks",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: FLOW4_MCP_TASK,
+        intro_line: "MCP capabilities. Attention first; healthy rows stay collapsed.",
+        support_line: "Connection details and raw tools stay under diagnostics.",
+        focus_body: None,
+        primary_label: "Review policy",
+        primary_action_id: "action.mcp.review-policy",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+    }
+}
+
+fn sorted_caps(rows: &[CapRow]) -> Vec<CapRow> {
+    let mut out = rows.to_vec();
+    out.sort_by(|a, b| {
+        a.state
+            .priority()
+            .cmp(&b.state.priority())
+            .then_with(|| a.id.cmp(b.id))
+    });
+    out
+}
+
 fn render_mcp(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let view = mcp_view(fixture_id);
+    if view.kind == McpViewKind::GatePilot {
+        return render_mcp_gate_pilot(canvas, screen_id, fixture_id);
+    }
+
+    let mut pairs: Vec<(SemanticCandidate, SemanticEvent)> = Vec::new();
+    let mut transitions: Vec<TransitionTrace> = Vec::new();
+
+    canvas.write(2, 4, view.header_title, TextStyle::muted())?;
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "origin",
+        "mcp-origin",
+        reference(2, 4, view.header_title.len() as u16),
+        "summary",
+        None,
+    ));
+
+    canvas.write(3, 4, view.header_task, TextStyle::bright())?;
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "task",
+        "mcp-task",
+        reference(3, 4, view.header_task.len() as u16),
+        "focused",
+        None,
+    ));
+
+    let mut row_cursor = 5u16;
+    if view.bridge_note {
+        canvas.write(
+            row_cursor,
+            4,
+            "Illustrative detour · separate capability branch",
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "bridge-note",
+            "illustrative-detour",
+            reference(row_cursor, 4, 50),
+            "summary",
+            None,
+        ));
+        row_cursor += 2;
+    }
+
+    if view.kind == McpViewKind::Empty {
+        // Task line already carries "Connect external tools"; body explains MCP once.
+        canvas.write(row_cursor, 4, "No capabilities configured yet", TextStyle::bright())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "surface",
+            "mcp-empty",
+            reference(row_cursor, 4, 32),
+            "summary",
+            None,
+        ));
+        row_cursor += 2;
+        canvas.write(row_cursor, 4, view.intro_line, TextStyle::text())?;
+        row_cursor += 1;
+        canvas.write(
+            row_cursor,
+            4,
+            "Use tools, resources, and prompts from outside this project when you need them.",
+            TextStyle::muted(),
+        )?;
+        row_cursor += 2;
+        canvas.write(row_cursor, 4, view.support_line, TextStyle::muted())?;
+    } else if let Some(body) = view.focus_body {
+        canvas.write(row_cursor, 4, "Guided setup", TextStyle::bright())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "surface",
+            "mcp-setup-focus",
+            reference(row_cursor, 4, 14),
+            "summary",
+            None,
+        ));
+        row_cursor += 2;
+        canvas.write(row_cursor, 4, view.intro_line, TextStyle::muted())?;
+        row_cursor += 2;
+        for line in body {
+            canvas.write(row_cursor, 4, line, TextStyle::text())?;
+            row_cursor += 1;
+        }
+        row_cursor += 1;
+        canvas.write(row_cursor, 4, view.support_line, TextStyle::muted())?;
+        row_cursor += 2;
+        canvas.write(
+            row_cursor,
+            4,
+            "Cancel returns to the same selected row without adding a connection.",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(row_cursor, 4, "MCP capabilities", TextStyle::bright())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "surface",
+            "mcp-capabilities",
+            reference(row_cursor, 4, 20),
+            "summary",
+            None,
+        ));
+        row_cursor += 1;
+        canvas.write(row_cursor, 4, view.intro_line, TextStyle::muted())?;
+        row_cursor += 1;
+        canvas.write(row_cursor, 4, view.support_line, TextStyle::muted())?;
+        row_cursor += 2;
+
+        let attention: Vec<&CapRow> = view
+            .rows
+            .iter()
+            .filter(|r| r.state != CapState::Ready && r.state != CapState::Disabled)
+            .collect();
+        let disabled: Vec<&CapRow> = view
+            .rows
+            .iter()
+            .filter(|r| r.state == CapState::Disabled)
+            .collect();
+        let ready: Vec<&CapRow> = view
+            .rows
+            .iter()
+            .filter(|r| r.state == CapState::Ready)
+            .collect();
+
+        // Leave rows 29-34 for footer/actions; stop list content at 28.
+        const LIST_FLOOR: u16 = 28;
+        for cap in attention {
+            if row_cursor + 2 > LIST_FLOOR {
+                break;
+            }
+            let selected = cap.id == view.selected_id;
+            let prefix = if selected { "› " } else { "  " };
+            let title = format!(
+                "{prefix}{} {} · {}",
+                cap.state.marker(),
+                cap.name,
+                cap.state.label()
+            );
+            let style = if selected {
+                TextStyle::accent()
+            } else {
+                TextStyle::text()
+            };
+            canvas.write(row_cursor, 4, &title, style)?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "capability-row",
+                cap.id,
+                reference(row_cursor, 4, title.chars().count().min(80) as u16),
+                if selected { "focused" } else { "summary" },
+                None,
+            ));
+            row_cursor += 1;
+            // Dense attention packing: cause + action on one muted line when possible.
+            if let Some(action_label) = cap.state.primary_action() {
+                let action_bit = if selected {
+                    format!("[enter] {action_label}")
+                } else {
+                    format!("[{action_label}]")
+                };
+                let detail = if cap.cause.is_empty() {
+                    action_bit
+                } else {
+                    format!("{} · {action_bit}", truncate_capability(cap.cause, 52))
+                };
+                canvas.write(
+                    row_cursor,
+                    6,
+                    &detail,
+                    if selected {
+                        TextStyle::bright()
+                    } else {
+                        TextStyle::muted()
+                    },
+                )?;
+                row_cursor += 1;
+            } else if !cap.cause.is_empty() {
+                canvas.write(
+                    row_cursor,
+                    6,
+                    &truncate_capability(cap.cause, 70),
+                    TextStyle::muted(),
+                )?;
+                row_cursor += 1;
+            }
+        }
+
+        for cap in disabled {
+            if row_cursor >= LIST_FLOOR {
+                break;
+            }
+            let line = format!("  {} {} · {}", cap.state.marker(), cap.name, cap.state.label());
+            canvas.write(row_cursor, 4, &line, TextStyle::muted())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "capability-row",
+                cap.id,
+                reference(row_cursor, 4, line.chars().count().min(80) as u16),
+                "summary",
+                None,
+            ));
+            row_cursor += 1;
+        }
+
+        if !ready.is_empty() && row_cursor < LIST_FLOOR {
+            let summary = format!(
+                "  ○ {} ready connection{} collapsed",
+                ready.len(),
+                if ready.len() == 1 { "" } else { "s" }
+            );
+            canvas.write(row_cursor, 4, &summary, TextStyle::muted())?;
+            row_cursor += 1;
+            for cap in ready {
+                if row_cursor >= LIST_FLOOR {
+                    break;
+                }
+                // Healthy capability occupies exactly one compact line.
+                let name = truncate_capability(cap.name, 48);
+                let line = format!("    {name} · {}", cap.state.label());
+                canvas.write(row_cursor, 4, &line, TextStyle::text())?;
+                pairs.push(semantic(
+                    screen_id,
+                    fixture_id,
+                    "capability-row",
+                    if cap.id == "code-search" {
+                        "code-search-ready"
+                    } else {
+                        cap.id
+                    },
+                    reference(row_cursor, 4, line.chars().count().min(80) as u16),
+                    "summary",
+                    None,
+                ));
+                row_cursor += 1;
+            }
+        }
+    }
+
+    // Footer notes sit just above the action region without colliding with rows.
+    let footer_row = 29u16;
+    if view.diagnostics_closed {
+        canvas.write(
+            footer_row,
+            4,
+            "Connection details and raw tools stay under diagnostics.",
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "disclosure",
+            "diagnostics_closed",
+            reference(footer_row, 4, 56),
+            "summary",
+            None,
+        ));
+    }
+    canvas.write(
+        30,
+        4,
+        "Return closes this branch to the conversation, not provider OAuth.",
+        TextStyle::muted(),
+    )?;
+
+    // Action region.
+    let primary_line = format!("› [enter] {}", view.primary_label);
+    canvas.write(31, 4, &primary_line, TextStyle::accent())?;
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        view.primary_action_id,
+        reference(31, 4, primary_line.chars().count() as u16),
+        "focused",
+        Some(action(
+            view.primary_action_id,
+            view.primary_label,
+            false,
+        )),
+    ));
+
+    if view.kind == McpViewKind::SetupFocus {
+        canvas.write(
+            32,
+            4,
+            &format!("  [a] {}", view.secondary_label),
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            view.secondary_action_id,
+            reference(32, 4, 22),
+            "summary",
+            Some(action(
+                view.secondary_action_id,
+                view.secondary_label,
+                false,
+            )),
+        ));
+        canvas.write(33, 4, "  [esc] Cancel", TextStyle::muted())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.mcp.setup-cancel",
+            reference(33, 4, 18),
+            "summary",
+            Some(action("action.mcp.setup-cancel", "Cancel", false)),
+        ));
+        transitions.push(transition(
+            view.primary_action_id,
+            "mcp",
+            "mcp",
+            "direct",
+            "guided setup connects the focused capability without provisional leftovers on cancel",
+        ));
+        transitions.push(transition(
+            "action.mcp.setup-cancel",
+            "mcp",
+            "mcp",
+            "cancel",
+            "cancel rolls back provisional setup and restores the selected row",
+        ));
+    } else {
+        canvas.write(
+            32,
+            4,
+            &format!("  [d] {}", view.secondary_label),
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            view.secondary_action_id,
+            reference(32, 4, 25),
+            "summary",
+            Some(action(
+                view.secondary_action_id,
+                view.secondary_label,
+                false,
+            )),
+        ));
+        canvas.write(33, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.mcp.return",
+            reference(33, 4, 33),
+            "summary",
+            Some(action(
+                "action.mcp.return",
+                "Return to conversation",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            view.primary_action_id,
+            "mcp",
+            "mcp",
+            "direct",
+            match view.kind {
+                McpViewKind::Empty => {
+                    "setup connection stays on the MCP branch and never opens provider login"
+                }
+                McpViewKind::AuthNeeded => {
+                    "sign-in authorizes only the selected capability inside the MCP branch"
+                }
+                McpViewKind::FailedRow | McpViewKind::RetryFailed => {
+                    "retry is scoped to the failed capability and leaves siblings unchanged"
+                }
+                McpViewKind::RetryRunning => {
+                    "retry remains owned by the selected capability while it runs"
+                }
+                _ => "the selected capability action stays row-scoped on the MCP branch",
+            },
+        ));
+        transitions.push(transition(
+            "action.mcp.return",
+            "mcp",
+            "chat-turn",
+            "direct",
+            "the capability view closes to its recorded conversation origin",
+        ));
+    }
+
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    let _ = view.selected_id;
+
+    Ok((
+        pairs.iter().map(|(c, _)| c.clone()).collect(),
+        pairs.iter().map(|(_, e)| e.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn truncate_capability(name: &str, max_chars: usize) -> String {
+    let count = name.chars().count();
+    if count <= max_chars {
+        return name.to_owned();
+    }
+    let take = max_chars.saturating_sub(1);
+    let mut out: String = name.chars().take(take).collect();
+    out.push('…');
+    out
+}
+
+/// Byte-stable gate pilot layout (approved Flow 4 storyboard frame).
+fn render_mcp_gate_pilot(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
