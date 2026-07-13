@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Daily work · current conversation                                                                                   
+    Diff · temporary detail · from the selected review finding                                                          
+    Selected finding · high · middleware.rs:42 · unbounded wait when cap is zero                                        
+                                                                                                                        
+    File 1 of 2 · src/auth/middleware.rs · line 42                                                                      
+    Same review origin · return restores the selected finding                                                           
+                                                                                                                        
+    @@ -42,2 +42,3 @@ apply_limit                                                                                       
+                                                                                                                        
+       42   42  -    return wait_forever()                                                                              
+              - removed line                                                                                            
+            42  +    return wait_capped(cap)                                                                            
+               +    log_limit_hit(cap)                                                                                  
+              + added line                                                                                              
+        43  45      continue                                                                                            
+                                                                                                                        
+                                                                                                                        
+    Summary · +2 -1 · 1 hunk · next: src/net/retry_policy.rs (file 2 of 2)                                              
+                                                                                                                        
+    Read-only inspection · no write, staging, or approval action here                                                   
+    Any approve or apply would open the Flow 2 decision dock first                                                      
+                                                                                                                        
+                                                                                                                        
+    [n] Next file · next: src/net/retry_policy.rs (file 2 of 2)                                                         
+    [p] Previous file · previous stays on file 1 of 2                                                                   
+                                                                                                                        
+    › [esc] Return to selected finding                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

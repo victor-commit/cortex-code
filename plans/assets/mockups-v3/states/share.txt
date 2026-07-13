@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Daily work · current conversation                                                                                   
+    Find where the server applies the rate limit and explain the safe path.                                             
+                                                                                                                        
+    You · Find where the server applies the rate limit and explain the safe path.                                       
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The shared request guard applies the limit before route work begins.                                                
+    → src/auth/middleware.rs owns the rate-limit decision.                                                              
+                                                                                                                        
+    ● Ready to continue · share result attaches below in the action dock                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ ✓ Local share reference created                                                                                  │  
+  │ Scope · rate-limit path conversation · read-only transcript                                                      │  
+  │ Access · local only · not remote · result is read-only                                                           │  
+  │ Link · http://127.0.0.1:3200/share/shr-71b2ce                                                                    │  
+  │ › [enter] Copy link · [r] Revoke this local share · [esc] Return                                                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

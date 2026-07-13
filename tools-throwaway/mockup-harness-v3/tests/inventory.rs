@@ -205,6 +205,9 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "sidebar-lsp",
             "sidebar-todo",
             "sidebar-subagents",
+            "review",
+            "diff-viewer",
+            "share",
         ]
         .contains(&screen.id)
         {

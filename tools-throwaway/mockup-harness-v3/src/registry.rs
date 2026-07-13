@@ -449,7 +449,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Views,
         flow: FlowOwner::DailyWork,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "diff-viewer-staging",
@@ -470,7 +470,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Views,
         flow: FlowOwner::DailyWork,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "theme-gallery-dark",
@@ -638,7 +638,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::States,
         flow: FlowOwner::DailyWork,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "mode-switch",

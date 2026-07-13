@@ -1307,9 +1307,98 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "inspector-close-lsp" => inspector_close("sidebar-lsp"),
         "inspector-close-todo" => inspector_close("sidebar-todo"),
         "inspector-close-subagents" => inspector_close("sidebar-subagents"),
+        "review-open-evidence" => review_open_evidence(),
+        "review-return" => review_return(),
+        "diff-next-file" => diff_next_file(),
+        "diff-previous-file" => diff_previous_file(),
+        "diff-return-to-review" => diff_return_to_review(),
+        "review-diff-chain-return" => review_diff_chain_return(),
+        "share-copy-link" => share_copy_link(),
+        "share-open-revoke" => share_open_revoke(),
+        "share-confirm-revoke" => share_confirm_revoke(),
+        "share-confirm-revoke-idempotent" => share_confirm_revoke_idempotent(),
+        "share-return" => share_return(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
+    if matches!(
+        case_id,
+        "review-open-evidence"
+            | "review-return"
+            | "diff-next-file"
+            | "diff-previous-file"
+            | "diff-return-to-review"
+            | "review-diff-chain-return"
+    ) {
+        let inspection_ledger = "files_untouched|staging_untouched|approvals_untouched|tasks_untouched|transcript_untouched";
+        preserved_field_hashes.insert(
+            "inspection_readonly_ledger".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(inspection_ledger.as_bytes()),
+                after: sha256_hex(inspection_ledger.as_bytes()),
+            },
+        );
+        let selected_finding = "finding.middleware-cap|middleware.rs:42";
+        preserved_field_hashes.insert(
+            "selected_finding".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(selected_finding.as_bytes()),
+                after: sha256_hex(selected_finding.as_bytes()),
+            },
+        );
+        let draft = "Also list the tests that should cover the search.";
+        preserved_field_hashes.insert(
+            "composer_draft".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(draft.as_bytes()),
+                after: sha256_hex(draft.as_bytes()),
+            },
+        );
+    }
+    if matches!(
+        case_id,
+        "share-copy-link"
+            | "share-open-revoke"
+            | "share-confirm-revoke"
+            | "share-confirm-revoke-idempotent"
+            | "share-return"
+    ) {
+        let unrelated = "share.remote.docs-preview|active";
+        let draft = "Also list the tests that should cover the search.";
+        let primary_before = match case_id {
+            "share-confirm-revoke-idempotent" | "share-return" => {
+                "share.local.rate-limit-review|revoked"
+            }
+            _ => "share.local.rate-limit-review|active",
+        };
+        let primary_after = match case_id {
+            "share-confirm-revoke" | "share-confirm-revoke-idempotent" | "share-return" => {
+                "share.local.rate-limit-review|revoked"
+            }
+            _ => "share.local.rate-limit-review|active",
+        };
+        preserved_field_hashes.insert(
+            "unrelated_share".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(unrelated.as_bytes()),
+                after: sha256_hex(unrelated.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "composer_draft".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(draft.as_bytes()),
+                after: sha256_hex(draft.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "primary_share".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(primary_before.as_bytes()),
+                after: sha256_hex(primary_after.as_bytes()),
+            },
+        );
+    }
     if matches!(
         case_id,
         "compact-expand-history" | "compact-collapse-history"
@@ -2053,6 +2142,36 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("mission-review-to-approved-bridge", "reviewer-approved") => {
                 "gate.mission.reviewer-approved".to_owned()
             }
+            (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
+    } else if matches!(
+        case_id,
+        "review-open-evidence"
+            | "review-return"
+            | "diff-next-file"
+            | "diff-previous-file"
+            | "diff-return-to-review"
+            | "review-diff-chain-return"
+            | "share-copy-link"
+            | "share-open-revoke"
+            | "share-confirm-revoke"
+            | "share-confirm-revoke-idempotent"
+            | "share-return"
+    ) {
+        match (case_id, after.screen_id.as_str()) {
+            ("review-open-evidence", "diff-viewer") => "views.diff.file-1".to_owned(),
+            ("diff-next-file", "diff-viewer") => "views.diff.file-2".to_owned(),
+            ("diff-previous-file", "diff-viewer") => "views.diff.file-1".to_owned(),
+            ("diff-return-to-review", "review") => "views.review.selected".to_owned(),
+            ("review-return" | "review-diff-chain-return", "chat-turn") => {
+                "flow1.daily-work.stable".to_owned()
+            }
+            ("share-copy-link", "share") => "states.share.ready".to_owned(),
+            ("share-open-revoke", "share") => "states.share.revoke-confirm".to_owned(),
+            ("share-confirm-revoke" | "share-confirm-revoke-idempotent", "share") => {
+                "states.share.revoked".to_owned()
+            }
+            ("share-return", "chat-turn") => "flow1.daily-work.stable".to_owned(),
             (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else {
@@ -10930,6 +11049,569 @@ fn inspector_tab_switch(
         "inspector-navigation",
         "tab-switched",
         "contextual tab changed without disturbing the shared transcript, draft, or scroll anchor",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+
+fn review_shared_origin(screen_id: &str) -> ScenarioState {
+    let mut state = disclosure_base(
+        screen_id,
+        "Also list the tests that should cover the search.",
+        "review-transcript-anchor",
+        "finding.middleware-cap",
+        "review-selected-finding",
+        Some("activity.rate-limit-path"),
+        0,
+    );
+    state.turn_id = "turn.daily-work.review.18".to_owned();
+    state.user_task =
+        "Find where the server applies the rate limit and explain the safe path.".to_owned();
+    state.visible_origin = "Daily work · current conversation".to_owned();
+    state.transcript =
+        "Shared request guard remains the origin of the temporary review detail.".to_owned();
+    state.queued_follow_up = "Also list the tests that should cover the search.".to_owned();
+    state.staging_hunk_states = ["Pending".to_owned(), "Pending".to_owned()];
+    state.focused_hunk = "not-staging".to_owned();
+    state.state_hash = state_hash(&state);
+    state
+}
+
+fn review_open_evidence() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = review_shared_origin("review");
+    let mut after = before.clone();
+    after.screen_id = "diff-viewer".to_owned();
+    after.selection = "finding.middleware-cap".to_owned();
+    after.focus = "diff-file-1-of-2".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Opened middleware.rs:42 evidence for the same selected review finding.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.review.open-evidence".to_owned(),
+        label: "Open selected evidence".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "selected finding opens its file and line evidence while remaining the return target"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.review.open-evidence.1".to_owned(),
+        owner_id: "review.selected-finding".to_owned(),
+        count: 1,
+        outcome: "opened-evidence".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.review.open-evidence",
+        "inspection",
+        "opened",
+        "readonly evidence opened with zero file, staging, approval, task, or transcript mutation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn review_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = review_shared_origin("review");
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "restored-conversation".to_owned();
+    after.focus = "restored-composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Review closed. Origin conversation, draft, and transcript position restored.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.review.return".to_owned(),
+        label: "Return to conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return restores the exact originating conversation, draft, and transcript position"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.review.return.1".to_owned(),
+        owner_id: "review.return".to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.review.return",
+        "navigation",
+        "restored",
+        "origin conversation restored without leaving a finding or verdict navigation trap",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn diff_next_file() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = review_shared_origin("diff-viewer");
+    before.focus = "diff-file-1-of-2".to_owned();
+    before.selection = "finding.middleware-cap".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.focus = "diff-file-2-of-2".to_owned();
+    after.selection = "finding.middleware-cap".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Moved to src/net/retry_policy.rs while keeping the same selected review finding."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.diff-viewer.next-file".to_owned(),
+        label: "Next file".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "next updates to the next file in the same review change set without leaving the selection"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.diff-viewer.next-file.1".to_owned(),
+        owner_id: "diff-viewer.navigation".to_owned(),
+        count: 1,
+        outcome: "file-2".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.diff-viewer.next-file",
+        "navigation",
+        "advanced",
+        "bounded next-file navigation kept review origin and selected finding",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn diff_previous_file() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = review_shared_origin("diff-viewer");
+    before.focus = "diff-file-2-of-2".to_owned();
+    before.selection = "finding.middleware-cap".to_owned();
+    before.virtual_tick = 0;
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.focus = "diff-file-1-of-2".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Returned to src/auth/middleware.rs without escaping the review change set.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.diff-viewer.previous-file".to_owned(),
+        label: "Previous file".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "previous stays inside the change set and keeps the same selected review finding"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.diff-viewer.previous-file.1".to_owned(),
+        owner_id: "diff-viewer.navigation".to_owned(),
+        count: 1,
+        outcome: "file-1".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.diff-viewer.previous-file",
+        "navigation",
+        "rewound",
+        "bounded previous-file navigation kept review origin and selected finding",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn diff_return_to_review() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = review_shared_origin("diff-viewer");
+    before.focus = "diff-file-1-of-2".to_owned();
+    before.selection = "finding.middleware-cap".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "review".to_owned();
+    after.focus = "review-selected-finding".to_owned();
+    after.selection = "finding.middleware-cap".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Returned to the same selected review finding from the diff evidence.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.diff-viewer.return".to_owned(),
+        label: "Return to selected finding".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return restores the same selected review finding before conversation return is available"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.diff-viewer.return.1".to_owned(),
+        owner_id: "diff-viewer.return".to_owned(),
+        count: 1,
+        outcome: "restored-finding".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.diff-viewer.return",
+        "navigation",
+        "restored",
+        "selected review finding restored without mutating inspection subjects",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn review_diff_chain_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // Second step of the reversible chain: review -> conversation.
+    // The prior step is coverage by diff-return-to-review.
+    let mut before = review_shared_origin("review");
+    before.selection = "finding.middleware-cap".to_owned();
+    before.focus = "review-selected-finding".to_owned();
+    before.virtual_tick = 0;
+    before.transcript =
+        "Returned to the same selected review finding from the diff evidence.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "restored-conversation".to_owned();
+    after.focus = "restored-composer".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Two-step chain complete. Conversation, draft, and transcript position restored."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.review.return".to_owned(),
+        label: "Return to conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return restores the exact originating conversation, draft, and transcript position"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.review.chain-return.1".to_owned(),
+        owner_id: "review.return".to_owned(),
+        count: 1,
+        outcome: "chain-restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.review.chain-return",
+        "navigation",
+        "restored",
+        "conversation restored after the reversible review to diff chain",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn share_shared_origin(selection: &str, focus: &str, tick: u32) -> ScenarioState {
+    let mut state = disclosure_base(
+        "share",
+        "Also list the tests that should cover the search.",
+        "share-transcript-anchor",
+        selection,
+        focus,
+        Some("activity.rate-limit-path"),
+        tick,
+    );
+    state.turn_id = "turn.daily-work.review.18".to_owned();
+    state.user_task =
+        "Find where the server applies the rate limit and explain the safe path.".to_owned();
+    state.visible_origin = "Daily work · current conversation".to_owned();
+    state.transcript =
+        "Local share result is attached under the same conversation and draft.".to_owned();
+    state.queued_follow_up = "Also list the tests that should cover the search.".to_owned();
+    state.state_hash = state_hash(&state);
+    state
+}
+
+fn share_copy_link() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = share_shared_origin("share-ready", "share-copy-link", 0);
+    let mut after = before.clone();
+    after.selection = "share-ready-copied".to_owned();
+    after.focus = "share-copy-link".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Local read-only link copied without mutating the conversation or draft.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.share.copy-link".to_owned(),
+        label: "Copy link".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "copy places the local read-only link without mutating conversation state".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.share.copy-link.1".to_owned(),
+        owner_id: "share.local.rate-limit-review".to_owned(),
+        count: 1,
+        outcome: "copied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.share.copy-link",
+        "clipboard",
+        "copied",
+        "local read-only share link copied for the exact named share",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn share_open_revoke() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = share_shared_origin("share-ready", "share-revoke", 0);
+    let mut after = before.clone();
+    after.selection = "share-revoke-confirm".to_owned();
+    after.focus = "share-confirm-revoke".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Revoke confirmation names the exact local share and keeps the unrelated remote share."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.share.revoke".to_owned(),
+        label: "Revoke this local share".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "revoke opens confirmation that names only this exact local share".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.share.revoke.open.1".to_owned(),
+        owner_id: "share.local.rate-limit-review".to_owned(),
+        count: 1,
+        outcome: "confirming".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.share.revoke.open",
+        "confirmation",
+        "opened",
+        "revoke confirmation opened for the exact local share only",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn share_confirm_revoke() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = share_shared_origin("share-revoke-confirm", "share-confirm-revoke", 0);
+    let mut after = before.clone();
+    after.selection = "share-revoked".to_owned();
+    after.focus = "share-return".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Exact local share revoked. Unrelated remote docs preview remains active.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.share.confirm-revoke".to_owned(),
+        label: "Confirm revoke".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirm removes only the named share and leaves unrelated shares active".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.share.confirm-revoke.1".to_owned(),
+        owner_id: "share.local.rate-limit-review".to_owned(),
+        count: 1,
+        outcome: "revoked".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.share.confirm-revoke",
+        "share-lifecycle",
+        "revoked",
+        "only share.local.rate-limit-review was removed; share.remote.docs-preview stayed active",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn share_confirm_revoke_idempotent() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = share_shared_origin("share-revoked", "share-return", 0);
+    let mut after = before.clone();
+    after.selection = "share-revoked".to_owned();
+    after.focus = "share-return".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Repeated revoke confirm stayed idempotent; unrelated remote share still active."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.share.confirm-revoke".to_owned(),
+        label: "Confirm revoke".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "repeated confirm is idempotent and removes nothing additional".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.share.confirm-revoke.idempotent.1".to_owned(),
+        owner_id: "share.local.rate-limit-review".to_owned(),
+        count: 1,
+        outcome: "already-revoked".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.share.confirm-revoke.idempotent",
+        "share-lifecycle",
+        "noop",
+        "second confirm left the revoked share unchanged and kept the unrelated share active",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn share_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = share_shared_origin("share-revoked", "share-return", 0);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "restored-conversation".to_owned();
+    after.focus = "restored-composer".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Share surface closed. Origin conversation and draft restored.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.share.return".to_owned(),
+        label: "Return to conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return restores the originating conversation and kept draft".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.share.return.1".to_owned(),
+        owner_id: "share.return".to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.share.return",
+        "navigation",
+        "restored",
+        "origin conversation and draft restored after exact-target share revocation",
     );
     (before, after, action, transition, attempt, effect)
 }
