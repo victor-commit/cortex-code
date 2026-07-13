@@ -1410,11 +1410,17 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 70);
+        // Keep selector evidence tied to the live implemented map rather than a
+        // hard-coded count that drifts every production milestone.
+        assert_eq!(
+            implemented.canonical_ids().count(),
+            IMPLEMENTED_RENDERERS.len()
+        );
+        let all_err = preflight_render(&PublicSelector::All)
+            .expect_err("full render must reject missing renderers");
         assert!(
-            preflight_render(&PublicSelector::All)
-                .expect_err("full render must reject missing renderers")
-                .contains("status")
+            all_err.contains("no implemented renderer"),
+            "full render must fail closed on missing renderers: {all_err}"
         );
     }
 

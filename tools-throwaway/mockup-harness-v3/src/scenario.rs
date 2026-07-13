@@ -1243,7 +1243,12 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "fork-confirm" => fork_confirm(),
         "fork-cancel" => fork_cancel(),
         "login-cancel" => login_cancel(),
+        "login-cancel-onboarding" => login_cancel_onboarding(),
+        "login-cancel-conversation" => login_cancel_conversation(),
         "connect-provider-select" => connect_provider_select(),
+        "connect-provider-back-onboarding" => connect_provider_back_onboarding(),
+        "connect-provider-back-conversation" => connect_provider_back_conversation(),
+        "connect-provider-back-blocked-model" => connect_provider_back_blocked_model(),
         "connect-method-back" => connect_method_back(),
         "connect-connected-return" => connect_connected_return(),
         "mcp-return" => mcp_return(),
@@ -1980,7 +1985,12 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
     } else if matches!(
         case_id,
         "login-cancel"
+            | "login-cancel-onboarding"
+            | "login-cancel-conversation"
             | "connect-provider-select"
+            | "connect-provider-back-onboarding"
+            | "connect-provider-back-conversation"
+            | "connect-provider-back-blocked-model"
             | "connect-method-back"
             | "connect-connected-return"
             | "mcp-return"
@@ -1989,16 +1999,35 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "connect-oauth-finish"
             | "provider-to-mcp-bridge"
     ) {
-        match after.screen_id.as_str() {
-            "login" => "gate.provider-and-mcp.login".to_owned(),
-            "connect-provider" => "gate.provider-and-mcp.connect-provider".to_owned(),
-            "connect-method" => "gate.provider-and-mcp.connect-method".to_owned(),
-            "connect-oauth" => "gate.provider-and-mcp.connect-oauth".to_owned(),
-            "connect-connected" => "gate.provider-and-mcp.connect-connected".to_owned(),
-            "mcp" => "gate.provider-and-mcp.mcp".to_owned(),
-            "model-picker" => "gate.work-configuration.model-picker".to_owned(),
-            "chat-turn" => "flow1.daily-work.stable".to_owned(),
-            other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        match (case_id, after.screen_id.as_str()) {
+            ("login-cancel-onboarding", "login") => "auth.login.onboarding".to_owned(),
+            ("login-cancel-onboarding", "onboarding") => "auth.onboarding.return".to_owned(),
+            ("login-cancel-conversation", "login") => "auth.login.conversation".to_owned(),
+            ("login-cancel-conversation", "chat-turn") => "flow1.daily-work.stable".to_owned(),
+            ("connect-provider-back-onboarding", "connect-provider") => {
+                "auth.connect-provider.onboarding".to_owned()
+            }
+            ("connect-provider-back-onboarding", "login") => "auth.login.onboarding".to_owned(),
+            ("connect-provider-back-conversation", "connect-provider") => {
+                "auth.connect-provider.conversation".to_owned()
+            }
+            ("connect-provider-back-conversation", "login") => "auth.login.conversation".to_owned(),
+            ("connect-provider-back-blocked-model", "connect-provider") => {
+                "auth.connect-provider.blocked-model".to_owned()
+            }
+            ("connect-provider-back-blocked-model", "login") => {
+                "auth.login.blocked-model".to_owned()
+            }
+            (_, "login") => "gate.provider-and-mcp.login".to_owned(),
+            (_, "connect-provider") => "gate.provider-and-mcp.connect-provider".to_owned(),
+            (_, "connect-method") => "gate.provider-and-mcp.connect-method".to_owned(),
+            (_, "connect-oauth") => "gate.provider-and-mcp.connect-oauth".to_owned(),
+            (_, "connect-connected") => "gate.provider-and-mcp.connect-connected".to_owned(),
+            (_, "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
+            (_, "model-picker") => "gate.work-configuration.model-picker".to_owned(),
+            (_, "onboarding") => "auth.onboarding.return".to_owned(),
+            (_, "chat-turn") => "flow1.daily-work.stable".to_owned(),
+            (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else if matches!(
         case_id,
@@ -2743,14 +2772,34 @@ fn model_picker_cancel() -> (
 }
 
 fn apply_flow4_provider_identity(state: &mut ScenarioState) {
+    apply_flow4_provider_identity_for(state, "blocked-model");
+}
+
+fn apply_flow4_provider_identity_for(state: &mut ScenarioState, origin: &str) {
     state.conversation_id = "conversation.provider-connection".to_owned();
     state.transcript_id = "transcript.provider-connection".to_owned();
     state.session_id = "session.provider-connection.1".to_owned();
     state.turn_id = "turn.provider-connection.1".to_owned();
-    state.user_task = "Connect the model needed for this conversation.".to_owned();
-    state.visible_origin = "Provider connection · blocked model action".to_owned();
-    state.draft = "Continue the paused conversation.".to_owned();
-    state.transcript = "The blocked model choice remains available.".to_owned();
+    match origin {
+        "onboarding" => {
+            state.user_task = "Connect a provider for first-run setup.".to_owned();
+            state.visible_origin = "Provider connection · onboarding".to_owned();
+            state.draft = "Start with a safe model.".to_owned();
+            state.transcript = "First-run setup is ready for a model provider.".to_owned();
+        }
+        "conversation" => {
+            state.user_task = "Connect a provider without losing this conversation.".to_owned();
+            state.visible_origin = "Provider connection · conversation".to_owned();
+            state.draft = "Continue the paused conversation.".to_owned();
+            state.transcript = "The live conversation remains available.".to_owned();
+        }
+        _ => {
+            state.user_task = "Connect the model needed for this conversation.".to_owned();
+            state.visible_origin = "Provider connection · blocked model action".to_owned();
+            state.draft = "Continue the paused conversation.".to_owned();
+            state.transcript = "The blocked model choice remains available.".to_owned();
+        }
+    }
     state.paused_activity_id = "pending.model.gpt-5-2-codex".to_owned();
     state.state_hash = state_hash(state);
 }
@@ -6545,6 +6594,339 @@ fn login_cancel() -> (
         "provider-connection",
         "no-change",
         "login cancel changed no provider credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn login_cancel_onboarding() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "login",
+        vec!["onboarding", "login"],
+        "Start with a safe model.",
+        "first-run",
+        "gpt-5-2-codex",
+        "login-decision",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-onboarding",
+        0,
+    );
+    apply_flow4_provider_identity_for(&mut before, "onboarding");
+    let mut after = state(
+        "onboarding",
+        vec!["onboarding", "login"],
+        "Start with a safe model.",
+        "first-run",
+        "gpt-5-2-codex",
+        "onboarding-default",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-onboarding",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.selection = before.selection.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.login.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores first-run onboarding without starting authentication".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.login.cancel.onboarding.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 0,
+        outcome: "cancelled-without-connection".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.login.cancel.onboarding",
+        "provider-connection",
+        "no-change",
+        "onboarding login cancel changed no provider credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn login_cancel_conversation() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "login",
+        vec!["chat-turn", "login"],
+        "Continue the paused conversation.",
+        "conversation-provider",
+        "composer",
+        "login-decision",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_provider_identity_for(&mut before, "conversation");
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "login"],
+        "Continue the paused conversation.",
+        "conversation-provider",
+        "composer",
+        "composer",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.selection = before.selection.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.login.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the conversation draft and transcript without authentication"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.login.cancel.conversation.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 0,
+        outcome: "cancelled-without-connection".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.login.cancel.conversation",
+        "provider-connection",
+        "no-change",
+        "conversation login cancel changed no provider credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_provider_back_onboarding() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["onboarding", "login", "connect-provider"];
+    let mut before = state(
+        "connect-provider",
+        origin.clone(),
+        "Start with a safe model.",
+        "first-run",
+        "openai",
+        "provider-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-onboarding",
+        0,
+    );
+    apply_flow4_provider_identity_for(&mut before, "onboarding");
+    let mut after = state(
+        "login",
+        origin,
+        "Start with a safe model.",
+        "first-run",
+        "gpt-5-2-codex",
+        "login-decision",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-onboarding",
+        1,
+    );
+    apply_flow4_provider_identity_for(&mut after, "onboarding");
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-provider.back".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "back restores onboarding login without changing credentials".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-provider.back.onboarding.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "returned-without-connection".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-provider.back.onboarding",
+        "provider-connection",
+        "no-change",
+        "onboarding provider back wrote no credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_provider_back_conversation() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "login", "connect-provider"];
+    let mut before = state(
+        "connect-provider",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-provider",
+        "openai",
+        "provider-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_provider_identity_for(&mut before, "conversation");
+    let mut after = state(
+        "login",
+        origin,
+        "Continue the paused conversation.",
+        "conversation-provider",
+        "composer",
+        "login-decision",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        1,
+    );
+    apply_flow4_provider_identity_for(&mut after, "conversation");
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-provider.back".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "back restores conversation login without changing credentials".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-provider.back.conversation.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "returned-without-connection".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-provider.back.conversation",
+        "provider-connection",
+        "no-change",
+        "conversation provider back wrote no credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_provider_back_blocked_model() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["model-picker", "login", "connect-provider"];
+    let mut before = state(
+        "connect-provider",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai",
+        "provider-choice",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    let mut after = state(
+        "login",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "gpt-5-2-codex",
+        "login-decision",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-provider.back".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "back restores blocked-model login without changing credentials".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-provider.back.blocked.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "returned-without-connection".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-provider.back.blocked",
+        "provider-connection",
+        "no-change",
+        "blocked-model provider back wrote no credentials",
     );
     (before, after, action, transition, attempt, effect)
 }

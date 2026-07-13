@@ -24,6 +24,10 @@ const MODEL: &str = "Claude Sonnet 4.5";
 const DOCK_TOP: u16 = ACTION_DOCK_TOP;
 const FLOW4_PROVIDER_TASK: &str = "Connect the model needed for this conversation.";
 const FLOW4_PROVIDER_ORIGIN: &str = "Provider connection · blocked model action";
+const FLOW4_ONBOARDING_ORIGIN: &str = "Provider connection · onboarding";
+const FLOW4_CONVERSATION_ORIGIN: &str = "Provider connection · conversation";
+const FLOW4_ONBOARDING_TASK: &str = "Connect a provider for first-run setup.";
+const FLOW4_CONVERSATION_TASK: &str = "Connect a provider without losing this conversation.";
 const FLOW4_MCP_TASK: &str = "Fix the capabilities this conversation needs.";
 const FLOW4_MCP_ORIGIN: &str = "MCP · conversation capabilities";
 
@@ -32,6 +36,231 @@ type ScreenEvidence = (
     Vec<SemanticEvent>,
     Vec<TransitionTrace>,
 );
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProviderOrigin {
+    BlockedModel,
+    Onboarding,
+    Conversation,
+}
+
+impl ProviderOrigin {
+    fn from_fixture(fixture_id: &str) -> Self {
+        let lower = fixture_id.to_ascii_lowercase();
+        if lower.contains("onboarding") {
+            Self::Onboarding
+        } else if lower.contains("conversation") {
+            Self::Conversation
+        } else {
+            // Gate fixtures and the default production fixture stay blocked-model.
+            Self::BlockedModel
+        }
+    }
+
+    fn visible_label(self) -> &'static str {
+        match self {
+            Self::BlockedModel => FLOW4_PROVIDER_ORIGIN,
+            Self::Onboarding => FLOW4_ONBOARDING_ORIGIN,
+            Self::Conversation => FLOW4_CONVERSATION_ORIGIN,
+        }
+    }
+
+    fn user_task(self) -> &'static str {
+        match self {
+            Self::BlockedModel => FLOW4_PROVIDER_TASK,
+            Self::Onboarding => FLOW4_ONBOARDING_TASK,
+            Self::Conversation => FLOW4_CONVERSATION_TASK,
+        }
+    }
+
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::BlockedModel => "Blocked model action",
+            Self::Onboarding => "Onboarding setup",
+            Self::Conversation => "Current conversation",
+        }
+    }
+
+    fn login_cancel_target(self) -> &'static str {
+        match self {
+            Self::BlockedModel => "model-picker",
+            Self::Onboarding => "onboarding",
+            Self::Conversation => "chat-turn",
+        }
+    }
+
+    fn login_cancel_hint(self) -> &'static str {
+        match self {
+            Self::BlockedModel => "  [esc] Cancel · return to model choices",
+            Self::Onboarding => "  [esc] Cancel · return to onboarding",
+            Self::Conversation => "  [esc] Cancel · return to conversation",
+        }
+    }
+
+    fn login_pause_copy(self) -> &'static str {
+        match self {
+            Self::BlockedModel => {
+                "Your blocked model choice and conversation stay paused while you connect."
+            }
+            Self::Onboarding => {
+                "First-run setup stays exactly where you left it while you connect."
+            }
+            Self::Conversation => {
+                "Your conversation draft and transcript stay paused while you connect."
+            }
+        }
+    }
+
+    fn login_scope_copy(self) -> &'static str {
+        match self {
+            Self::BlockedModel => {
+                "This path only unlocks the model provider for the paused choice."
+            }
+            Self::Onboarding => "This path only unlocks a model provider for first-run setup.",
+            Self::Conversation => {
+                "This path only unlocks a model provider for this conversation."
+            }
+        }
+    }
+
+    fn blocked_banner(self) -> &'static str {
+        match self {
+            Self::BlockedModel => "GPT-5.2 Codex is waiting for a provider connection.",
+            Self::Onboarding => "First-run setup needs a model provider connection.",
+            Self::Conversation => "This conversation needs a model provider connection.",
+        }
+    }
+
+    fn connect_consequence(self) -> &'static str {
+        match self {
+            Self::BlockedModel => {
+                "Connecting unlocks GPT-5.2 Codex for the paused model choice."
+            }
+            Self::Onboarding => "Connecting unlocks models for first-run setup.",
+            Self::Conversation => {
+                "Connecting unlocks models without discarding the saved draft."
+            }
+        }
+    }
+
+    fn return_policy(self, screen_id: &str) -> String {
+        if screen_id == "connect-connected" {
+            match self {
+                Self::BlockedModel => "Return to model choices".to_owned(),
+                Self::Onboarding => "Return to onboarding".to_owned(),
+                Self::Conversation => "Return to conversation".to_owned(),
+            }
+        } else {
+            match self {
+                Self::BlockedModel => "Return to blocked model action".to_owned(),
+                Self::Onboarding => "Return to onboarding setup".to_owned(),
+                Self::Conversation => "Return to conversation".to_owned(),
+            }
+        }
+    }
+
+    fn origin_subject(self) -> &'static str {
+        match self {
+            Self::BlockedModel => "blocked-model-origin",
+            Self::Onboarding => "onboarding-origin",
+            Self::Conversation => "conversation-origin",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProviderRowState {
+    InUse,
+    Connected,
+    NotConnected,
+}
+
+impl ProviderRowState {
+    fn label(self) -> &'static str {
+        match self {
+            Self::InUse => "Connected · in use",
+            Self::Connected => "Connected",
+            Self::NotConnected => "Not connected",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProviderCatalogueRow {
+    id: &'static str,
+    name: &'static str,
+    benefit: &'static str,
+    state: ProviderRowState,
+    methods: &'static [&'static str],
+}
+
+const PROVIDER_CATALOGUE: &[ProviderCatalogueRow] = &[
+    ProviderCatalogueRow {
+        id: "openrouter",
+        name: "OpenRouter",
+        benefit: "Unified access to many models",
+        state: ProviderRowState::InUse,
+        methods: &["api-key"],
+    },
+    ProviderCatalogueRow {
+        id: "anthropic",
+        name: "Anthropic",
+        benefit: "Claude models for everyday coding",
+        state: ProviderRowState::Connected,
+        methods: &["api-key", "oauth"],
+    },
+    ProviderCatalogueRow {
+        id: "openai",
+        name: "OpenAI",
+        benefit: "GPT-5.2 Codex and related models",
+        state: ProviderRowState::NotConnected,
+        methods: &["oauth", "api-key"],
+    },
+    ProviderCatalogueRow {
+        id: "google",
+        name: "Google",
+        benefit: "Gemini models for broad tasks",
+        state: ProviderRowState::NotConnected,
+        methods: &["api-key"],
+    },
+];
+
+fn selected_provider_id(fixture_id: &str) -> &'static str {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("selected-anthropic") || lower.contains("anthropic-selected") {
+        "anthropic"
+    } else if lower.contains("selected-google") || lower.contains("google-selected") {
+        "google"
+    } else if lower.contains("selected-openrouter") || lower.contains("openrouter-selected") {
+        "openrouter"
+    } else if lower.contains("selected-openai") || lower.contains("openai-selected") {
+        "openai"
+    } else if lower.contains("google") && lower.contains("method") {
+        "google"
+    } else {
+        "openai"
+    }
+}
+
+fn method_provider_id(fixture_id: &str) -> &'static str {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("google") {
+        "google"
+    } else if lower.contains("anthropic") {
+        "anthropic"
+    } else if lower.contains("openrouter") {
+        "openrouter"
+    } else {
+        "openai"
+    }
+}
+
+fn provider_row(id: &str) -> &'static ProviderCatalogueRow {
+    PROVIDER_CATALOGUE
+        .iter()
+        .find(|row| row.id == id)
+        .unwrap_or(&PROVIDER_CATALOGUE[2])
+}
 
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
@@ -43,17 +272,54 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         _ => return Err(format!("unknown Flow 4 screen: {screen_id}")),
     };
     ScreenComposition::new(screen_id, surface, statusline.clone()).validate()?;
+    let origin = ProviderOrigin::from_fixture(fixture_id);
     let mut canvas = Canvas::new();
     let (candidates, events, transitions) = match screen_id {
-        "login" => render_login(&mut canvas, screen_id, fixture_id)?,
-        "connect-provider" => render_connect_provider(&mut canvas, screen_id, fixture_id)?,
-        "connect-method" => render_connect_method(&mut canvas, screen_id, fixture_id)?,
+        "login" => render_login(&mut canvas, screen_id, fixture_id, origin)?,
+        "connect-provider" => render_connect_provider(&mut canvas, screen_id, fixture_id, origin)?,
+        "connect-method" => render_connect_method(&mut canvas, screen_id, fixture_id, origin)?,
         "connect-oauth" => render_connect_oauth(&mut canvas, screen_id, fixture_id)?,
         "connect-connected" => render_connect_connected(&mut canvas, screen_id, fixture_id)?,
         "mcp" => render_mcp(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
+
+    let selected_id = if screen_id == "connect-method" {
+        method_provider_id(fixture_id)
+    } else {
+        selected_provider_id(fixture_id)
+    };
+    let selected_row = provider_row(selected_id);
+    let method_labels = selected_row.methods;
+    let primary_pending = match screen_id {
+        "login" => "Choose a provider".to_owned(),
+        "connect-provider" => match selected_row.state {
+            ProviderRowState::NotConnected => format!("Connect {}", selected_row.name),
+            ProviderRowState::Connected | ProviderRowState::InUse => {
+                if fixture_id.contains("disconnect") {
+                    format!("Disconnect {}", selected_row.name)
+                } else {
+                    format!("Use {}", selected_row.name)
+                }
+            }
+        },
+        "connect-method" => {
+            if method_labels.first() == Some(&"api-key") && !method_labels.contains(&"oauth") {
+                "Continue with an API key".to_owned()
+            } else {
+                "Continue with browser sign-in".to_owned()
+            }
+        }
+        "connect-oauth" => "I've authorized".to_owned(),
+        "connect-connected" => match origin {
+            ProviderOrigin::BlockedModel => "Return to model choices".to_owned(),
+            ProviderOrigin::Onboarding => "Return to onboarding".to_owned(),
+            ProviderOrigin::Conversation => "Return to conversation".to_owned(),
+        },
+        _ => "Continue".to_owned(),
+    };
+
     Ok(AuditDocument {
         screen_id: screen_id.to_owned(),
         fixture_id: fixture_id.to_owned(),
@@ -65,24 +331,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         model_choice: (!matches!(screen_id, "mcp")).then(|| ModelChoiceEvidence {
             applied: MODEL.to_owned(),
             pending: Some("GPT-5.2 Codex".to_owned()),
-            origin: if is_gate_fixture(fixture_id) {
-                "Blocked model action".to_owned()
-            } else {
-                "Current conversation".to_owned()
-            },
-            pending_action: Some(match screen_id {
-                "login" => "Choose a provider".to_owned(),
-                "connect-provider" => "Connect OpenAI".to_owned(),
-                "connect-method" => "Continue with browser sign-in".to_owned(),
-                "connect-oauth" => "I've authorized".to_owned(),
-                "connect-connected" => "Return to model choices".to_owned(),
-                _ => "Continue".to_owned(),
-            }),
-            return_policy: if screen_id == "connect-connected" {
-                "Return to model choices".to_owned()
-            } else {
-                "Return to blocked model action".to_owned()
-            },
+            origin: origin.short_label().to_owned(),
+            pending_action: Some(primary_pending),
+            return_policy: origin.return_policy(screen_id),
         }),
         conversation: Some(ConversationIdentity {
             conversation_id: if screen_id == "mcp" {
@@ -108,17 +359,23 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             user_task: if screen_id == "mcp" {
                 FLOW4_MCP_TASK.to_owned()
             } else {
-                FLOW4_PROVIDER_TASK.to_owned()
+                origin.user_task().to_owned()
             },
             visible_origin: if screen_id == "mcp" {
                 FLOW4_MCP_ORIGIN.to_owned()
             } else {
-                FLOW4_PROVIDER_ORIGIN.to_owned()
+                origin.visible_label().to_owned()
             },
             submitted_prompt: None,
             paused_activity_id: (screen_id != "mcp")
                 .then(|| "pending.model.gpt-5-2-codex".to_owned()),
-            later_draft: Some("Continue the paused conversation.".to_owned()),
+            later_draft: Some(match origin {
+                ProviderOrigin::Onboarding => "Start with a safe model.".to_owned(),
+                ProviderOrigin::Conversation => {
+                    "Continue the paused conversation.".to_owned()
+                }
+                ProviderOrigin::BlockedModel => "Continue the paused conversation.".to_owned(),
+            }),
         }),
     })
 }
@@ -127,11 +384,13 @@ fn render_login(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
+    origin: ProviderOrigin,
 ) -> Result<ScreenEvidence, String> {
     for (offset, line) in ENTRY_CODE_BANNER.iter().enumerate() {
         canvas.write(2 + offset as u16, 4, line, TextStyle::accent())?;
     }
-    canvas.write(10, 4, FLOW4_PROVIDER_ORIGIN, TextStyle::muted())?;
+    let origin_label = origin.visible_label();
+    canvas.write(10, 4, origin_label, TextStyle::muted())?;
     canvas.write(12, 4, "Connect a model provider", TextStyle::bright())?;
     canvas.write(
         14,
@@ -139,25 +398,19 @@ fn render_login(
         "Code needs a provider before it can use the models in this project.",
         TextStyle::text(),
     )?;
-    canvas.write(
-        16,
-        4,
-        "Your blocked model choice and conversation stay paused while you connect.",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        19,
-        4,
-        "This path only unlocks the model provider for the paused choice.",
-        TextStyle::muted(),
-    )?;
+    canvas.write(16, 4, origin.login_pause_copy(), TextStyle::muted())?;
+    canvas.write(19, 4, origin.login_scope_copy(), TextStyle::muted())?;
 
     write_dock_border(canvas)?;
     dock_line(canvas, DOCK_TOP + 1, "Next step", TextStyle::bright())?;
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "Choose a provider that can run GPT-5.2 Codex.",
+        match origin {
+            ProviderOrigin::BlockedModel => "Choose a provider that can run GPT-5.2 Codex.",
+            ProviderOrigin::Onboarding => "Choose a provider for first-run setup.",
+            ProviderOrigin::Conversation => "Choose a provider for this conversation.",
+        },
         TextStyle::text(),
     )?;
     dock_line(
@@ -166,12 +419,7 @@ fn render_login(
         "› [enter] Choose a provider",
         TextStyle::accent(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 4,
-        "  [esc] Cancel · return to model choices",
-        TextStyle::muted(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 4, origin.login_cancel_hint(), TextStyle::muted())?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
@@ -179,6 +427,7 @@ fn render_login(
         TextStyle::muted(),
     )?;
 
+    let cancel_hint = origin.login_cancel_hint();
     let pairs = [
         semantic_with_refs(
             screen_id,
@@ -193,8 +442,16 @@ fn render_login(
             screen_id,
             fixture_id,
             "origin",
-            "blocked-model-origin",
-            reference(10, 4, 48),
+            origin.origin_subject(),
+            reference(
+                10,
+                4,
+                if origin == ProviderOrigin::BlockedModel {
+                    48
+                } else {
+                    4 + origin_label.chars().count() as u16
+                },
+            ),
             "summary",
             None,
         ),
@@ -225,7 +482,16 @@ fn render_login(
             fixture_id,
             "cancel-action",
             "action.login.cancel",
-            reference(DOCK_TOP + 4, 4, 45),
+            // Gate and blocked-model cancel labels share the historic 45-column span.
+            reference(
+                DOCK_TOP + 4,
+                4,
+                if origin == ProviderOrigin::BlockedModel {
+                    45
+                } else {
+                    4 + cancel_hint.chars().count() as u16
+                },
+            ),
             "summary",
             Some(action("action.login.cancel", "Cancel", false)),
         ),
@@ -251,14 +517,14 @@ fn render_login(
                 "login",
                 "connect-provider",
                 "direct",
-                "the blocked model action opens provider selection",
+                "the recorded origin opens provider selection without authenticating yet",
             ),
             transition(
                 "action.login.cancel",
                 "login",
-                "model-picker",
+                origin.login_cancel_target(),
                 "cancel",
-                "cancel restores the blocked model origin without starting authentication",
+                "cancel restores the recorded origin without starting authentication",
             ),
         ],
     ))
@@ -268,14 +534,20 @@ fn render_connect_provider(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
+    origin: ProviderOrigin,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(3, 4, FLOW4_PROVIDER_ORIGIN, TextStyle::muted())?;
-    canvas.write(
-        4,
-        4,
-        "GPT-5.2 Codex is waiting for a provider connection.",
-        TextStyle::bright(),
-    )?;
+    let origin_label = origin.visible_label();
+    let selected_id = selected_provider_id(fixture_id);
+    let selected_idx = PROVIDER_CATALOGUE
+        .iter()
+        .position(|row| row.id == selected_id)
+        .unwrap_or(2);
+    let selected = &PROVIDER_CATALOGUE[selected_idx];
+    let prefer_disconnect = fixture_id.contains("disconnect");
+
+    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    let banner = origin.blocked_banner();
+    canvas.write(4, 4, banner, TextStyle::bright())?;
     canvas.write(6, 4, "Choose a provider", TextStyle::bright())?;
     canvas.write(
         8,
@@ -284,50 +556,76 @@ fn render_connect_provider(
         TextStyle::muted(),
     )?;
 
-    let rows = [
-        ("OpenRouter", "Unified access to many models", "Connected · in use"),
-        ("Anthropic", "Claude models for everyday coding", "Connected"),
-        ("OpenAI", "GPT-5.2 Codex and related models", "Not connected"),
-        ("Google", "Gemini models for broad tasks", "Not connected"),
-    ];
-    let selected = 2usize;
-    for (index, (name, benefit, state)) in rows.iter().enumerate() {
-        let row = 11 + index as u16 * 3;
-        let marker = if index == selected { "›" } else { " " };
-        let style = if index == selected {
+    for (index, row) in PROVIDER_CATALOGUE.iter().enumerate() {
+        let row_y = 11 + index as u16 * 3;
+        let marker = if index == selected_idx { "›" } else { " " };
+        let style = if index == selected_idx {
             TextStyle::accent()
         } else {
             TextStyle::text()
         };
-        canvas.write(row, 4, &format!("{marker} {name}"), style)?;
-        canvas.write(row + 1, 6, &format!("{benefit} · {state}"), TextStyle::muted())?;
+        canvas.write(row_y, 4, &format!("{marker} {}", row.name), style)?;
+        canvas.write(
+            row_y + 1,
+            6,
+            &format!("{} · {}", row.benefit, row.state.label()),
+            TextStyle::muted(),
+        )?;
     }
+
+    let (primary_action_id, primary_label, primary_target, primary_kind, primary_path) =
+        match selected.state {
+            ProviderRowState::NotConnected => (
+                "action.connect-provider.connect",
+                format!("Connect {}", selected.name),
+                "connect-method",
+                "direct",
+                "the chosen provider exposes its applicable methods",
+            ),
+            ProviderRowState::Connected | ProviderRowState::InUse if prefer_disconnect => (
+                "action.connect-provider.disconnect",
+                format!("Disconnect {}", selected.name),
+                "connect-disconnect",
+                "direct",
+                "disconnect confirmation targets only the selected connected provider",
+            ),
+            ProviderRowState::Connected | ProviderRowState::InUse => (
+                "action.connect-provider.use",
+                format!("Use {}", selected.name),
+                match origin {
+                    ProviderOrigin::BlockedModel => "model-picker",
+                    ProviderOrigin::Onboarding => "onboarding",
+                    ProviderOrigin::Conversation => "chat-turn",
+                },
+                "direct",
+                "using an already-connected provider restores the recorded origin",
+            ),
+        };
 
     write_dock_border(canvas)?;
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Selected · OpenAI · Not connected",
+        &format!(
+            "Selected · {} · {}",
+            selected.name,
+            selected.state.label()
+        ),
         TextStyle::bright(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "Connecting unlocks GPT-5.2 Codex for the paused model choice.",
+        origin.connect_consequence(),
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Connect OpenAI",
+        &format!("› [enter] {primary_label}"),
         TextStyle::accent(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 4,
-        "  [esc] Back",
-        TextStyle::muted(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 4, "  [esc] Back", TextStyle::muted())?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
@@ -335,13 +633,31 @@ fn render_connect_provider(
         TextStyle::muted(),
     )?;
 
-    let pairs = [
+    // Gate OpenAI blocked-model catalogue uses frozen span ends so existing
+    // bridge digests and RenderRef alignment stay byte-stable. Alternate
+    // origin/selection fixtures compute character-accurate absolute ends.
+    let gate_exact_spans = origin == ProviderOrigin::BlockedModel
+        && selected_id == "openai"
+        && matches!(selected.state, ProviderRowState::NotConnected);
+    let origin_end = if gate_exact_spans {
+        48
+    } else {
+        4 + origin_label.chars().count() as u16
+    };
+    let banner_end = if gate_exact_spans {
+        55
+    } else {
+        4 + banner.chars().count() as u16
+    };
+    let historical_row_ends: [u16; 4] = [16, 15, 12, 12];
+
+    let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
             "origin",
-            "blocked-model-origin",
-            reference(3, 4, 48),
+            origin.origin_subject(),
+            reference(3, 4, origin_end),
             "summary",
             None,
         ),
@@ -349,85 +665,87 @@ fn render_connect_provider(
             screen_id,
             fixture_id,
             "blocker",
-            "gpt-5-2-codex-waiting",
-            reference(4, 4, 55),
+            match origin {
+                ProviderOrigin::BlockedModel => "gpt-5-2-codex-waiting",
+                ProviderOrigin::Onboarding => "first-run-waiting",
+                ProviderOrigin::Conversation => "conversation-waiting",
+            },
+            reference(4, 4, banner_end),
             "focused",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "provider-row",
-            "openrouter",
-            reference(11, 4, 16),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "provider-row",
-            "anthropic",
-            reference(14, 4, 15),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "provider-row",
-            "openai",
-            reference(17, 4, 12),
-            "focused",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "provider-row",
-            "google",
-            reference(20, 4, 12),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "primary-action",
-            "action.connect-provider.connect",
-            reference(DOCK_TOP + 3, 4, 28),
-            "focused",
-            Some(action(
-                "action.connect-provider.connect",
-                "Connect OpenAI",
-                false,
-            )),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "cancel-action",
-            "action.connect-provider.back",
-            reference(DOCK_TOP + 4, 4, 15),
-            "summary",
-            Some(action("action.connect-provider.back", "Back", false)),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "statusline",
-            "shared-statusline",
-            reference(CANVAS_ROWS - 1, 2, 38),
-            "summary",
             None,
         ),
     ];
+    for (index, row) in PROVIDER_CATALOGUE.iter().enumerate() {
+        let row_y = 11 + index as u16 * 3;
+        let detail = if index == selected_idx {
+            "focused"
+        } else {
+            "summary"
+        };
+        let label_end = if gate_exact_spans {
+            historical_row_ends[index]
+        } else {
+            4 + 2 + row.name.chars().count() as u16
+        };
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "provider-row",
+            row.id,
+            reference(row_y, 4, label_end),
+            detail,
+            None,
+        ));
+    }
+    let primary_end = if gate_exact_spans {
+        28
+    } else {
+        4 + format!("› [enter] {primary_label}")
+            .chars()
+            .count() as u16
+    };
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        primary_action_id,
+        reference(DOCK_TOP + 3, 4, primary_end),
+        "focused",
+        Some(action(primary_action_id, &primary_label, false)),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "cancel-action",
+        "action.connect-provider.back",
+        reference(DOCK_TOP + 4, 4, 15),
+        "summary",
+        Some(action("action.connect-provider.back", "Back", false)),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
 
-    let cancel_target = if is_gate_fixture(fixture_id) {
+    // Gate chain and production login→catalogue fixtures back one step to login.
+    // Direct model-picker entry (legacy non-login detours) returns to model-picker.
+    let cancel_target = if is_gate_fixture(fixture_id)
+        || fixture_id.contains("from-login")
+        || fixture_id.contains("auth.connect-provider")
+        || matches!(
+            origin,
+            ProviderOrigin::Onboarding | ProviderOrigin::Conversation
+        ) {
         "login"
     } else {
         "model-picker"
     };
+
     Ok((
         pairs
             .iter()
@@ -436,11 +754,11 @@ fn render_connect_provider(
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(
-                "action.connect-provider.connect",
+                primary_action_id,
                 "connect-provider",
-                "connect-method",
-                "direct",
-                "the chosen provider exposes its applicable methods",
+                primary_target,
+                primary_kind,
+                primary_path,
             ),
             transition(
                 "action.connect-provider.back",
@@ -457,9 +775,43 @@ fn render_connect_method(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
+    origin: ProviderOrigin,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(3, 4, FLOW4_PROVIDER_ORIGIN, TextStyle::muted())?;
-    canvas.write(4, 4, "Sign in to OpenAI", TextStyle::bright())?;
+    let origin_label = origin.visible_label();
+    let provider = provider_row(method_provider_id(fixture_id));
+    let prefer_api_key = fixture_id.contains("api-key") || fixture_id.contains("apikey");
+    let methods: Vec<(&'static str, &'static str, &'static str, &'static str)> = provider
+        .methods
+        .iter()
+        .map(|method| match *method {
+            "oauth" => (
+                "oauth",
+                "Browser sign-in",
+                "authorize in your browser, then return here.",
+                "connect-oauth",
+            ),
+            "api-key" => (
+                "api-key",
+                "Use an API key",
+                "paste a key stored only on this machine.",
+                "connect-apikey",
+            ),
+            other => (other, other, "supported sign-in method.", "connect-method"),
+        })
+        .collect();
+    let selected_idx = if prefer_api_key {
+        methods
+            .iter()
+            .position(|(id, _, _, _)| *id == "api-key")
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let selected = methods[selected_idx];
+    let title = format!("Sign in to {}", provider.name);
+
+    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(4, 4, &title, TextStyle::bright())?;
     canvas.write(
         6,
         4,
@@ -467,60 +819,91 @@ fn render_connect_method(
         TextStyle::muted(),
     )?;
 
-    canvas.write(10, 4, "› Browser sign-in", TextStyle::accent())?;
-    canvas.write(
-        11,
-        6,
-        "authorize in your browser, then return here.",
-        TextStyle::muted(),
-    )?;
-    canvas.write(14, 4, "  Use an API key", TextStyle::text())?;
-    canvas.write(
-        15,
-        6,
-        "paste a key stored only on this machine.",
-        TextStyle::muted(),
-    )?;
+    for (index, (id, label, consequence, _)) in methods.iter().enumerate() {
+        let _ = id;
+        let row = 10 + index as u16 * 4;
+        let marker = if index == selected_idx { "›" } else { " " };
+        let style = if index == selected_idx {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
+        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+    }
+
+    let (primary_action_id, primary_label, primary_target) = match selected.0 {
+        "oauth" => (
+            "action.connect-method.oauth",
+            "Continue with browser sign-in",
+            "connect-oauth",
+        ),
+        "api-key" => (
+            "action.connect-method.api-key",
+            "Continue with an API key",
+            "connect-apikey",
+        ),
+        _ => (
+            "action.connect-method.continue",
+            "Continue",
+            selected.3,
+        ),
+    };
+    let dock_consequence = match selected.0 {
+        "oauth" => {
+            "You keep control of the browser steps. Your keystroke never leaves this device."
+        }
+        "api-key" => "The key stays on this machine and is never echoed in full.",
+        _ => "Continue with the selected method.",
+    };
 
     write_dock_border(canvas)?;
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Selected · Browser sign-in",
+        &format!("Selected · {}", selected.1),
         TextStyle::bright(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 2,
-        "You keep control of the browser steps. Your keystroke never leaves this device.",
-        TextStyle::text(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 2, dock_consequence, TextStyle::text())?;
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Continue with browser sign-in",
+        &format!("› [enter] {primary_label}"),
         TextStyle::accent(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 4,
-        "  [esc] Back",
-        TextStyle::muted(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 4, "  [esc] Back", TextStyle::muted())?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Back keeps the OpenAI provider choice.",
+        &format!("Back keeps the {} provider choice.", provider.name),
         TextStyle::muted(),
     )?;
 
-    let pairs = [
+    // Gate OpenAI browser-sign-in spans stay frozen (origin 48, provider 21,
+    // browser 20, api-key 17, primary 42) for bridge digests.
+    let method_gate_exact = origin == ProviderOrigin::BlockedModel
+        && provider.id == "openai"
+        && selected.0 == "oauth"
+        && methods.len() == 2;
+    let origin_end = if method_gate_exact {
+        48
+    } else {
+        4 + origin_label.chars().count() as u16
+    };
+    let provider_end = if method_gate_exact {
+        21
+    } else {
+        4 + title.chars().count() as u16
+    };
+    let historical_method_ends: &[( &str, u16)] = &[("oauth", 20), ("api-key", 17)];
+
+    let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
             "origin",
-            "blocked-model-origin",
-            reference(3, 4, 48),
+            origin.origin_subject(),
+            reference(3, 4, origin_end),
             "summary",
             None,
         ),
@@ -528,61 +911,78 @@ fn render_connect_method(
             screen_id,
             fixture_id,
             "provider",
-            "openai",
-            reference(4, 4, 21),
+            provider.id,
+            reference(4, 4, provider_end),
             "focused",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "method-row",
-            "browser-sign-in",
-            reference(10, 4, 20),
-            "focused",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "method-row",
-            "api-key",
-            reference(14, 4, 17),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "primary-action",
-            "action.connect-method.oauth",
-            reference(DOCK_TOP + 3, 4, 42),
-            "focused",
-            Some(action(
-                "action.connect-method.oauth",
-                "Continue with browser sign-in",
-                false,
-            )),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "cancel-action",
-            "action.connect-method.back",
-            reference(DOCK_TOP + 4, 4, 15),
-            "summary",
-            Some(action("action.connect-method.back", "Back", false)),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "statusline",
-            "shared-statusline",
-            reference(CANVAS_ROWS - 1, 2, 38),
-            "summary",
             None,
         ),
     ];
+    for (index, (id, label, _, _)) in methods.iter().enumerate() {
+        let row = 10 + index as u16 * 4;
+        let detail = if index == selected_idx {
+            "focused"
+        } else {
+            "summary"
+        };
+        let subject = if *id == "oauth" {
+            "browser-sign-in"
+        } else {
+            *id
+        };
+        let label_end = if method_gate_exact {
+            historical_method_ends
+                .iter()
+                .find(|(key, _)| *key == *id)
+                .map(|(_, end)| *end)
+                .unwrap_or(4 + 2 + label.chars().count() as u16)
+        } else {
+            4 + 2 + label.chars().count() as u16
+        };
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "method-row",
+            subject,
+            reference(row, 4, label_end),
+            detail,
+            None,
+        ));
+    }
+    let primary_end = if method_gate_exact {
+        42
+    } else {
+        4 + format!("› [enter] {primary_label}")
+            .chars()
+            .count() as u16
+    };
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        primary_action_id,
+        reference(DOCK_TOP + 3, 4, primary_end),
+        "focused",
+        Some(action(primary_action_id, primary_label, false)),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "cancel-action",
+        "action.connect-method.back",
+        reference(DOCK_TOP + 4, 4, 15),
+        "summary",
+        Some(action("action.connect-method.back", "Back", false)),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
     Ok((
         pairs
             .iter()
@@ -591,9 +991,9 @@ fn render_connect_method(
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(
-                "action.connect-method.oauth",
+                primary_action_id,
                 "connect-method",
-                "connect-oauth",
+                primary_target,
                 "direct",
                 "the provider branch opens the selected sign-in method",
             ),
@@ -602,7 +1002,10 @@ fn render_connect_method(
                 "connect-method",
                 "connect-provider",
                 "cancel",
-                "back preserves the chosen OpenAI provider without discarding the origin",
+                &format!(
+                    "back preserves the chosen {} provider without discarding the origin",
+                    provider.name
+                ),
             ),
         ],
     ))
