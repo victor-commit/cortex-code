@@ -182,7 +182,7 @@ fn mixed_mcp_sorts_attention_before_ready_deterministically() {
     // Priority: policy blocked → needs sign-in → setup needed → failed
     // → retrying/running → disabled → ready.
     let positions = |needle: &str| text.find(needle).expect(needle);
-    let policy = positions("Policy blocked");
+    let policy = positions("Blocked by policy");
     let signin = positions("Sign in needed");
     let setup = text
         .find("Setup needed")

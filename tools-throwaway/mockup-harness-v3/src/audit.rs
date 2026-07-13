@@ -527,8 +527,13 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "connect-connected"
             | "connect-disconnect"
             | "mcp"
+            | "sidebar-mcp"
     ) {
-        let document = crate::screens::provider_mcp::render(screen_id, fixture_id)?;
+        let document = if screen_id == "sidebar-mcp" {
+            crate::screens::views_sidebar_mcp::render(screen_id, fixture_id)?
+        } else {
+            crate::screens::provider_mcp::render(screen_id, fixture_id)?
+        };
         document.validate()?;
         let render_hash = sha256_hex(document.render_txt().as_bytes());
         validate_vision_hash(&render_hash, &render_hash)?;

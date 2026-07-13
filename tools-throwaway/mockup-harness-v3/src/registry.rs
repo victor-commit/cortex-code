@@ -526,7 +526,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Views,
         flow: FlowOwner::ProviderAndMcpConnection,
         surface: Surface::ContextualInspector,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "sidebar-queue",

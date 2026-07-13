@@ -2663,7 +2663,8 @@ impl CapState {
 
     fn label(self) -> &'static str {
         match self {
-            Self::PolicyBlocked => "Policy blocked",
+            // VAL-V3-F4-052: policy-blocked capability says exactly this phrase.
+            Self::PolicyBlocked => "Blocked by policy",
             Self::SignInNeeded => "Sign in needed",
             Self::SetupNeeded => "Needs setup",
             Self::Failed => "Failed",
@@ -2941,6 +2942,11 @@ enum McpViewKind {
     Handshake,
     /// Hostile label list and detail fixtures (VAL-V3-F4-058).
     HostileLabels,
+    /// Focused policy review / confirmation (VAL-V3-F4-052).
+    PolicyReview,
+    PolicyChangeConfirm,
+    /// Distinct disable / sign-out / remove management (VAL-V3-F4-053).
+    ManageRemoval,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3413,6 +3419,33 @@ fn mcp_view(fixture_id: &str) -> McpView {
         return hostile_labels_detail_view();
     }
 
+    // Policy review / confirmation + removal management (VAL-V3-F4-052, 053).
+    if lower.contains("policy-change-confirm")
+        || lower.contains("policy_change_confirm")
+        || lower.contains("policy-confirm")
+    {
+        return policy_change_confirm_view();
+    }
+    if lower.contains("policy-review")
+        || lower.contains("policy_review")
+        || lower.contains("policy-detail")
+        || lower.contains("policy-blocked")
+        || lower.contains("policy_blocked")
+    {
+        // Focused policy state when reviewing; list policy-blocked otherwise.
+        if lower.contains("review") || lower.contains("detail") {
+            return policy_review_view();
+        }
+        return policy_blocked_list_view();
+    }
+    if lower.contains("manage-removal")
+        || lower.contains("manage_removal")
+        || lower.contains("removal")
+        || lower.contains("sign-out-manage")
+    {
+        return manage_removal_view();
+    }
+
     if lower.contains("mixed") || lower.contains("views.mcp") {
         return mixed_mcp_view();
     }
@@ -3478,6 +3511,165 @@ fn gate_pilot_mcp_view() -> McpView {
         diagnostics_closed: true,
         tertiary_label: None,
         tertiary_action_id: None,
+    }
+}
+
+fn policy_blocked_list_view() -> McpView {
+    let mut view = mixed_mcp_view();
+    view.selected_id = "deploy-hooks";
+    view.intro_line = "Deploy hooks is blocked by policy. Review policy is the only recovery.";
+    view.primary_label = "Review policy";
+    view.primary_action_id = "action.mcp.review-policy";
+    view.secondary_label = "Open diagnostics";
+    view.secondary_action_id = "action.mcp.diagnostics";
+    view
+}
+
+fn policy_review_view() -> McpView {
+    McpView {
+        kind: McpViewKind::PolicyReview,
+        rows: sorted_caps(&[CapRow {
+            id: "deploy-hooks",
+            name: "Deploy hooks",
+            state: CapState::PolicyBlocked,
+            cause: "Blocked by policy",
+            publisher: "Deploy Safe",
+            access: "Propose deploy hooks",
+            negotiation: None,
+        }]),
+        selected_id: "deploy-hooks",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Review the workspace policy for Deploy hooks",
+        intro_line: "Blocked by policy · authentication cannot override this restriction.",
+        support_line: "Retry, Sign in, Setup, and invocation stay disabled until policy changes.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "Policy scope",
+                &[
+                    "Applies to Deploy hooks for this project only.",
+                    "Remote deploy actions are refused by workspace policy.",
+                ],
+            ),
+            (
+                "Allowed next step",
+                &[
+                    "Review policy opens a focused decision for this row.",
+                    "Any change states its scope and needs explicit confirmation.",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Change policy",
+        primary_action_id: "action.mcp.policy-change",
+        secondary_label: "Cancel",
+        secondary_action_id: "action.mcp.policy-cancel",
+        diagnostics_closed: true,
+        tertiary_label: Some("Keep blocked"),
+        tertiary_action_id: Some("action.mcp.policy-keep-blocked"),
+    }
+}
+
+fn policy_change_confirm_view() -> McpView {
+    McpView {
+        kind: McpViewKind::PolicyChangeConfirm,
+        rows: sorted_caps(&[CapRow {
+            id: "deploy-hooks",
+            name: "Deploy hooks",
+            state: CapState::PolicyBlocked,
+            cause: "Blocked by policy",
+            publisher: "Deploy Safe",
+            access: "Propose deploy hooks",
+            negotiation: None,
+        }]),
+        selected_id: "deploy-hooks",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Confirm the policy change for Deploy hooks",
+        intro_line: "Confirm before policy changes. Cancel keeps the blocked row unchanged.",
+        support_line: "Scope: this project · consequence: Deploy hooks may run after approval.",
+        focus_body: None,
+        detail_sections: Some(&[(
+            "Change consequence",
+            &[
+                "Scope: Deploy hooks on this project only.",
+                "Consequence: remote deploy actions become available.",
+                "Cancel returns to the same selected MCP row with policy unchanged.",
+            ],
+        )]),
+        progress: None,
+        primary_label: "Confirm change",
+        primary_action_id: "action.mcp.policy-change-confirm",
+        secondary_label: "Cancel",
+        secondary_action_id: "action.mcp.policy-change-cancel",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+fn manage_removal_view() -> McpView {
+    McpView {
+        kind: McpViewKind::ManageRemoval,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "project-docs",
+                name: "Project docs",
+                state: CapState::Ready,
+                cause: "User connection with removable authorization.",
+                publisher: "Docs Workspace",
+                access: "Search project documentation",
+                negotiation: None,
+            },
+            CapRow {
+                id: "enterprise-knowledge",
+                name: "Enterprise knowledge",
+                state: CapState::Ready,
+                cause: "Managed by the project · cannot be removed here.",
+                publisher: "Knowledge Hub",
+                access: "Search architecture notes",
+                negotiation: None,
+            },
+        ]),
+        selected_id: "project-docs",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Manage connection actions for Project docs",
+        intro_line: "Disable, Sign out, and Remove connection have distinct effects.",
+        support_line: "Managed project configuration is identified and not removable here.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "Disable",
+                &[
+                    "Keeps configuration while preventing invocation.",
+                    "You can enable the same connection later without re-setup.",
+                ],
+            ),
+            (
+                "Sign out",
+                &[
+                    "Removes only removable authorization for this connection.",
+                    "Configuration remains so you can sign in again.",
+                ],
+            ),
+            (
+                "Remove connection",
+                &[
+                    "Deletes only user-removable connection state for Project docs.",
+                    "Managed: Enterprise knowledge is managed by the project and cannot be removed.",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Disable",
+        primary_action_id: "action.mcp.disable",
+        secondary_label: "Sign out",
+        secondary_action_id: "action.mcp.sign-out",
+        diagnostics_closed: true,
+        tertiary_label: Some("Remove connection"),
+        tertiary_action_id: Some("action.mcp.remove-connection"),
     }
 }
 
@@ -5119,6 +5311,160 @@ fn render_mcp(
             "chat-turn",
             "direct",
             "the capability view closes to its recorded conversation origin",
+        ));
+    } else if matches!(
+        view.kind,
+        McpViewKind::PolicyReview | McpViewKind::PolicyChangeConfirm
+    ) {
+        canvas.write(
+            32,
+            4,
+            &format!("  [c] {}", view.secondary_label),
+            TextStyle::muted(),
+        )?;
+        // Secondary cancel uses a distinct identity from the esc cancel so
+        // action bijection stays unique while both route to keep-blocked.
+        let secondary_cancel_id = if view.kind == McpViewKind::PolicyReview {
+            "action.mcp.policy-cancel"
+        } else {
+            "action.mcp.policy-change-cancel"
+        };
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            secondary_cancel_id,
+            reference(32, 4, 18),
+            "summary",
+            Some(action(secondary_cancel_id, view.secondary_label, false)),
+        ));
+        canvas.write(33, 4, "  [esc] Keep blocked", TextStyle::muted())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.mcp.policy-keep-blocked",
+            reference(33, 4, 24),
+                "summary",
+            Some(action(
+                "action.mcp.policy-keep-blocked",
+                "Keep blocked",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            view.primary_action_id,
+            "mcp",
+            "mcp",
+            "direct",
+            if view.kind == McpViewKind::PolicyReview {
+                "Review policy opens a focused decision for the selected blocked row"
+            } else {
+                "Confirm applies the disclosed policy mutation only for the selected row"
+            },
+        ));
+        transitions.push(transition(
+            secondary_cancel_id,
+            "mcp",
+            "mcp"
+            ,
+            "cancel",
+            "cancel returns to the same selected MCP row with policy and origin unchanged",
+        ));
+        transitions.push(transition(
+            "action.mcp.policy-keep-blocked",
+            "mcp",
+            "mcp",
+            "cancel",
+            "keep blocked leaves policy, connection, origin, and selection unchanged",
+        ));
+    } else if view.kind == McpViewKind::ManageRemoval {
+        canvas.write(
+            32,
+            4,
+            &format!("  [s] {}", view.secondary_label),
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            view.secondary_action_id,
+            reference(32, 4, 16),
+            "summary",
+            Some(action(
+                view.secondary_action_id,
+                view.secondary_label,
+                false,
+            )),
+        ));
+        let tertiary_id = view
+            .tertiary_action_id
+            .unwrap_or("action.mcp.remove-connection");
+        let tertiary_label = view.tertiary_label.unwrap_or("Remove connection");
+        canvas.write(
+            33,
+            4,
+            &format!("  [r] {tertiary_label}"),
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "tertiary-action",
+            tertiary_id,
+            reference(33, 4, 10 + tertiary_label.len() as u16),
+            "summary",
+            Some(action(tertiary_id, tertiary_label, false)),
+        ));
+        canvas.write(
+            34,
+            4,
+            "  Managed project rows cannot use Remove connection",
+            TextStyle::muted(),
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "managed-safeguard",
+            "action.mcp.remove-managed-refused",
+            reference(34, 4, 54),
+            "summary",
+            Some(action(
+                "action.mcp.remove-managed-refused",
+                "Managed cannot remove",
+                false,
+            )),
+        ));
+        // Primary enable uses disable on this manage surface.
+        // Note: primary line already published action.mcp.disable from primary_action_id.
+        transitions.push(transition(
+            "action.mcp.disable",
+            "mcp",
+            "mcp",
+            "direct",
+            "Disable retains configuration while preventing invocation",
+        ));
+        transitions.push(transition(
+            "action.mcp.sign-out",
+            "mcp",
+            "mcp",
+            "direct",
+            "Sign out removes only removable authorization",
+        ));
+        transitions.push(transition(
+            "action.mcp.remove-connection",
+            "mcp",
+            "mcp",
+            "direct",
+            "Remove connection deletes only user-removable connection state",
+        ));
+        transitions.push(transition(
+            "action.mcp.remove-managed-refused",
+            "mcp",
+            "mcp",
+            "direct",
+            "Managed project configuration is identified and cannot be removed",
         ));
     } else if view.kind == McpViewKind::Diagnostics {
         // Recovery diagnostics keep Retry/Sign in primary; close is secondary only.

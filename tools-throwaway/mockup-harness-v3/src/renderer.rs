@@ -105,6 +105,7 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "sidebar-lsp",
     "sidebar-todo",
     "sidebar-subagents",
+    "sidebar-mcp",
     "sidebar-queue",
     "help",
     "review",

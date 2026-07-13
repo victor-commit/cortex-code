@@ -1303,6 +1303,36 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mcp-handshake-zero-usable" => mcp_handshake_zero_usable(),
         "mcp-hostile-labels-open" => mcp_hostile_labels_open(),
         "mcp-hostile-labels-back" => mcp_hostile_labels_back(),
+        "sidebar-mcp-open-mcp" => sidebar_mcp_open_mcp(),
+        "sidebar-mcp-return" => sidebar_mcp_return(),
+        "mcp-fixture-empty" => mcp_fixture_snapshot("empty"),
+        "mcp-fixture-mixed" => mcp_fixture_snapshot("mixed"),
+        "mcp-fixture-setup-needed" => mcp_fixture_snapshot("setup"),
+        "mcp-fixture-needs-auth" => mcp_fixture_snapshot("auth"),
+        "mcp-fixture-policy-blocked" => mcp_fixture_snapshot("policy"),
+        "mcp-fixture-failed" => mcp_fixture_snapshot("failed"),
+        "mcp-fixture-retrying" => mcp_fixture_snapshot("retry"),
+        "mcp-fixture-running-progress" => mcp_fixture_snapshot("progress"),
+        "mcp-fixture-succeeded-call" => mcp_fixture_snapshot("success"),
+        "mcp-fixture-failed-call" => mcp_fixture_snapshot("failed-call"),
+        "mcp-fixture-cancelled-call" => mcp_fixture_snapshot("cancel"),
+        "mcp-fixture-focused-details" => mcp_fixture_snapshot("detail"),
+        "mcp-fixture-diagnostics" => mcp_fixture_snapshot("diagnostics"),
+        "mcp-policy-review-open" => mcp_policy_review_open(),
+        "mcp-policy-change-confirm" => mcp_policy_change_confirm(),
+        "mcp-policy-change-cancel" => mcp_policy_change_cancel(),
+        "mcp-disable" => mcp_disable(),
+        "mcp-sign-out" => mcp_sign_out(),
+        "mcp-remove-connection" => mcp_remove_connection(),
+        "mcp-remove-managed-refused" => mcp_remove_managed_refused(),
+        "mcp-resume-automatic-once" => mcp_resume_automatic_once(),
+        "mcp-resume-confirmation" => mcp_resume_confirmation(),
+        "mcp-resume-none" => mcp_resume_none(),
+        "mcp-resume-cancel" => mcp_resume_cancel(),
+        "mcp-resume-failed" => mcp_resume_failed(),
+        "mcp-resume-policy-blocked" => mcp_resume_policy_blocked(),
+        "provider-resume-automatic-once" => provider_resume_automatic_once(),
+        "provider-resume-none" => provider_resume_none(),
         "turn-error-retry" => turn_error_retry(),
         "turn-error-cancel" => turn_error_cancel(),
         "turn-error-inspect-connection" => turn_error_inspect_connection(),
@@ -2078,6 +2108,36 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mcp-handshake-zero-usable"
             | "mcp-hostile-labels-open"
             | "mcp-hostile-labels-back"
+            | "sidebar-mcp-open-mcp"
+            | "sidebar-mcp-return"
+            | "mcp-fixture-empty"
+            | "mcp-fixture-mixed"
+            | "mcp-fixture-setup-needed"
+            | "mcp-fixture-needs-auth"
+            | "mcp-fixture-policy-blocked"
+            | "mcp-fixture-failed"
+            | "mcp-fixture-retrying"
+            | "mcp-fixture-running-progress"
+            | "mcp-fixture-succeeded-call"
+            | "mcp-fixture-failed-call"
+            | "mcp-fixture-cancelled-call"
+            | "mcp-fixture-focused-details"
+            | "mcp-fixture-diagnostics"
+            | "mcp-policy-review-open"
+            | "mcp-policy-change-confirm"
+            | "mcp-policy-change-cancel"
+            | "mcp-disable"
+            | "mcp-sign-out"
+            | "mcp-remove-connection"
+            | "mcp-remove-managed-refused"
+            | "mcp-resume-automatic-once"
+            | "mcp-resume-confirmation"
+            | "mcp-resume-none"
+            | "mcp-resume-cancel"
+            | "mcp-resume-failed"
+            | "mcp-resume-policy-blocked"
+            | "provider-resume-automatic-once"
+            | "provider-resume-none"
             | "login-choose-provider"
             | "connect-method-oauth"
             | "connect-oauth-finish"
@@ -2286,7 +2346,55 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                 "views.mcp.hostile-detail".to_owned()
             }
             ("mcp-hostile-labels-back", "mcp") => "views.mcp.hostile-labels".to_owned(),
+            ("sidebar-mcp-open-mcp", "sidebar-mcp") => "views.sidebar-mcp.attention".to_owned(),
+            ("sidebar-mcp-open-mcp", "mcp") => "views.mcp.mixed".to_owned(),
+            ("sidebar-mcp-return", "mcp") => "views.mcp.mixed".to_owned(),
+            ("sidebar-mcp-return", "sidebar-mcp") => "views.sidebar-mcp.attention".to_owned(),
+            ("mcp-fixture-empty", "mcp") => "views.mcp.empty".to_owned(),
+            ("mcp-fixture-mixed", "mcp") => "views.mcp.mixed".to_owned(),
+            ("mcp-fixture-setup-needed", "mcp") => "views.mcp.setup-browser".to_owned(),
+            ("mcp-fixture-needs-auth", "mcp") => "views.mcp.auth-docs".to_owned(),
+            ("mcp-fixture-policy-blocked", "mcp") => "views.mcp.policy-blocked".to_owned(),
+            ("mcp-fixture-failed", "mcp") => "views.mcp.failed-tracker".to_owned(),
+            ("mcp-fixture-retrying", "mcp") => "views.mcp.retry-running".to_owned(),
+            ("mcp-fixture-running-progress", "mcp") => "views.mcp.progress-invocation".to_owned(),
+            ("mcp-fixture-succeeded-call", "mcp") => "views.mcp.progress-success".to_owned(),
+            ("mcp-fixture-failed-call", "mcp") => "views.mcp.progress-failed".to_owned(),
+            ("mcp-fixture-cancelled-call", "mcp") => "views.mcp.progress-cancelled".to_owned(),
+            ("mcp-fixture-focused-details", "mcp") => "views.mcp.detail-docs".to_owned(),
+            ("mcp-fixture-diagnostics", "mcp") => "views.mcp.diagnostics-docs".to_owned(),
+            ("mcp-policy-review-open", "mcp") if after.focus.contains("policy") => {
+                "views.mcp.policy-review".to_owned()
+            }
+            ("mcp-policy-review-open", "mcp") => "views.mcp.policy-blocked".to_owned(),
+            ("mcp-policy-change-confirm", "mcp") => "views.mcp.policy-change-confirm".to_owned(),
+            ("mcp-policy-change-cancel", "mcp") if after.focus.contains("confirm") => {
+                "views.mcp.policy-change-confirm".to_owned()
+            }
+            ("mcp-policy-change-cancel", "mcp") => "views.mcp.policy-blocked".to_owned(),
+            ("mcp-disable", "mcp") => "views.mcp.manage-removal".to_owned(),
+            ("mcp-sign-out", "mcp") => "views.mcp.manage-removal".to_owned(),
+            ("mcp-remove-connection", "mcp") => "views.mcp.manage-removal".to_owned(),
+            ("mcp-remove-managed-refused", "mcp") => "views.mcp.manage-removal".to_owned(),
+            ("mcp-resume-automatic-once", "mcp") => "views.mcp.auth-docs-ready".to_owned(),
+            ("mcp-resume-automatic-once", "tool-running") => "session.tool-running".to_owned(),
+            ("mcp-resume-confirmation", "mcp") => "views.mcp.auth-docs-ready".to_owned(),
+            ("mcp-resume-confirmation", "tool-failed") => "tool-failed.confirm-resume".to_owned(),
+            ("mcp-resume-none", "mcp") => "views.mcp.auth-docs-ready".to_owned(),
+            ("mcp-resume-none", "tool-failed") => "tool-failed.none".to_owned(),
+            ("mcp-resume-cancel", "mcp") => "views.mcp.auth-docs-ready".to_owned(),
+            ("mcp-resume-cancel", "tool-failed") => "tool-failed.cancel".to_owned(),
+            ("mcp-resume-failed", "mcp") => "views.mcp.failed-tracker".to_owned(),
+            ("mcp-resume-failed", "tool-failed") => "tool-failed.failed-resume".to_owned(),
+            ("mcp-resume-policy-blocked", "mcp") => "views.mcp.policy-blocked".to_owned(),
+            ("provider-resume-automatic-once", "model-picker") => {
+                "gate.work-configuration.model-picker".to_owned()
+            }
+            ("provider-resume-none", "model-picker") => {
+                "gate.work-configuration.model-picker".to_owned()
+            }
             (_, "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
+            (_, "sidebar-mcp") => "views.sidebar-mcp.attention".to_owned(),
             (_, "model-picker") => "gate.work-configuration.model-picker".to_owned(),
             (_, "onboarding") => "auth.onboarding.return".to_owned(),
             (_, "chat-turn") => "flow1.daily-work.stable".to_owned(),
@@ -9664,6 +9772,1222 @@ fn mcp_hostile_labels_back() -> (
         "mcp-capability",
         "list-restored",
         "hostile detail closed; hostile-cap identity remains stable with sanitized labels",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn sidebar_mcp_open_mcp() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "sidebar-mcp"];
+    let mut before = state(
+        "sidebar-mcp",
+        origin.clone(),
+        "Also list the tests that should cover the search.",
+        "sidebar-mcp-scroll",
+        "deploy-hooks",
+        "sidebar-mcp-attention",
+        Some("pending.capability.deploy-hooks"),
+        "return-to-sidebar-mcp",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.draft = "Also list the tests that should cover the search.".to_owned();
+    before.scroll_anchor = "sidebar-mcp-scroll".to_owned();
+    before.selection = "deploy-hooks".to_owned();
+    before.focus = "sidebar-mcp-attention".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "mcp",
+        origin,
+        "Also list the tests that should cover the search.",
+        "sidebar-mcp-scroll",
+        "deploy-hooks",
+        "mcp-mixed",
+        Some("pending.capability.deploy-hooks"),
+        "return-to-sidebar-mcp",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.scroll_anchor = before.scroll_anchor.clone();
+    after.selection = before.selection.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.sidebar-mcp.open-mcp".to_owned(),
+        label: "Open MCP".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "Open MCP opens the temporary detail view from the sidebar inspector".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.sidebar-mcp.open.1".to_owned(),
+        owner_id: "pending.capability.deploy-hooks".to_owned(),
+        count: 0,
+        outcome: "opened-mcp".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.sidebar-mcp.open-mcp",
+        "mcp-sidebar",
+        "opened",
+        "sidebar opened full MCP with draft and selection preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn sidebar_mcp_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "sidebar-mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Also list the tests that should cover the search.",
+        "sidebar-mcp-scroll",
+        "deploy-hooks",
+        "mcp-mixed",
+        Some("pending.capability.deploy-hooks"),
+        "return-to-sidebar-mcp",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.draft = "Also list the tests that should cover the search.".to_owned();
+    before.scroll_anchor = "sidebar-mcp-scroll".to_owned();
+    before.selection = "deploy-hooks".to_owned();
+    before.focus = "mcp-mixed".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "sidebar-mcp",
+        origin,
+        "Also list the tests that should cover the search.",
+        "sidebar-mcp-scroll",
+        "deploy-hooks",
+        "sidebar-mcp-attention",
+        Some("pending.capability.deploy-hooks"),
+        "return-to-sidebar-mcp",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.scroll_anchor = before.scroll_anchor.clone();
+    after.selection = before.selection.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.focus = "sidebar-mcp-attention".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.return-to-sidebar".to_owned(),
+        label: "Return to sidebar".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return restores the same conversation, sidebar tab, selection, draft, and scroll"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.sidebar-mcp.return.1".to_owned(),
+        owner_id: "pending.capability.deploy-hooks".to_owned(),
+        count: 0,
+        outcome: "restored-sidebar".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.sidebar-mcp.return",
+        "mcp-sidebar",
+        "restored",
+        "full MCP closed back to the same sidebar context",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_fixture_snapshot(
+    tag: &str,
+) -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let focus = format!("mcp-fixture-{tag}");
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        tag,
+        &focus,
+        Some("pending.capability.fixture"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.focus = focus.clone();
+    before.selection = tag.to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = focus;
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: format!("action.mcp.fixture.{tag}"),
+        label: format!("Inspect {tag} fixture"),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: format!("public noncanonical MCP fixture `{tag}` without a new canonical ID"),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: format!("attempt.mcp.fixture.{tag}.1"),
+        owner_id: "pending.capability.fixture".to_owned(),
+        count: 0,
+        outcome: format!("fixture-{tag}"),
+    };
+    let effect = simulated_effect(
+        &format!("effect.mcp.fixture.{tag}"),
+        "mcp-fixture",
+        tag,
+        &format!("deterministic noncanonical fixture for {tag}"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_policy_review_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "deploy-hooks",
+        "mcp-policy-list",
+        Some("pending.capability.deploy-hooks"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "deploy-hooks".to_owned();
+    before.focus = "mcp-policy-list".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-policy-review".to_owned();
+    after.selection = "deploy-hooks".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.review-policy".to_owned(),
+        label: "Review policy".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Review policy opens focused policy detail for the selected blocked row".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.policy-review.0".to_owned(),
+        owner_id: "pending.capability.deploy-hooks".to_owned(),
+        count: 0,
+        outcome: "policy-review-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.policy-review-open",
+        "mcp-policy",
+        "review-open",
+        "policy review opens without invocation, auth, or setup attempts",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_policy_change_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "deploy-hooks",
+        "mcp-policy-confirm",
+        Some("pending.capability.deploy-hooks"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "deploy-hooks".to_owned();
+    before.focus = "mcp-policy-confirm".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-policy-applied".to_owned();
+    after.selection = "deploy-hooks".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.policy-change-confirm".to_owned(),
+        label: "Confirm change".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "explicit confirmation applies the disclosed policy mutation for this row only"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.policy-change.1".to_owned(),
+        owner_id: "pending.capability.deploy-hooks".to_owned(),
+        count: 0,
+        outcome: "policy-confirmed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.policy-change-confirm",
+        "mcp-policy",
+        "confirmed",
+        "confirmed policy mutation only for the selected Deploy hooks row",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_policy_change_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "deploy-hooks",
+        "mcp-policy-confirm",
+        Some("pending.capability.deploy-hooks"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "deploy-hooks".to_owned();
+    before.focus = "mcp-policy-confirm".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-policy-list".to_owned();
+    after.selection = "deploy-hooks".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.policy-change-cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "cancel returns to the same selected MCP row with policy unchanged".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.policy-change.cancel.0".to_owned(),
+        owner_id: "pending.capability.deploy-hooks".to_owned(),
+        count: 0,
+        outcome: "policy-unchanged".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.policy-change-cancel",
+        "mcp-policy",
+        "unchanged",
+        "cancel keeps policy, connection, origin, and selection unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_disable() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-manage-removal",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-manage-removal".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-disabled".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.disable".to_owned(),
+        label: "Disable".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Disable retains configuration while preventing invocation".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.disable.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 0,
+        outcome: "disabled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.disable",
+        "mcp-disable",
+        "disabled",
+        "configuration retained; invocation blocked for Project docs",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_sign_out() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-manage-removal",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-manage-removal".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-signed-out".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.sign-out".to_owned(),
+        label: "Sign out".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Sign out removes only removable authorization".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.sign-out.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 0,
+        outcome: "signed-out".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.sign-out",
+        "mcp-sign-out",
+        "signed-out",
+        "removable authorization cleared; configuration retained",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_remove_connection() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-manage-removal",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-manage-removal".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-removed".to_owned();
+    after.selection = "empty".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.remove-connection".to_owned(),
+        label: "Remove connection".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Remove deletes only user-removable connection state".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.remove.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 0,
+        outcome: "removed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.remove-connection",
+        "mcp-remove",
+        "removed",
+        "user-removable Project docs connection deleted",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_remove_managed_refused() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "enterprise-knowledge",
+        "mcp-manage-removal",
+        Some("pending.capability.enterprise-knowledge"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.selection = "enterprise-knowledge".to_owned();
+    before.focus = "mcp-manage-removal".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-managed-refused".to_owned();
+    after.selection = "enterprise-knowledge".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.remove-managed-refused".to_owned(),
+        label: "Remove connection".to_owned(),
+        // Scenario actions must be accessible; the managed safeguard still
+        // refuses removal via a zero-effect outcome instead of a dead control.
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Managed project configuration refuses removal through enabled controls".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.remove-managed.0".to_owned(),
+        owner_id: "pending.capability.enterprise-knowledge".to_owned(),
+        count: 0,
+        outcome: "managed-refused".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.remove-managed-refused",
+        "mcp-remove",
+        "managed-refused",
+        "managed by the project and cannot be removed",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_resume_automatic_once() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "tool-failed",
+        "docs-search-ready",
+        "mcp-capabilities",
+        Some("pending.tool.docs-search"),
+        "automatic_once",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.return_policy = "automatic_once".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "tool-running",
+        origin,
+        "Continue the paused conversation.",
+        "tool-failed",
+        "running-tool",
+        "tool-running",
+        Some("pending.tool.docs-search"),
+        "automatic_once",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "automatic_once".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.resume-automatic-once".to_owned(),
+        label: "Resume safe read once".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "tool-running".to_owned(),
+        kind: "automatic".to_owned(),
+        path: "safe read-only MCP action resumes automatically exactly once".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.resume.automatic.1".to_owned(),
+        owner_id: "pending.tool.docs-search".to_owned(),
+        count: 1,
+        outcome: "resumed-once".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.resume-automatic-once",
+        "mcp-resume",
+        "automatic-once",
+        "read-only MCP resume runs exactly once under automatic_once",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_resume_confirmation() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "tool-failed",
+        "docs-write-ready",
+        "mcp-capabilities",
+        Some("pending.tool.docs-write"),
+        "confirmation",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.return_policy = "confirmation".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "tool-failed",
+        origin,
+        "Continue the paused conversation.",
+        "tool-failed",
+        "confirm-resume",
+        "tool-recovery",
+        Some("pending.tool.docs-write"),
+        "confirmation",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "confirmation".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.resume-confirm".to_owned(),
+        label: "Confirm before resume".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "tool-failed".to_owned(),
+        kind: "direct".to_owned(),
+        path: "side-effecting MCP action requires explicit confirmation with zero invocation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.resume.confirm.0".to_owned(),
+        owner_id: "pending.tool.docs-write".to_owned(),
+        count: 0,
+        outcome: "confirmation-required".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.resume-confirm",
+        "mcp-resume",
+        "confirmation-required",
+        "side-effecting resume waits for confirmation before any call",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_resume_none() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "tool-failed",
+        "docs-search-ready",
+        "mcp-capabilities",
+        Some("pending.tool.docs-search"),
+        "none",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.return_policy = "none".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "tool-failed",
+        origin,
+        "Continue the paused conversation.",
+        "tool-failed",
+        "no-resume",
+        "tool-recovery",
+        Some("pending.tool.docs-search"),
+        "none",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "none".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.resume-none".to_owned(),
+        label: "Return without resuming".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "tool-failed".to_owned(),
+        kind: "direct".to_owned(),
+        path: "none resume policy performs no invocation".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.resume.none.0".to_owned(),
+        owner_id: "pending.tool.docs-search".to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.resume-none",
+        "mcp-resume",
+        "none",
+        "none policy returns without automatic or confirmed invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_resume_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "tool-failed",
+        "docs-search-ready",
+        "mcp-capabilities",
+        Some("pending.tool.docs-search"),
+        "automatic_once",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.return_policy = "automatic_once".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "tool-failed",
+        origin,
+        "Continue the paused conversation.",
+        "tool-failed",
+        "cancelled-resume",
+        "tool-recovery",
+        Some("pending.tool.docs-search"),
+        "automatic_once",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "automatic_once".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.resume-cancel".to_owned(),
+        label: "Cancel recovery".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "tool-failed".to_owned(),
+        kind: "cancel".to_owned(),
+        path: "cancel recovery never invokes the paused MCP call".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.resume.cancel.0".to_owned(),
+        owner_id: "pending.tool.docs-search".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.resume-cancel",
+        "mcp-resume",
+        "cancelled",
+        "cancel recovery performs zero invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_resume_failed() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "tool-failed",
+        "issue-tracker",
+        "mcp-failed",
+        Some("pending.tool.issue-search"),
+        "automatic_once",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.return_policy = "automatic_once".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "tool-failed",
+        origin,
+        "Continue the paused conversation.",
+        "tool-failed",
+        "failed-resume",
+        "tool-recovery",
+        Some("pending.tool.issue-search"),
+        "automatic_once",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "automatic_once".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.resume-failed".to_owned(),
+        label: "Return after failed recovery".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "tool-failed".to_owned(),
+        kind: "direct".to_owned(),
+        path: "failed recovery never invokes the paused MCP call".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.resume.failed.0".to_owned(),
+        owner_id: "pending.tool.issue-search".to_owned(),
+        count: 0,
+        outcome: "failed-recovery".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.resume-failed",
+        "mcp-resume",
+        "failed",
+        "failed recovery performs zero invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mcp_resume_policy_blocked() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "tool-failed",
+        "deploy-hooks",
+        "mcp-policy-blocked",
+        Some("pending.tool.deploy"),
+        "none",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.return_policy = "none".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mcp-policy-blocked".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.resume-policy-blocked".to_owned(),
+        label: "Review policy".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "policy-blocked return never invokes".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.resume.policy.0".to_owned(),
+        owner_id: "pending.tool.deploy".to_owned(),
+        count: 0,
+        outcome: "policy-blocked".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.resume-policy-blocked",
+        "mcp-resume",
+        "policy-blocked",
+        "policy-blocked resume path performs zero invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn provider_resume_automatic_once() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "model-picker", "connect-connected"];
+    let mut before = state(
+        "connect-connected",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model-action",
+        "gpt-5-2-codex",
+        "provider-connected",
+        Some("pending.model.gpt-5-2-codex"),
+        "automatic_once",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.return_policy = "automatic_once".to_owned();
+    before.paused_activity_id = "activity.blocked-model.gpt-5-2-codex".to_owned();
+    before.selection = "gpt-5-2-codex".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "model-picker",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model-action",
+        "gpt-5-2-codex",
+        "model-selection",
+        Some("pending.model.gpt-5-2-codex"),
+        "automatic_once",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "automatic_once".to_owned();
+    after.selection = before.selection.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.provider.resume-automatic-once".to_owned(),
+        label: "Resume blocked model once".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "connect-connected".to_owned(),
+        to_screen_id: "model-picker".to_owned(),
+        kind: "automatic".to_owned(),
+        path: "blocked model action resumes exactly once under automatic_once".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.provider.resume.automatic.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 1,
+        outcome: "resumed-once".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.provider.resume-automatic-once",
+        "provider-resume",
+        "automatic-once",
+        "provider-origin blocked model action identity preserved with one invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn provider_resume_none() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "model-picker", "connect-connected"];
+    let mut before = state(
+        "connect-connected",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model-action",
+        "gpt-5-2-codex",
+        "provider-connected",
+        Some("pending.model.gpt-5-2-codex"),
+        "none",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.return_policy = "none".to_owned();
+    before.paused_activity_id = "activity.blocked-model.gpt-5-2-codex".to_owned();
+    before.selection = "gpt-5-2-codex".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "model-picker",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model-action",
+        "gpt-5-2-codex",
+        "model-selection",
+        Some("pending.model.gpt-5-2-codex"),
+        "none",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.return_policy = "none".to_owned();
+    after.selection = before.selection.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.provider.resume-none".to_owned(),
+        label: "Return without resuming".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "connect-connected".to_owned(),
+        to_screen_id: "model-picker".to_owned(),
+        kind: "direct".to_owned(),
+        path: "none resume policy preserves blocked model identity with zero invocation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.provider.resume.none.0".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 0,
+        outcome: "none".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.provider.resume-none",
+        "provider-resume",
+        "none",
+        "provider-origin none policy performs zero invocation",
     );
     (before, after, action, transition, attempt, effect)
 }

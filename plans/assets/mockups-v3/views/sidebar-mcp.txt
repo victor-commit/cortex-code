@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                               │ MCP status                             
+    Daily work · current conversation                                          │ › MCP                                  
+    Find where the server applies the rate limit and explain the safe path.    │ [esc] Return to conversation           
+                                                                               │                                        
+    You · Find where the server applies the rate limit and explain the safe pa │                                        
+                                                                               │                                        
+                                                                               │                                        
+    Code                                                                       │                                        
+                                                                               │ MCP summary                            
+    The shared request guard applies the limit before route work begins.       │ 7 capabilities · 1 needs attention     
+    → src/auth/middleware.rs owns the rate-limit decision.                     │                                        
+    → The login and API routes reuse the same safety rule.                     │ Needs attention                        
+                                                                               │ ✗ Deploy hooks                         
+    ● Reading src/auth/middleware.rs · checked the login path                  │ Blocked by policy                      
+                                                                               │ Workspace policy blocks remote         
+                                                                               │ deploy actions.                        
+                                                                               │                                        
+                                                                               │ Healthy details stay collapsed.        
+                                                                               │                                        
+                                                                               │ › [enter] Open MCP                     
+                                                                               │   Manage remaining statuses            
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Also list the tests that should cover the search.                                                                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

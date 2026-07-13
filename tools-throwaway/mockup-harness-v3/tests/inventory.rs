@@ -207,6 +207,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "sidebar-lsp",
             "sidebar-todo",
             "sidebar-subagents",
+            "sidebar-mcp",
             "sidebar-queue",
             "help",
             "review",
