@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Check the retry path before we merge.                                                                         
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    Choose an export format. Your draft stays exactly as you left it.                                                   
+                                                                                                                        
+                                                                                                                        
+    Paused draft · 3 authored lines                                                                                     
+    › Check the retry path in @retry                                                                                    
+      Then explain the failure path that still needs coverage before the merge;                                         
+        wrap: include a concise test plan with the visible recovery behavior.                                           
+      Keep the summary short before we merge.                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Export conversation · Creates one sandboxed file from this conversation · [enter] Export · [esc] Cancel          │  
+  │ › Markdown · readable .md · headings and code [default]                                                          │  
+  │   JSON · structured messages (.json) · keeps each turn as data                                                   │  
+  │   HTML · styled shareable page (.html) · ready to open in a browser                                              │  
+  │   Patch · git-applyable diff (.patch) · captures the change set only                                             │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

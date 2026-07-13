@@ -163,6 +163,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "command-palette",
             "command-palette-submenu",
             "attachment-picker",
+            "export-picker",
             "model-picker",
             "permission-shell",
             "permission-deny-reason",

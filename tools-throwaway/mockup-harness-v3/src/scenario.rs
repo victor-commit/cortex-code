@@ -7,7 +7,8 @@ use crate::audit::{
     AuditDocument, TransitionTrace,
 };
 use crate::screens::input_and_approval::{
-    ATTACHMENT_OPEN_DRAFT, ATTACHMENT_SELECTED_PATH, ATTACHMENT_TOKEN, INSERTED_FILE,
+    ATTACHMENT_OPEN_DRAFT, ATTACHMENT_SELECTED_PATH, ATTACHMENT_TOKEN, EXPORT_ARTIFACT_MARKDOWN,
+    EXPORT_DEFAULT_FORMAT, EXPORT_OPEN_DRAFT, EXPORT_SUCCESS_SUMMARY, INSERTED_FILE,
     MENTION_FRAGMENT, MULTILINE_DRAFT, PALETTE_PRESERVED_DRAFT, SLASH_ACTIVE_SPAN,
     SLASH_CONFIRMED_EXPORT, SLASH_OPEN_DRAFT, SLASH_PRE_OPEN_DRAFT,
 };
@@ -1102,6 +1103,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "slash-invalid-trigger" => slash_invalid_trigger(),
         "attachment-confirm" => attachment_confirm(),
         "attachment-cancel" => attachment_cancel(),
+        "export-confirm" => export_confirm(),
+        "export-cancel" => export_cancel(),
         "palette-open-submenu" => palette_open_submenu(),
         "palette-submenu-back" => palette_submenu_back(),
         "palette-cancel" => palette_cancel(),
@@ -1442,6 +1445,38 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             PreservedFieldHash {
                 before: sha256_hex(before.attachment.as_bytes()),
                 after: sha256_hex(after.attachment.as_bytes()),
+            },
+        );
+    }
+    if case_id == "export-confirm" {
+        preserved_field_hashes.insert(
+            "export_artifact".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b""),
+                after: sha256_hex(EXPORT_ARTIFACT_MARKDOWN.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "result_event_count".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"0"),
+                after: sha256_hex(b"1"),
+            },
+        );
+    }
+    if case_id == "export-cancel" {
+        preserved_field_hashes.insert(
+            "export_artifact".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b""),
+                after: sha256_hex(b""),
+            },
+        );
+        preserved_field_hashes.insert(
+            "result_event_count".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"0"),
+                after: sha256_hex(b"0"),
             },
         );
     }
@@ -10032,6 +10067,161 @@ fn attachment_cancel() -> (
         "draft-edit",
         "simulated-no-change",
         "cancel left the exact multiline draft and attachment set untouched",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn export_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let open_transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    let success_transcript = format!("{open_transcript} {EXPORT_SUCCESS_SUMMARY}");
+
+    let mut before = state(
+        "export-picker",
+        vec!["chat-turn", "composer-multiline", "export-picker"],
+        EXPORT_OPEN_DRAFT,
+        "turn-retry-review",
+        EXPORT_DEFAULT_FORMAT,
+        "draft-cursor-30",
+        Some("export.format.markdown"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript = open_transcript.clone();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "export-picker"],
+        EXPORT_OPEN_DRAFT,
+        "turn-retry-review",
+        "no-selection",
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = success_transcript;
+    after.attachment = String::new();
+    apply_flow2_identity(&mut after);
+    after.draft = EXPORT_OPEN_DRAFT.to_owned();
+    after.attachment = String::new();
+    after.focus = before.focus.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.export-picker.confirm-selected".to_owned(),
+        label: "Export".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: format!(
+            "confirm creates exactly the selected sandboxed Markdown file at {EXPORT_ARTIFACT_MARKDOWN} and restores the origin draft and geometry with one inline success summary"
+        ),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.export-picker.confirm.1".to_owned(),
+        owner_id: format!("export.{EXPORT_DEFAULT_FORMAT}"),
+        count: 1,
+        outcome: "exported".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.export-picker.confirm",
+        "export-artifact",
+        "simulated-export-create",
+        &format!(
+            "one sandboxed {EXPORT_DEFAULT_FORMAT} artifact was created at {EXPORT_ARTIFACT_MARKDOWN}"
+        ),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn export_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "export-picker",
+        vec!["chat-turn", "composer-multiline", "export-picker"],
+        EXPORT_OPEN_DRAFT,
+        "turn-retry-review",
+        EXPORT_DEFAULT_FORMAT,
+        "draft-cursor-30",
+        Some("export.format.markdown"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "export-picker"],
+        EXPORT_OPEN_DRAFT,
+        "turn-retry-review",
+        EXPORT_DEFAULT_FORMAT,
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.attachment = String::new();
+    apply_flow2_identity(&mut after);
+    after.draft = EXPORT_OPEN_DRAFT.to_owned();
+    after.attachment = String::new();
+    after.selection = before.selection.clone();
+    after.focus = before.focus.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.export-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel creates no export artifact, shows no success claim, and restores the original draft and geometry"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.export-picker.cancel.1".to_owned(),
+        owner_id: format!("export.{EXPORT_DEFAULT_FORMAT}"),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.export-picker.cancel",
+        "export-artifact",
+        "simulated-no-change",
+        "cancel left the conversation, draft, and sandbox export set untouched",
     );
     (before, after, action, transition, attempt, effect)
 }

@@ -75,6 +75,7 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("input", "command-palette"),
         ("input", "command-palette-submenu"),
         ("input", "attachment-picker"),
+        ("input", "export-picker"),
         ("input", "model-picker"),
         ("input", "permission-shell"),
         ("input", "permission-deny-reason"),

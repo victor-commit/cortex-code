@@ -63,6 +63,15 @@ pub(crate) const ATTACHMENT_OPEN_DRAFT: &str = MULTILINE_DRAFT;
 pub(crate) const ATTACHMENT_SELECTED_PATH: &str = "assets/retry-diagram.png";
 /// Exact token chip inserted by confirming the selected eligible file.
 pub(crate) const ATTACHMENT_TOKEN: &str = "[attachment: assets/retry-diagram.png]";
+/// Exact multiline draft while the export picker is open (export never mutates it).
+pub(crate) const EXPORT_OPEN_DRAFT: &str = MULTILINE_DRAFT;
+/// Default and currently selected export format on open.
+pub(crate) const EXPORT_DEFAULT_FORMAT: &str = "Markdown";
+/// Sandboxed artifact path created when Markdown is confirmed.
+pub(crate) const EXPORT_ARTIFACT_MARKDOWN: &str = "exports/retry-review.md";
+/// Single inline success summary after a successful export.
+pub(crate) const EXPORT_SUCCESS_SUMMARY: &str =
+    "Exported conversation as Markdown · exports/retry-review.md";
 pub(crate) const SHORT_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\"";
 pub(crate) const LONG_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\" && git diff -- src/net/retry_policy.rs > /tmp/retry.diff && printf '%s\\n' \"review complete\"";
 pub(crate) const UNSAFE_SHELL_COMMAND: &[u8] = b"printf 'retry\0'\n\x1b[31m";
@@ -214,6 +223,41 @@ const ATTACHMENT_CANDIDATES: [AttachmentCandidate; 5] = [
     },
 ];
 
+#[derive(Clone, Copy)]
+struct ExportFormat {
+    name: &'static str,
+    artifact: &'static str,
+    consequence: &'static str,
+    is_default: bool,
+}
+
+const EXPORT_FORMATS: [ExportFormat; 4] = [
+    ExportFormat {
+        name: "Markdown",
+        artifact: "readable .md",
+        consequence: "headings and code",
+        is_default: true,
+    },
+    ExportFormat {
+        name: "JSON",
+        artifact: "structured messages (.json)",
+        consequence: "keeps each turn as data",
+        is_default: false,
+    },
+    ExportFormat {
+        name: "HTML",
+        artifact: "styled shareable page (.html)",
+        consequence: "ready to open in a browser",
+        is_default: false,
+    },
+    ExportFormat {
+        name: "Patch",
+        artifact: "git-applyable diff (.patch)",
+        consequence: "captures the change set only",
+        is_default: false,
+    },
+];
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
@@ -232,6 +276,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             render_command_palette_submenu(&mut canvas, screen_id, fixture_id)?
         }
         "attachment-picker" => render_attachment_picker(&mut canvas, screen_id, fixture_id)?,
+        "export-picker" => render_export_picker(&mut canvas, screen_id, fixture_id)?,
         "permission-shell" => render_permission_shell(&mut canvas, screen_id, fixture_id)?,
         "permission-deny-reason" => {
             render_permission_deny_reason(&mut canvas, screen_id, fixture_id)?
@@ -2594,6 +2639,276 @@ fn render_attachment_picker(
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         transitions,
     ))
+}
+
+fn render_export_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    export_transcript(canvas)?;
+    draft_preview(canvas, MENTION_FRAGMENT)?;
+    write_dock_border(canvas)?;
+
+    // Attachment/slash pattern: header names the action + consequence + local keys.
+    // Four format rows fill the rest of the dock. Default uses a [default] badge so
+    // monochrome TXT still distinguishes it; selection uses › without filling a bar.
+    let selected_index = export_selected_index(fixture_id);
+    let selected = &EXPORT_FORMATS[selected_index];
+    let header =
+        "Export conversation · Creates one sandboxed file from this conversation · [enter] Export · [esc] Cancel";
+    debug_assert!(
+        header.chars().count() <= 113,
+        "export picker header overflowed the dock body"
+    );
+    dock_line(canvas, DOCK_TOP + 1, header, TextStyle::bright())?;
+
+    let export_label = "[enter] Export";
+    let cancel_label = "[esc] Cancel";
+    let export_start = header
+        .find(export_label)
+        .map(|index| 4 + index as u16)
+        .expect("export primary action must be present");
+    let cancel_start = header
+        .find(cancel_label)
+        .map(|index| 4 + index as u16)
+        .expect("export cancel action must be present");
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "paused-conversation",
+            reference(4, 4, 74),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "composer-multiline",
+            reference(12, 4, 45),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "multiline-authored-draft",
+            reference(13, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "picker",
+            "export-format-selection",
+            reference(DOCK_TOP + 1, 4, 4 + header.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "consequence",
+            "sandbox-one-export-file",
+            reference(DOCK_TOP + 1, 4, 72),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.export-picker.confirm-selected",
+            reference(
+                DOCK_TOP + 1,
+                export_start,
+                export_start + export_label.chars().count() as u16,
+            ),
+            "focused",
+            Some(action(
+                "action.export-picker.confirm-selected",
+                "Export",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.export-picker.cancel",
+            reference(
+                DOCK_TOP + 1,
+                cancel_start,
+                cancel_start + cancel_label.chars().count() as u16,
+            ),
+            "summary",
+            Some(action("action.export-picker.cancel", "Cancel", false)),
+        ),
+    ];
+
+    for (index, format) in EXPORT_FORMATS.iter().enumerate() {
+        let row = DOCK_TOP + 2 + index as u16;
+        let selected_row = index == selected_index;
+        let marker = if selected_row { "›" } else { " " };
+        // Bracketed default badge is monochrome-distinct without color dependence.
+        let default_badge = if format.is_default { " [default]" } else { "" };
+        let line = format!(
+            "{marker} {} · {} · {}{default_badge}",
+            format.name, format.artifact, format.consequence
+        );
+        debug_assert!(
+            line.chars().count() <= 113,
+            "export format row overflowed the dock body"
+        );
+        dock_line(
+            canvas,
+            row,
+            &line,
+            if selected_row {
+                TextStyle::accent()
+            } else {
+                TextStyle::text()
+            },
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "export-format",
+            format.name,
+            reference(row, 6, 6 + format.name.chars().count() as u16),
+            if selected_row { "focused" } else { "summary" },
+            None,
+        ));
+        let detail_start = 6 + format.name.chars().count() as u16 + 3;
+        let detail_len =
+            format.artifact.chars().count() as u16 + 3 + format.consequence.chars().count() as u16;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "format-consequence",
+            format.name,
+            reference(row, detail_start, detail_start + detail_len),
+            "summary",
+            None,
+        ));
+        if selected_row {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "selection",
+                format.name,
+                reference(row, 4, 6 + format.name.chars().count() as u16),
+                "focused",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "selected-consequence",
+                &format!(
+                    "{}-{}",
+                    format.name.to_ascii_lowercase(),
+                    format.artifact
+                ),
+                reference(row, detail_start, detail_start + detail_len),
+                "focused",
+                None,
+            ));
+        }
+        if format.is_default {
+            let badge_label = "[default]";
+            let badge_start = line
+                .find(badge_label)
+                .map(|index| 4 + index as u16)
+                .expect("default badge must appear on the default format row");
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "default",
+                format.name,
+                reference(
+                    row,
+                    badge_start,
+                    badge_start + badge_label.chars().count() as u16,
+                ),
+                "summary",
+                None,
+            ));
+        }
+    }
+
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "consequence",
+        &format!("{}-export", selected.name.to_ascii_lowercase()),
+        reference(DOCK_TOP + 2 + selected_index as u16, 6, 80),
+        "focused",
+        None,
+    ));
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.export-picker.confirm-selected",
+                "export-picker",
+                "composer-multiline",
+                "direct",
+                "confirm creates exactly the selected sandboxed format, shows one inline success summary, and restores the origin draft and geometry",
+            ),
+            transition(
+                "action.export-picker.cancel",
+                "export-picker",
+                "composer-multiline",
+                "cancel",
+                "cancel creates no artifact, shows no success claim, and restores the original draft and geometry",
+            ),
+        ],
+    ))
+}
+
+fn export_selected_index(fixture_id: &str) -> usize {
+    if fixture_id.contains("select-json") {
+        1
+    } else if fixture_id.contains("select-html") {
+        2
+    } else if fixture_id.contains("select-patch") {
+        3
+    } else {
+        0
+    }
+}
+
+fn export_transcript(canvas: &mut Canvas) -> Result<(), String> {
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Choose an export format. Your draft stays exactly as you left it.",
+        TextStyle::text(),
+    )?;
+    Ok(())
 }
 
 fn render_command_palette(
