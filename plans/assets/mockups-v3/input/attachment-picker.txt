@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Check the retry path before we merge.                                                                         
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    I can add a project file without changing the rest of your draft.                                                   
+                                                                                                                        
+                                                                                                                        
+    Paused draft · 3 authored lines                                                                                     
+    › Check the retry path in @retry                                                                                    
+      Then explain the failure path that still needs coverage before the merge;                                         
+        wrap: include a concise test plan with the visible recovery behavior.                                           
+      Keep the summary short before we merge.                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Attach file · project-relative paths · query:  · 5 matching · [enter] Attach · [esc] Cancel                      │  
+  │ Attaches one project file to this draft · png, jpg, pdf, svg                                                     │  
+  │ › assets/retry-diagram.png · png · 48.2k · eligible                                                              │  
+  │   docs/retry-overview.pdf · pdf · 120.4k · eligible                                                              │  
+  │   README.md · md · 11.4k · unsupported                                                                           │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

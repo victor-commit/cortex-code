@@ -74,6 +74,7 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("input", "slash-menu"),
         ("input", "command-palette"),
         ("input", "command-palette-submenu"),
+        ("input", "attachment-picker"),
         ("input", "model-picker"),
         ("input", "permission-shell"),
         ("input", "permission-deny-reason"),
@@ -106,10 +107,11 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
 fn every_render_selector_preflights_missing_renderers_before_writing() {
     let _test_lock = renderer_test_lock();
     assert_registry_failure(&["--all"], "tool-failed");
-    // `input` still has unimplemented screens beyond slash/palette; use a still-missing ID.
-    assert_registry_failure(&["input"], "attachment-picker");
+    // `input` still has unimplemented screens beyond attachment-picker; stream order
+    // surfaces the first inventory gap for that category.
+    assert_registry_failure(&["input"], "model-picker-filtered");
 
-    let path = "/projects/cortex-code/plans/assets/mockups-v3/input/attachment-picker.txt";
+    let path = "/projects/cortex-code/plans/assets/mockups-v3/input/model-picker-filtered.txt";
     assert!(
         !Path::new(path).exists(),
         "preflight must finish before any artifact is written: {path}"
@@ -142,6 +144,7 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("input", "slash-menu"),
         ("input", "command-palette"),
         ("input", "command-palette-submenu"),
+        ("input", "attachment-picker"),
         ("input", "model-picker"),
         ("input", "permission-shell"),
         ("input", "permission-deny-reason"),

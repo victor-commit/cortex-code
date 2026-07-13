@@ -57,6 +57,12 @@ pub(crate) const SLASH_ACTIVE_SPAN: &str = "/";
 pub(crate) const SLASH_CONFIRMED_EXPORT: &str = "/export";
 /// Unchanged draft while the command palette is open (palette does not mutate it).
 pub(crate) const PALETTE_PRESERVED_DRAFT: &str = MULTILINE_DRAFT;
+/// Exact multiline draft while/after the attachment picker (token insertion is additive).
+pub(crate) const ATTACHMENT_OPEN_DRAFT: &str = MULTILINE_DRAFT;
+/// Selected attachable project-relative path (confirm inserts this once).
+pub(crate) const ATTACHMENT_SELECTED_PATH: &str = "assets/retry-diagram.png";
+/// Exact token chip inserted by confirming the selected eligible file.
+pub(crate) const ATTACHMENT_TOKEN: &str = "[attachment: assets/retry-diagram.png]";
 pub(crate) const SHORT_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\"";
 pub(crate) const LONG_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\" && git diff -- src/net/retry_policy.rs > /tmp/retry.diff && printf '%s\\n' \"review complete\"";
 pub(crate) const UNSAFE_SHELL_COMMAND: &[u8] = b"printf 'retry\0'\n\x1b[31m";
@@ -173,6 +179,41 @@ const QUEUED_SUBMENU_ROWS: [SubmenuRow; 3] = [
     },
 ];
 
+#[derive(Clone, Copy)]
+struct AttachmentCandidate {
+    path: &'static str,
+    detail: &'static str,
+    eligible: bool,
+}
+
+const ATTACHMENT_CANDIDATES: [AttachmentCandidate; 5] = [
+    AttachmentCandidate {
+        path: "assets/retry-diagram.png",
+        detail: "png · 48.2k · eligible",
+        eligible: true,
+    },
+    AttachmentCandidate {
+        path: "docs/retry-overview.pdf",
+        detail: "pdf · 120.4k · eligible",
+        eligible: true,
+    },
+    AttachmentCandidate {
+        path: "assets/flow-sketch.svg",
+        detail: "svg · 12.1k · eligible",
+        eligible: true,
+    },
+    AttachmentCandidate {
+        path: "README.md",
+        detail: "md · 11.4k · unsupported",
+        eligible: false,
+    },
+    AttachmentCandidate {
+        path: "Cargo.toml",
+        detail: "toml · 4.6k · unsupported",
+        eligible: false,
+    },
+];
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
@@ -190,6 +231,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "command-palette-submenu" => {
             render_command_palette_submenu(&mut canvas, screen_id, fixture_id)?
         }
+        "attachment-picker" => render_attachment_picker(&mut canvas, screen_id, fixture_id)?,
         "permission-shell" => render_permission_shell(&mut canvas, screen_id, fixture_id)?,
         "permission-deny-reason" => {
             render_permission_deny_reason(&mut canvas, screen_id, fixture_id)?
@@ -2264,6 +2306,296 @@ fn render_slash_menu(
     ))
 }
 
+fn render_attachment_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    transcript(canvas)?;
+    draft_preview(canvas, MENTION_FRAGMENT)?;
+    let query = if fixture_id.contains("no-results") {
+        "zzq"
+    } else if fixture_id.contains("filter-png") {
+        "png"
+    } else {
+        ""
+    };
+    let matches = attachment_matches(query);
+    let first_eligible = matches.iter().position(|row| row.eligible);
+    write_dock_border(canvas)?;
+
+    // Dock body text starts at column 4 and must end before the border at 117.
+    let header = if matches.is_empty() {
+        format!(
+            "Attach file · project-relative paths · query: {query} · 0 matching"
+        )
+    } else if first_eligible.is_some() {
+        format!(
+            "Attach file · project-relative paths · query: {query} · {} matching · [enter] Attach · [esc] Cancel",
+            matches.len()
+        )
+    } else {
+        format!(
+            "Attach file · project-relative paths · query: {query} · {} matching · [esc] Cancel",
+            matches.len()
+        )
+    };
+    debug_assert!(
+        header.chars().count() <= 113,
+        "attachment picker header overflowed the dock body"
+    );
+    dock_line(canvas, DOCK_TOP + 1, &header, TextStyle::bright())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Attaches one project file to this draft · png, jpg, pdf, svg",
+        TextStyle::muted(),
+    )?;
+
+    let filter_subject = if query.is_empty() {
+        "query-empty".to_owned()
+    } else {
+        format!("query-{query}")
+    };
+    let attach_label = "[enter] Attach";
+    let cancel_label = "[esc] Cancel";
+    let attach_start = header.find(attach_label).map(|index| 4 + index as u16);
+    let cancel_start = header
+        .find(cancel_label)
+        .map(|index| 4 + index as u16)
+        .unwrap_or(4);
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "paused-conversation",
+            reference(4, 4, 83),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "composer-multiline",
+            reference(12, 4, 45),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "multiline-authored-draft",
+            reference(13, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter",
+            &filter_subject,
+            reference(DOCK_TOP + 1, 4, 4 + header.chars().count() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "consequence",
+            "attach-one-to-draft",
+            reference(DOCK_TOP + 2, 4, 48),
+            "summary",
+            None,
+        ),
+    ];
+
+    if matches.is_empty() {
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            &format!("No project files match {query}."),
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "Keep typing or cancel to restore the original draft.",
+            TextStyle::muted(),
+        )?;
+        dock_line(canvas, DOCK_TOP + 5, "[esc] Cancel", TextStyle::bright())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "empty-result",
+            &format!("no-match-{query}"),
+            reference(DOCK_TOP + 3, 4, 32 + query.chars().count() as u16),
+            "focused",
+            None,
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.attachment-picker.cancel",
+            reference(DOCK_TOP + 5, 4, 17),
+            "summary",
+            Some(action(
+                "action.attachment-picker.cancel",
+                "Cancel",
+                false,
+            )),
+        ));
+    } else {
+        if let Some(start) = attach_start {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.attachment-picker.confirm-selected",
+                reference(DOCK_TOP + 1, start, start + attach_label.chars().count() as u16),
+                "focused",
+                Some(action(
+                    "action.attachment-picker.confirm-selected",
+                    "Attach",
+                    false,
+                )),
+            ));
+        }
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.attachment-picker.cancel",
+            reference(
+                DOCK_TOP + 1,
+                cancel_start,
+                cancel_start + cancel_label.chars().count() as u16,
+            ),
+            "summary",
+            Some(action(
+                "action.attachment-picker.cancel",
+                "Cancel",
+                false,
+            )),
+        ));
+
+        // Three dock body rows: keep at least one unsupported label visible in the
+        // default catalogue so eligibility is understandable without color.
+        let visible = attachment_visible_rows(&matches);
+        for (index, candidate) in visible.iter().enumerate() {
+            let row = DOCK_TOP + 3 + index as u16;
+            let selected = first_eligible.is_some() && candidate.path == matches[first_eligible.unwrap()].path;
+            let marker = if selected { "›" } else { " " };
+            let style = if selected {
+                TextStyle::accent()
+            } else if candidate.eligible {
+                TextStyle::text()
+            } else {
+                TextStyle::muted()
+            };
+            let line = format!("{marker} {} · {}", candidate.path, candidate.detail);
+            dock_line(canvas, row, &line, style)?;
+            let subject = if candidate.eligible {
+                candidate.path.to_owned()
+            } else {
+                format!("{}·unsupported", candidate.path)
+            };
+            // Ineligible rows carry textual eligibility only; disabled actions are rejected by audit.
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "attachment-candidate",
+                &subject,
+                reference(row, 6, 6 + candidate.path.chars().count() as u16),
+                "focused",
+                None,
+            ));
+            if selected {
+                pairs.push(semantic(
+                    screen_id,
+                    fixture_id,
+                    "selection",
+                    candidate.path,
+                    reference(row, 4, 6 + candidate.path.chars().count() as u16),
+                    "focused",
+                    None,
+                ));
+            }
+            let eligibility_family = if candidate.eligible {
+                "eligible-row"
+            } else {
+                "ineligible-row"
+            };
+            let detail_start = 6 + candidate.path.chars().count() as u16 + 3;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                eligibility_family,
+                candidate.path,
+                reference(
+                    row,
+                    detail_start,
+                    detail_start + candidate.detail.chars().count() as u16,
+                ),
+                "summary",
+                None,
+            ));
+        }
+        for row in DOCK_TOP + 3 + visible.len() as u16..=DOCK_TOP + 5 {
+            dock_line(canvas, row, "", TextStyle::text())?;
+        }
+    }
+
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    let transitions = if first_eligible.is_some() {
+        vec![
+            transition(
+                "action.attachment-picker.confirm-selected",
+                "attachment-picker",
+                "composer-multiline",
+                "direct",
+                "confirm inserts exactly one attachment token at the preserved cursor and keeps surrounding draft text byte-stable",
+            ),
+            transition(
+                "action.attachment-picker.cancel",
+                "attachment-picker",
+                "composer-multiline",
+                "cancel",
+                "cancel adds nothing and restores the original draft byte for byte",
+            ),
+        ]
+    } else {
+        vec![transition(
+            "action.attachment-picker.cancel",
+            "attachment-picker",
+            "composer-multiline",
+            "cancel",
+            "cancel adds nothing and restores the original draft byte for byte",
+        )]
+    };
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
 fn render_command_palette(
     canvas: &mut Canvas,
     screen_id: &str,
@@ -2816,6 +3148,50 @@ fn palette_matches(query: &str) -> Vec<PaletteAction> {
             }
         })
         .collect()
+}
+
+fn attachment_matches(query: &str) -> Vec<AttachmentCandidate> {
+    let needle = query.to_ascii_lowercase();
+    ATTACHMENT_CANDIDATES
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            if needle.is_empty() {
+                true
+            } else {
+                candidate.path.to_ascii_lowercase().contains(&needle)
+                    || candidate.detail.to_ascii_lowercase().contains(&needle)
+            }
+        })
+        .collect()
+}
+
+fn attachment_visible_rows(matches: &[AttachmentCandidate]) -> Vec<AttachmentCandidate> {
+    if matches.len() <= 3 {
+        return matches.to_vec();
+    }
+    let eligible = matches
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.eligible)
+        .take(2)
+        .collect::<Vec<_>>();
+    let mut visible = eligible;
+    if let Some(ineligible) = matches.iter().copied().find(|candidate| !candidate.eligible) {
+        visible.push(ineligible);
+    }
+    while visible.len() < 3 {
+        if let Some(next) = matches
+            .iter()
+            .copied()
+            .find(|candidate| !visible.iter().any(|seen| seen.path == candidate.path))
+        {
+            visible.push(next);
+        } else {
+            break;
+        }
+    }
+    visible
 }
 
 fn transcript(canvas: &mut Canvas) -> Result<(), String> {

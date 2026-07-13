@@ -7,8 +7,9 @@ use crate::audit::{
     AuditDocument, TransitionTrace,
 };
 use crate::screens::input_and_approval::{
-    INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT, PALETTE_PRESERVED_DRAFT,
-    SLASH_ACTIVE_SPAN, SLASH_CONFIRMED_EXPORT, SLASH_OPEN_DRAFT, SLASH_PRE_OPEN_DRAFT,
+    ATTACHMENT_OPEN_DRAFT, ATTACHMENT_SELECTED_PATH, ATTACHMENT_TOKEN, INSERTED_FILE,
+    MENTION_FRAGMENT, MULTILINE_DRAFT, PALETTE_PRESERVED_DRAFT, SLASH_ACTIVE_SPAN,
+    SLASH_CONFIRMED_EXPORT, SLASH_OPEN_DRAFT, SLASH_PRE_OPEN_DRAFT,
 };
 
 const FLOW2_SESSION_ID: &str = "session.retry-review.18";
@@ -1099,6 +1100,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "slash-confirm-export" => slash_confirm_export(),
         "slash-cancel" => slash_cancel(),
         "slash-invalid-trigger" => slash_invalid_trigger(),
+        "attachment-confirm" => attachment_confirm(),
+        "attachment-cancel" => attachment_cancel(),
         "palette-open-submenu" => palette_open_submenu(),
         "palette-submenu-back" => palette_submenu_back(),
         "palette-cancel" => palette_cancel(),
@@ -1413,6 +1416,32 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                         .replacen(SLASH_CONFIRMED_EXPORT, "", 1)
                         .as_bytes(),
                 ),
+            },
+        );
+    }
+    if case_id == "attachment-confirm" {
+        let insertion_unit = format!(" {ATTACHMENT_TOKEN}");
+        preserved_field_hashes.insert(
+            "draft_surrounding".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(before.draft.as_bytes()),
+                after: sha256_hex(after.draft.replacen(&insertion_unit, "", 1).as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "attachment_count".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"0"),
+                after: sha256_hex(b"1"),
+            },
+        );
+    }
+    if case_id == "attachment-cancel" {
+        preserved_field_hashes.insert(
+            "attachment".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(before.attachment.as_bytes()),
+                after: sha256_hex(after.attachment.as_bytes()),
             },
         );
     }
@@ -9843,6 +9872,166 @@ Keep the summary short before we merge.";
         "filter",
         "simulated-no-menu",
         "command-valid positions only; embedded / kept the composer unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn attachment_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // Insert the attachment token immediately after the first authored line so the
+    // surrounding draft text remains byte-stable when the token is stripped.
+    // Use a leading space that is part of the insertion unit so stripping the
+    // full unit restores the origin draft byte for byte.
+    let insertion = format!(" {ATTACHMENT_TOKEN}");
+    let mut confirmed_draft = ATTACHMENT_OPEN_DRAFT.to_owned();
+    if let Some(end_of_first_line) = confirmed_draft.find('\n') {
+        confirmed_draft.insert_str(end_of_first_line, &insertion);
+    } else {
+        confirmed_draft.push_str(&insertion);
+    }
+
+    let mut before = state(
+        "attachment-picker",
+        vec!["chat-turn", "composer-multiline", "attachment-picker"],
+        ATTACHMENT_OPEN_DRAFT,
+        "turn-retry-review",
+        "eligible-assets-retry-diagram-png",
+        "draft-cursor-30",
+        Some("attachment.query.empty"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "attachment-picker"],
+        &confirmed_draft,
+        "turn-retry-review",
+        "no-selection",
+        "draft-cursor-67",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.attachment = ATTACHMENT_SELECTED_PATH.to_owned();
+    apply_flow2_identity(&mut after);
+    after.draft = confirmed_draft;
+    after.attachment = ATTACHMENT_SELECTED_PATH.to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.attachment-picker.confirm-selected".to_owned(),
+        label: "Attach".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirm inserts exactly one [attachment: assets/retry-diagram.png] token at the cursor while surrounding authored lines stay byte-stable"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.attachment-picker.confirm.1".to_owned(),
+        owner_id: "attachment.assets/retry-diagram.png".to_owned(),
+        count: 1,
+        outcome: "attached".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.attachment-picker.confirm",
+        "draft-edit",
+        "simulated-attachment-insert",
+        "one eligible project-relative attachment became a single draft token/chip",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn attachment_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "attachment-picker",
+        vec!["chat-turn", "composer-multiline", "attachment-picker"],
+        ATTACHMENT_OPEN_DRAFT,
+        "turn-retry-review",
+        "eligible-assets-retry-diagram-png",
+        "draft-cursor-30",
+        Some("attachment.query.empty"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "attachment-picker"],
+        ATTACHMENT_OPEN_DRAFT,
+        "turn-retry-review",
+        "eligible-assets-retry-diagram-png",
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.attachment = String::new();
+    apply_flow2_identity(&mut after);
+    after.draft = ATTACHMENT_OPEN_DRAFT.to_owned();
+    after.attachment = String::new();
+    after.selection = before.selection.clone();
+    after.focus = before.focus.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.attachment-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel adds no attachment token and restores the original draft byte for byte"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.attachment-picker.cancel.1".to_owned(),
+        owner_id: "attachment.assets/retry-diagram.png".to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.attachment-picker.cancel",
+        "draft-edit",
+        "simulated-no-change",
+        "cancel left the exact multiline draft and attachment set untouched",
     );
     (before, after, action, transition, attempt, effect)
 }
