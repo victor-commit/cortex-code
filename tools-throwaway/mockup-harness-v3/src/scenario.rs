@@ -9,8 +9,9 @@ use crate::audit::{
 use crate::screens::input_and_approval::{
     ATTACHMENT_OPEN_DRAFT, ATTACHMENT_SELECTED_PATH, ATTACHMENT_TOKEN, EXPORT_ARTIFACT_MARKDOWN,
     EXPORT_DEFAULT_FORMAT, EXPORT_OPEN_DRAFT, EXPORT_SUCCESS_SUMMARY, INSERTED_FILE,
-    MENTION_FRAGMENT, MULTILINE_DRAFT, PALETTE_PRESERVED_DRAFT, SLASH_ACTIVE_SPAN,
-    SLASH_CONFIRMED_EXPORT, SLASH_OPEN_DRAFT, SLASH_PRE_OPEN_DRAFT,
+    MENTION_FRAGMENT, MULTILINE_DRAFT, PALETTE_PRESERVED_DRAFT, QUEUE_AFTER_DEQUEUE,
+    QUEUE_APPLIED_ORDER, QUEUE_APPLY_SUMMARY, QUEUE_FILTER, QUEUE_OPENED_AUTHORITY, QUEUE_OPEN_DRAFT,
+    SLASH_ACTIVE_SPAN, SLASH_CONFIRMED_EXPORT, SLASH_OPEN_DRAFT, SLASH_PRE_OPEN_DRAFT,
 };
 
 const FLOW2_SESSION_ID: &str = "session.retry-review.18";
@@ -1105,6 +1106,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "attachment-cancel" => attachment_cancel(),
         "export-confirm" => export_confirm(),
         "export-cancel" => export_cancel(),
+        "queue-apply" => queue_apply(),
+        "queue-cancel" => queue_cancel(),
+        "queue-conflict" => queue_conflict(),
+        "queue-refresh" => queue_refresh(),
         "palette-open-submenu" => palette_open_submenu(),
         "palette-submenu-back" => palette_submenu_back(),
         "palette-cancel" => palette_cancel(),
@@ -1480,6 +1485,79 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             },
         );
     }
+    if matches!(
+        case_id,
+        "queue-apply" | "queue-cancel" | "queue-conflict" | "queue-refresh"
+    ) {
+        let turn_count = "turn-count=1";
+        preserved_field_hashes.insert(
+            "turn_count".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(turn_count.as_bytes()),
+                after: sha256_hex(turn_count.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "filter".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(QUEUE_FILTER.as_bytes()),
+                after: sha256_hex(QUEUE_FILTER.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "opened_revisions".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"queue-item-1:rev=1|queue-item-2:rev=2"),
+                after: sha256_hex(b"queue-item-1:rev=1|queue-item-2:rev=2"),
+            },
+        );
+    }
+    if case_id == "queue-conflict" {
+        preserved_field_hashes.insert(
+            "stale_pending_mutations".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"pending-reorder+run-next"),
+                after: sha256_hex(b"refused-stale-pending"),
+            },
+        );
+        preserved_field_hashes.insert(
+            "refresh_action_count".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"0"),
+                after: sha256_hex(b"1"),
+            },
+        );
+    }
+    if case_id == "queue-refresh" {
+        preserved_field_hashes.insert(
+            "stale_pending_mutations".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"pending-reorder+run-next"),
+                after: sha256_hex(b"discarded"),
+            },
+        );
+        preserved_field_hashes.insert(
+            "authoritative_queue".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(QUEUE_OPENED_AUTHORITY.as_bytes()),
+                after: sha256_hex(QUEUE_AFTER_DEQUEUE.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "consumed_item_present".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"false"),
+                after: sha256_hex(b"false"),
+            },
+        );
+        preserved_field_hashes.insert(
+            "focus_identity".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"queue-item-1"),
+                after: sha256_hex(b"queue-item-2"),
+            },
+        );
+    }
     if case_id.starts_with("session-") {
         preserved_field_hashes.insert(
             "source_history".to_owned(),
@@ -1724,6 +1802,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "apply-partial-failure"
     ) {
         "case.staging-apply-partial-failure.tick.1".to_owned()
+    } else if case_id == "queue-conflict" {
+        "flow2-queue-manager-conflict".to_owned()
+    } else if case_id == "queue-refresh" {
+        "flow2-queue-manager-refresh".to_owned()
     } else {
         audit_fixture
     };
@@ -10222,6 +10304,321 @@ fn export_cancel() -> (
         "export-artifact",
         "simulated-no-change",
         "cancel left the conversation, draft, and sandbox export set untouched",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn queue_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let open_transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    let success_transcript = format!("{open_transcript} {QUEUE_APPLY_SUMMARY}");
+
+    let mut before = state(
+        "queue-manager",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "queue-item-1",
+        "draft-cursor-30",
+        Some("queue.opened"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript = open_transcript;
+    before.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "no-selection",
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = success_transcript;
+    after.queue = QUEUE_APPLIED_ORDER.to_owned();
+    after.queued_follow_up = QUEUE_APPLIED_ORDER.to_owned();
+    after.attachment = String::new();
+    apply_flow2_identity(&mut after);
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.attachment = String::new();
+    after.focus = before.focus.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.queue-manager.apply".to_owned(),
+        label: "Apply".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "apply persists only the shown reorder against opened revisions, keeps the draft unsubmitted, and returns to the same conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.queue-manager.apply.1".to_owned(),
+        owner_id: "queue.opened.revisions".to_owned(),
+        count: 1,
+        outcome: "applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.queue-manager.apply",
+        "queue-mutation",
+        "simulated-queue-apply",
+        "shown reorders moved complete item payloads against opened revisions only",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn queue_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "queue-manager",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "queue-item-1",
+        "draft-cursor-30",
+        Some("queue.opened"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "queue-item-1",
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    after.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    after.attachment = String::new();
+    apply_flow2_identity(&mut after);
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.attachment = String::new();
+    after.selection = before.selection.clone();
+    after.focus = before.focus.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.queue-manager.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the original queue order and originating draft exactly without submitting"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.queue-manager.cancel.1".to_owned(),
+        owner_id: "queue.opened.revisions".to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.queue-manager.cancel",
+        "queue-mutation",
+        "simulated-no-change",
+        "cancel left the exact queue order, drafts, and filter untouched",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn queue_conflict() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "queue-manager",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "queue-item-1",
+        "draft-cursor-30",
+        Some("queue.opened"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "queue-manager",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "refresh-queue",
+        "Refresh queue",
+        Some("queue.refresh"),
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    after.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    after.attachment = String::new();
+    apply_flow2_identity(&mut after);
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.attachment = String::new();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.queue-manager.apply".to_owned(),
+        label: "Apply".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "stale concurrent dequeue or revision conflict refuses apply and keeps one Refresh queue action"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.queue-manager.conflict.1".to_owned(),
+        owner_id: "queue.opened.revisions".to_owned(),
+        count: 1,
+        outcome: "stale-conflict".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.queue-manager.conflict",
+        "queue-mutation",
+        "simulated-stale-refuse",
+        "stale pending mutations were refused; one Refresh queue action remains",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn queue_refresh() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "queue-manager",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "refresh-queue",
+        "queue-item-1",
+        Some("queue.refresh"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    // Local view still holds opened identities while authority has already dequeued item-1.
+    before.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "queue-manager",
+        vec!["chat-turn", "composer-multiline", "queue-manager"],
+        QUEUE_OPEN_DRAFT,
+        "turn-retry-review",
+        "queue-item-2",
+        "queue-item-2",
+        Some("queue.refreshed"),
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.queue = QUEUE_AFTER_DEQUEUE.to_owned();
+    after.queued_follow_up = QUEUE_AFTER_DEQUEUE.to_owned();
+    after.attachment = String::new();
+    apply_flow2_identity(&mut after);
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.attachment = String::new();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.queue-manager.refresh".to_owned(),
+        label: "Refresh queue".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "refresh discards stale pending mutations, reloads authoritative identities and revisions, never resurrects consumed items, and restores focus to the nearest surviving identity"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.queue-manager.refresh.1".to_owned(),
+        owner_id: "queue.authoritative".to_owned(),
+        count: 1,
+        outcome: "refreshed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.queue-manager.refresh",
+        "queue-mutation",
+        "simulated-queue-refresh",
+        "authoritative residual reloaded; consumed queue-item-1 stayed gone",
     );
     (before, after, action, transition, attempt, effect)
 }

@@ -72,6 +72,20 @@ pub(crate) const EXPORT_ARTIFACT_MARKDOWN: &str = "exports/retry-review.md";
 /// Single inline success summary after a successful export.
 pub(crate) const EXPORT_SUCCESS_SUMMARY: &str =
     "Exported conversation as Markdown · exports/retry-review.md";
+/// Exact multiline draft while the queue manager is open (queue never submits it).
+pub(crate) const QUEUE_OPEN_DRAFT: &str = MULTILINE_DRAFT;
+/// Stable opened queue: two items with identity, revision, authored newlines,
+/// mentions, and attachments that move as one payload unit.
+pub(crate) const QUEUE_OPENED_AUTHORITY: &str = "1:queue-item-1:rev=1:hash=qa11 Also list unit tests.\nCover the guard edge cases.\n[attachment: queue-notes-a.md] | 2:queue-item-2:rev=2:hash=qb22 Then summarize risks.\n@src/net/retry_policy.rs\n[attachment: queue-notes-b.md]";
+/// Shown applied order after reorder + run-next against the opened revisions.
+pub(crate) const QUEUE_APPLIED_ORDER: &str = "1:queue-item-2:rev=2:hash=qb22 Then summarize risks.\n@src/net/retry_policy.rs\n[attachment: queue-notes-b.md] | 2:queue-item-1:rev=1:hash=qa11 Also list unit tests.\nCover the guard edge cases.\n[attachment: queue-notes-a.md]";
+/// Authoritative residual after concurrent dequeue of item-1 (consumed; never resurrected).
+pub(crate) const QUEUE_AFTER_DEQUEUE: &str = "1:queue-item-2:rev=2:hash=qb22 Then summarize risks.\n@src/net/retry_policy.rs\n[attachment: queue-notes-b.md]";
+/// Filter string preserved across cancel/apply/refresh (empty default match-all).
+pub(crate) const QUEUE_FILTER: &str = "query-empty";
+/// One inline summary after a successful apply of the shown queue edits.
+pub(crate) const QUEUE_APPLY_SUMMARY: &str =
+    "Queue updated · 2 prompts · item-2 runs next";
 pub(crate) const SHORT_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\"";
 pub(crate) const LONG_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\" && git diff -- src/net/retry_policy.rs > /tmp/retry.diff && printf '%s\\n' \"review complete\"";
 pub(crate) const UNSAFE_SHELL_COMMAND: &[u8] = b"printf 'retry\0'\n\x1b[31m";
@@ -258,6 +272,36 @@ const EXPORT_FORMATS: [ExportFormat; 4] = [
     },
 ];
 
+#[derive(Clone, Copy)]
+struct QueueItem {
+    order: u8,
+    identity: &'static str,
+    revision: &'static str,
+    /// One-line scannable summary; full authored payload rides in the idempotent queue ledger.
+    summary: &'static str,
+    unit_bits: &'static str,
+    runs_next: bool,
+}
+
+const QUEUE_ITEMS: [QueueItem; 2] = [
+    QueueItem {
+        order: 1,
+        identity: "queue-item-1",
+        revision: "rev=1",
+        summary: "Also list unit tests.",
+        unit_bits: "[attachment: queue-notes-a.md]",
+        runs_next: true,
+    },
+    QueueItem {
+        order: 2,
+        identity: "queue-item-2",
+        revision: "rev=2",
+        summary: "Then summarize risks.",
+        unit_bits: "[attachment: queue-notes-b.md]",
+        runs_next: false,
+    },
+];
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
@@ -277,6 +321,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         }
         "attachment-picker" => render_attachment_picker(&mut canvas, screen_id, fixture_id)?,
         "export-picker" => render_export_picker(&mut canvas, screen_id, fixture_id)?,
+        "queue-manager" => render_queue_manager(&mut canvas, screen_id, fixture_id)?,
         "permission-shell" => render_permission_shell(&mut canvas, screen_id, fixture_id)?,
         "permission-deny-reason" => {
             render_permission_deny_reason(&mut canvas, screen_id, fixture_id)?
@@ -2908,6 +2953,449 @@ fn export_transcript(canvas: &mut Canvas) -> Result<(), String> {
         "Choose an export format. Your draft stays exactly as you left it.",
         TextStyle::text(),
     )?;
+    Ok(())
+}
+
+fn render_queue_manager(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    queue_transcript(canvas, fixture_id)?;
+    draft_preview(canvas, MENTION_FRAGMENT)?;
+    write_dock_border(canvas)?;
+
+    // Fixture branches surface conflict (refresh-only primary) vs default open.
+    let conflict = fixture_id.contains("conflict") || fixture_id.contains("stale");
+    let refreshed = fixture_id.contains("refresh") || fixture_id.contains("after-dequeue");
+    let selected_identity =
+        if refreshed || fixture_id.contains("select-item-2") {
+            "queue-item-2"
+        } else {
+            "queue-item-1"
+        };
+    let items: Vec<QueueItem> = if refreshed {
+        vec![QueueItem {
+            order: 1,
+            identity: "queue-item-2",
+            revision: "rev=2",
+            summary: "Then summarize risks.",
+            unit_bits: "[attachment: queue-notes-b.md]",
+            runs_next: true,
+        }]
+    } else {
+        QUEUE_ITEMS.to_vec()
+    };
+
+    // Conflict keeps Apply as a labeled refused action and adds exactly one
+    // Refresh queue primary so stale apply remains auditable against after-state.
+    let header = if conflict {
+        "Queued prompts · run after the current turn · [enter] Refresh queue · [esc] Cancel"
+    } else {
+        "Queued prompts · run after the current turn · [enter] Apply · [esc] Cancel"
+    };
+    debug_assert!(
+        header.chars().count() <= 113,
+        "queue manager header overflowed the dock body"
+    );
+    dock_line(canvas, DOCK_TOP + 1, header, TextStyle::bright())?;
+
+    let primary_line = if conflict {
+        "Stale queue edits refused · Refresh reloads identities and drops pending mutations"
+    } else {
+        "Apply shown reorders and removals against opened revisions · payloads move as one"
+    };
+    dock_line(canvas, DOCK_TOP + 2, primary_line, TextStyle::muted())?;
+
+    let refresh_label = "[enter] Refresh queue";
+    let apply_label = "[enter] Apply";
+    let cancel_label = "[esc] Cancel";
+    let cancel_start = header
+        .find(cancel_label)
+        .map(|index| 4 + index as u16)
+        .expect("queue cancel action must be present");
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "paused-conversation",
+            reference(4, 4, 74),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "composer-multiline",
+            reference(12, 4, 45),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "multiline-authored-draft",
+            reference(13, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter",
+            QUEUE_FILTER,
+            reference(DOCK_TOP + 1, 4, 18),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "picker",
+            "queue-item-selection",
+            reference(DOCK_TOP + 1, 4, 4 + header.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "consequence",
+            "queue-runs-after-current-turn",
+            reference(DOCK_TOP + 1, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "consequence",
+            "apply-shown-edits-as-one-unit",
+            reference(DOCK_TOP + 2, 4, 4 + primary_line.chars().count() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.queue-manager.cancel",
+            reference(
+                DOCK_TOP + 1,
+                cancel_start,
+                cancel_start + cancel_label.chars().count() as u16,
+            ),
+            "summary",
+            Some(action(
+                "action.queue-manager.cancel",
+                "Cancel",
+                false,
+            )),
+        ),
+    ];
+
+    if conflict {
+        let refresh_start = header
+            .find(refresh_label)
+            .map(|index| 4 + index as u16)
+            .expect("refresh primary action must be present");
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.queue-manager.refresh",
+            reference(
+                DOCK_TOP + 1,
+                refresh_start,
+                refresh_start + refresh_label.chars().count() as u16,
+            ),
+            "focused",
+            Some(action(
+                "action.queue-manager.refresh",
+                "Refresh queue",
+                false,
+            )),
+        ));
+        // Retain apply identity for the refused transition against after-state audit.
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "refused-action",
+            "action.queue-manager.apply",
+            reference(DOCK_TOP + 2, 4, 28),
+            "summary",
+            Some(action("action.queue-manager.apply", "Apply", false)),
+        ));
+    } else {
+        let apply_start = header
+            .find(apply_label)
+            .map(|index| 4 + index as u16)
+            .expect("apply primary action must be present");
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.queue-manager.apply",
+            reference(
+                DOCK_TOP + 1,
+                apply_start,
+                apply_start + apply_label.chars().count() as u16,
+            ),
+            "focused",
+            Some(action("action.queue-manager.apply", "Apply", false)),
+        ));
+    }
+
+    // Two body rows for visible items (or one after authoritative refresh).
+    for (index, item) in items.iter().enumerate() {
+        let row = DOCK_TOP + 3 + index as u16;
+        let selected = item.identity == selected_identity;
+        let marker = if selected { "›" } else { " " };
+        let next_badge = if item.runs_next { " · [next]" } else { "" };
+        let line = format!(
+            "{marker} {} · {} {} · {} {}{next_badge}",
+            item.order, item.identity, item.revision, item.summary, item.unit_bits
+        );
+        debug_assert!(
+            line.chars().count() <= 113,
+            "queue item row overflowed the dock body"
+        );
+        dock_line(
+            canvas,
+            row,
+            &line,
+            if selected {
+                TextStyle::accent()
+            } else {
+                TextStyle::text()
+            },
+        )?;
+        let subject = format!("{}·{}", item.identity, item.revision);
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "queue-item",
+            &subject,
+            reference(row, 6, 6 + item.identity.chars().count() as u16),
+            if selected { "focused" } else { "summary" },
+            None,
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "queue-order",
+            &format!("order-{}", item.order),
+            reference(row, 6, 8),
+            "summary",
+            None,
+        ));
+        if item.runs_next {
+            let next_label = "[next]";
+            let next_start = line
+                .find(next_label)
+                .map(|index| 4 + index as u16)
+                .expect("next badge must appear on the next queue item");
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "queue-next",
+                &format!("{}-runs-next", item.identity),
+                reference(
+                    row,
+                    next_start,
+                    next_start + next_label.chars().count() as u16,
+                ),
+                "focused",
+                None,
+            ));
+        }
+        if selected {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "selection",
+                item.identity,
+                reference(row, 4, 6 + item.identity.chars().count() as u16),
+                "focused",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "revision",
+                &format!("{}·{}", item.identity, item.revision),
+                reference(row, 6, 30),
+                "focused",
+                None,
+            ));
+        }
+    }
+    for row in DOCK_TOP + 3 + items.len() as u16..=DOCK_TOP + 4 {
+        dock_line(canvas, row, "", TextStyle::text())?;
+    }
+
+    // Local controls live on the selected row's action strip (never unlabeled).
+    let controls = if conflict {
+        "[enter] Refresh queue · discards stale pending edits · never resurrects consumed items"
+    } else {
+        "[r] Reorder · [x] Remove · [n] Run next · selected payload moves as one unit"
+    };
+    debug_assert!(
+        controls.chars().count() <= 113,
+        "queue controls row overflowed the dock body"
+    );
+    dock_line(canvas, DOCK_TOP + 5, controls, TextStyle::bright())?;
+
+    if !conflict {
+        for (control_id, label, needle) in [
+            (
+                "action.queue-manager.reorder",
+                "Reorder",
+                "[r] Reorder",
+            ),
+            ("action.queue-manager.remove", "Remove", "[x] Remove"),
+            (
+                "action.queue-manager.run-next",
+                "Run next",
+                "[n] Run next",
+            ),
+        ] {
+            let start = controls
+                .find(needle)
+                .map(|index| 4 + index as u16)
+                .expect("queue control label must appear");
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "row-action",
+                control_id,
+                reference(DOCK_TOP + 5, start, start + needle.chars().count() as u16),
+                "summary",
+                Some(action(control_id, label, false)),
+            ));
+        }
+    } else {
+        // The single Refresh queue action is already the primary-action above.
+        // This row is consequence-only copy so audit action identities stay unique.
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "conflict-guidance",
+            "refresh-discards-stale",
+            reference(DOCK_TOP + 5, 4, 4 + controls.chars().count() as u16),
+            "summary",
+            None,
+        ));
+    }
+
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    let mut transitions = vec![
+        transition(
+            "action.queue-manager.cancel",
+            "queue-manager",
+            "composer-multiline",
+            "cancel",
+            "cancel restores the original queue order and originating draft exactly without submitting",
+        ),
+    ];
+    if conflict {
+        transitions.insert(
+            0,
+            transition(
+                "action.queue-manager.refresh",
+                "queue-manager",
+                "queue-manager",
+                "direct",
+                "refresh discards stale pending mutations, reloads authoritative identities and revisions, and never resurrects consumed items",
+            ),
+        );
+        transitions.insert(
+            0,
+            transition(
+                "action.queue-manager.apply",
+                "queue-manager",
+                "queue-manager",
+                "direct",
+                "stale concurrent dequeue or revision conflict refuses apply and keeps one Refresh queue action",
+            ),
+        );
+    } else {
+        transitions.insert(
+            0,
+            transition(
+                "action.queue-manager.apply",
+                "queue-manager",
+                "composer-multiline",
+                "direct",
+                "apply persists only the shown reorder/removal against opened revisions and returns without submitting the draft",
+            ),
+        );
+        transitions.insert(
+            1,
+            transition(
+                "action.queue-manager.reorder",
+                "queue-manager",
+                "queue-manager",
+                "direct",
+                "reorder moves the complete selected payload (text, newlines, mentions, attachments) as one unit",
+            ),
+        );
+        transitions.insert(
+            2,
+            transition(
+                "action.queue-manager.remove",
+                "queue-manager",
+                "queue-manager",
+                "direct",
+                "labeled remove drops the complete selected payload without unlabeled destructive keys",
+            ),
+        );
+        transitions.insert(
+            3,
+            transition(
+                "action.queue-manager.run-next",
+                "queue-manager",
+                "queue-manager",
+                "direct",
+                "run-next promotes the complete selected payload to the front of the queue",
+            ),
+        );
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn queue_transcript(canvas: &mut Canvas, fixture_id: &str) -> Result<(), String> {
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    let message = if fixture_id.contains("conflict") || fixture_id.contains("stale") {
+        "The queue changed while you were editing. Refresh before applying."
+    } else if fixture_id.contains("refresh") || fixture_id.contains("after-dequeue") {
+        "Authoritative queue reloaded. Consumed prompts stay removed."
+    } else {
+        "Manage queued prompts. Your composer draft stays exactly as you left it."
+    };
+    canvas.write(9, 4, message, TextStyle::text())?;
     Ok(())
 }
 

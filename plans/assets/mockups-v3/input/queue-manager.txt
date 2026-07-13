@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Check the retry path before we merge.                                                                         
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    Manage queued prompts. Your composer draft stays exactly as you left it.                                            
+                                                                                                                        
+                                                                                                                        
+    Paused draft · 3 authored lines                                                                                     
+    › Check the retry path in @retry                                                                                    
+      Then explain the failure path that still needs coverage before the merge;                                         
+        wrap: include a concise test plan with the visible recovery behavior.                                           
+      Keep the summary short before we merge.                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Queued prompts · run after the current turn · [enter] Apply · [esc] Cancel                                       │  
+  │ Apply shown reorders and removals against opened revisions · payloads move as one                                │  
+  │ › 1 · queue-item-1 rev=1 · Also list unit tests. [attachment: queue-notes-a.md] · [next]                         │  
+  │   2 · queue-item-2 rev=2 · Then summarize risks. [attachment: queue-notes-b.md]                                  │  
+  │ [r] Reorder · [x] Remove · [n] Run next · selected payload moves as one unit                                     │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

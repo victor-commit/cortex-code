@@ -467,6 +467,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "command-palette-submenu"
             | "attachment-picker"
             | "export-picker"
+            | "queue-manager"
             | "permission-shell"
             | "permission-deny-reason"
             | "diff-edit"
