@@ -1069,6 +1069,27 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "todo-progress" => todo_progress(),
         "chat-long-scroll-return-latest" => chat_long_scroll_return_latest(),
         "chat-long-scroll-jump-earlier" => chat_long_scroll_jump_earlier(),
+        "queued-interrupt-streaming" => queued_interrupt_streaming(),
+        "queued-interrupt-tool" => queued_interrupt_tool(),
+        "queued-interrupt-shell" => queued_interrupt_shell(),
+        "agent-question-open" => agent_question_open(),
+        "agent-question-submit" => agent_question_submit(),
+        "agent-question-cancel" => agent_question_cancel(),
+        "reading-anchor-output-arrive" => reading_anchor_output_arrive(),
+        "reading-anchor-jump-latest" => reading_anchor_jump_latest(),
+        "transcript-search-open" => transcript_search_open(),
+        "transcript-search-next" => transcript_search_next(),
+        "transcript-search-no-results" => transcript_search_no_results(),
+        "transcript-search-close" => transcript_search_close(),
+        "transcript-copy-message" => transcript_copy_message(),
+        "shell-foreground-interrupt" => shell_foreground_interrupt(),
+        "shell-background-stop" => shell_background_stop(),
+        "tool-task-stop-selected" => tool_task_stop_selected(),
+        "tool-task-retry-selected" => tool_task_retry_selected(),
+        "tool-task-cancel-selected" => tool_task_cancel_selected(),
+        "large-output-open" => large_output_open(),
+        "large-output-search" => large_output_search(),
+        "large-output-close" => large_output_close(),
         "file-mention-insert" => file_mention_insert(),
         "file-mention-dismiss" => file_mention_dismiss(),
         "file-mention-no-results" => file_mention_no_results(),
@@ -1193,6 +1214,101 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             PreservedFieldHash {
                 before: sha256_hex(captured.as_bytes()),
                 after: sha256_hex(captured.as_bytes()),
+            },
+        );
+    }
+    if matches!(
+        case_id,
+        "shell-foreground-interrupt" | "shell-background-stop"
+    ) {
+        let captured = "mixed shell: git status · cargo test partial · watch tail lines";
+        preserved_field_hashes.insert(
+            "captured_output".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(captured.as_bytes()),
+                after: sha256_hex(captured.as_bytes()),
+            },
+        );
+        let background_process = "activity.shell.background-watch|running|rev=1";
+        let foreground_process = "activity.shell.foreground-cargo|running|rev=1";
+        if case_id == "shell-foreground-interrupt" {
+            preserved_field_hashes.insert(
+                "background_process".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(background_process.as_bytes()),
+                    after: sha256_hex(background_process.as_bytes()),
+                },
+            );
+        }
+        if case_id == "shell-background-stop" {
+            preserved_field_hashes.insert(
+                "foreground_process".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(foreground_process.as_bytes()),
+                    after: sha256_hex(foreground_process.as_bytes()),
+                },
+            );
+        }
+    }
+    if matches!(
+        case_id,
+        "tool-task-stop-selected" | "tool-task-retry-selected" | "tool-task-cancel-selected"
+    ) {
+        let siblings =
+            "task-audit-auth|complete|6|task-build-suite|queued|0|task-refresh-risk|blocked|1";
+        preserved_field_hashes.insert(
+            "sibling_task_hashes".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(siblings.as_bytes()),
+                after: sha256_hex(siblings.as_bytes()),
+            },
+        );
+        let selected_before = match case_id {
+            "tool-task-stop-selected" => "task-add-tests|running|2of3",
+            "tool-task-retry-selected" => "task-refresh-risk|blocked|needs-decision",
+            _ => "task-build-suite|queued|waiting",
+        };
+        let selected_after = match case_id {
+            "tool-task-stop-selected" => "task-add-tests|stopped|2of3",
+            "tool-task-retry-selected" => "task-refresh-risk|retrying|1",
+            _ => "task-build-suite|cancelled|waiting",
+        };
+        preserved_field_hashes.insert(
+            "selected_task".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(selected_before.as_bytes()),
+                after: sha256_hex(selected_after.as_bytes()),
+            },
+        );
+    }
+    if matches!(
+        case_id,
+        "large-output-open" | "large-output-search" | "large-output-close"
+    ) {
+        let complete = "cargo-test.full-output.240-lines.sha256fixture";
+        preserved_field_hashes.insert(
+            "complete_output".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(complete.as_bytes()),
+                after: sha256_hex(complete.as_bytes()),
+            },
+        );
+    }
+    if case_id == "transcript-copy-message" {
+        let turn_count = "turn-count=4";
+        preserved_field_hashes.insert(
+            "turn_count".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(turn_count.as_bytes()),
+                after: sha256_hex(turn_count.as_bytes()),
+            },
+        );
+        let copied = "The shared request guard applies the limit before route work begins.";
+        preserved_field_hashes.insert(
+            "copied_text".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(copied.as_bytes()),
+                after: sha256_hex(copied.as_bytes()),
             },
         );
     }
@@ -7953,6 +8069,1225 @@ fn chat_long_scroll_jump_earlier() -> (
         "history-navigation",
         "jumped",
         "scroll moved to earlier turns with draft preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+const TWO_QUEUE_ITEMS: &str = "1:queue-item-1:rev=1:hash=qa11 Also list unit tests. [attachment: queue-notes-a.md] | 2:queue-item-2:rev=2:hash=qb22 Then summarize risks. [attachment: queue-notes-b.md]";
+
+fn queued_interact_base(
+    screen_id: &str,
+    draft: &str,
+    scroll_anchor: &str,
+    selection: &str,
+    focus: &str,
+    pending: Option<&str>,
+    tick: u32,
+) -> ScenarioState {
+    let mut s = disclosure_base(
+        screen_id,
+        draft,
+        scroll_anchor,
+        selection,
+        focus,
+        pending,
+        tick,
+    );
+    s.queue = TWO_QUEUE_ITEMS.to_owned();
+    s.queued_follow_up = TWO_QUEUE_ITEMS.to_owned();
+    s.attachment = "queue-notes-a.md".to_owned();
+    s.partial_response =
+        "The shared request guard applies the limit before route work begins.".to_owned();
+    s.state_hash = state_hash(&s);
+    s
+}
+
+fn queued_interrupt_streaming() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = queued_interact_base(
+        "streaming",
+        "Hold these two follow-ups until streaming ends.",
+        "partial-answer-anchor",
+        "active-reply",
+        "streaming-interrupt",
+        Some("active.reply.auth-refactor"),
+        0,
+    );
+    before.transcript = before.partial_response.clone();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "interrupted-partial-answer".to_owned();
+    after.focus = "queued-composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript = format!(
+        "{} [interrupted] Queue retained: {}",
+        before.partial_response, TWO_QUEUE_ITEMS
+    );
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.streaming.interrupt".to_owned(),
+        label: "Stop reply".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "interrupt keeps both queued prompts and attachments in original order".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.streaming.queued-interrupt.1".to_owned(),
+        owner_id: "active.reply.auth-refactor".to_owned(),
+        count: 1,
+        outcome: "interrupted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.streaming.queued-interrupt",
+        "generation",
+        "queue-preserved",
+        "two queued prompts retained identity, revision, hash, and order",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn queued_interrupt_tool() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = queued_interact_base(
+        "tool-running",
+        "Keep the two queued prompts while the search runs.",
+        "tool-search-row",
+        "tool-search-running",
+        "tool-interrupt",
+        Some("activity.tool.search"),
+        0,
+    );
+    before.transcript = "Search project code is running. Queue is waiting.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "tool-search-interrupted".to_owned();
+    after.focus = "queued-composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript = format!(
+        "Search stopped. Queue retained in order: {}",
+        TWO_QUEUE_ITEMS
+    );
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-running.interrupt".to_owned(),
+        label: "Stop search".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "tool interrupt preserves both queued prompts without reordering".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool.queued-interrupt.1".to_owned(),
+        owner_id: "activity.tool.search".to_owned(),
+        count: 1,
+        outcome: "interrupted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool.queued-interrupt",
+        "tool-execution",
+        "queue-preserved",
+        "tool stop retained queue item revisions and attachment hashes",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn queued_interrupt_shell() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = queued_interact_base(
+        "shell",
+        "Keep the two queued prompts while the command runs.",
+        "shell-cargo-test-running",
+        "shell-cargo-test-running",
+        "shell-interrupt",
+        Some("activity.shell.cargo-test"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.turn_id = "turn.daily-work.shell.21".to_owned();
+    before.transcript =
+        "Foreground cargo test is running. Queue waits with both attachments.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "shell-cargo-test-interrupted".to_owned();
+    after.focus = "queued-composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript = format!(
+        "Command interrupted. Captured output kept. Queue retained: {}",
+        TWO_QUEUE_ITEMS
+    );
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.interrupt".to_owned(),
+        label: "Stop command".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "shell interrupt preserves queued prompts, attachments, and captured output"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.queued-interrupt.1".to_owned(),
+        owner_id: "activity.shell.cargo-test".to_owned(),
+        count: 1,
+        outcome: "interrupted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.queued-interrupt",
+        "shell-command",
+        "queue-preserved",
+        "foreground interrupt retained the ordered two-item queue",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn agent_question_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "streaming",
+        "Keep the risk note short before we publish.",
+        "partial-answer-anchor",
+        "active-reply",
+        "streaming-live",
+        Some("active.reply.auth-refactor"),
+        0,
+    );
+    before.partial_response = "I need one choice before continuing the recovery note.".to_owned();
+    before.transcript = before.partial_response.clone();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "agent-question-option-a".to_owned();
+    after.focus = "agent-question-submit".to_owned();
+    after.pending_action = Some("activity.agent-question".to_owned());
+    after.virtual_tick = 1;
+    after.transcript = "Paused for one decision: which recovery path should we keep?"
+        .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.agent-question.open".to_owned(),
+        label: "Ask inline".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "question opens inline with the paused turn and an anchored decision dock"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.agent-question.open.1".to_owned(),
+        owner_id: "activity.agent-question".to_owned(),
+        count: 1,
+        outcome: "awaiting-answer".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.agent-question.open",
+        "decision",
+        "dock-open",
+        "one focused response and Submit answer wait on the bottom dock",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn agent_question_submit() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "streaming",
+        "Keep the risk note short before we publish.",
+        "partial-answer-anchor",
+        "agent-question-option-a",
+        "agent-question-submit",
+        Some("activity.agent-question"),
+        0,
+    );
+    before.partial_response = "Paused for one decision: which recovery path should we keep?"
+        .to_owned();
+    before.transcript = before.partial_response.clone();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "composer".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Answer submitted once. Activity resumed and the prior composer draft returned."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.agent-question.submit".to_owned(),
+        label: "Submit answer".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "submit resumes that exact activity once and restores the prior composer draft"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.agent-question.submit.1".to_owned(),
+        owner_id: "activity.agent-question".to_owned(),
+        count: 1,
+        outcome: "resumed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.agent-question.submit",
+        "decision",
+        "resumed-once",
+        "answer submitted once without re-invoking the paused activity",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn agent_question_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "streaming",
+        "Keep the risk note short before we publish.",
+        "partial-answer-anchor",
+        "agent-question-option-a",
+        "agent-question-submit",
+        Some("activity.agent-question"),
+        0,
+    );
+    before.partial_response = "Paused for one decision: which recovery path should we keep?"
+        .to_owned();
+    before.transcript = before.partial_response.clone();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "agent-question-option-a".to_owned();
+    after.focus = "agent-question-submit".to_owned();
+    after.pending_action = Some("activity.agent-question".to_owned());
+    after.virtual_tick = 1;
+    after.transcript =
+        "Cancel kept the activity paused. Submit answer remains on the dock.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.agent-question.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "cancel keeps the activity paused with the prior draft intact".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.agent-question.cancel.1".to_owned(),
+        owner_id: "activity.agent-question".to_owned(),
+        count: 1,
+        outcome: "still-paused".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.agent-question.cancel",
+        "decision",
+        "still-paused",
+        "cancel did not resume or drop the pending answer",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn reading_anchor_output_arrive() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "streaming",
+        "Note the remaining risk after this section.",
+        "earlier-reading-anchor",
+        "earlier-rate-limit-guard",
+        "reading-earlier",
+        Some("active.reply.auth-refactor"),
+        0,
+    );
+    before.partial_response = "Earlier section about the rate-limit guard stays in view.".to_owned();
+    before.transcript = before.partial_response.clone();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "new-output-affordance".to_owned();
+    after.focus = "new-output".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "New lines arrived below. Reading anchor unchanged. New output affordance shown."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.streaming.output-arrive".to_owned(),
+        label: "Output arrived".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "live output never forces scroll while the user reads earlier content".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.streaming.output-arrive.1".to_owned(),
+        owner_id: "active.reply.auth-refactor".to_owned(),
+        count: 1,
+        outcome: "anchor-preserved".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.streaming.output-arrive",
+        "live-output",
+        "anchor-preserved",
+        "new output stayed below until Jump to latest",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn reading_anchor_jump_latest() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "streaming",
+        "Note the remaining risk after this section.",
+        "earlier-reading-anchor",
+        "new-output-affordance",
+        "new-output",
+        Some("active.reply.auth-refactor"),
+        0,
+    );
+    before.transcript =
+        "Reading earlier rate-limit guard. New output is waiting below.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "latest-output".to_owned();
+    after.focus = "latest-composer".to_owned();
+    after.scroll_anchor = "latest-output".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Jumped to the newest output below. Draft unchanged. Activity still running.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.streaming.new-output".to_owned(),
+        label: "New output".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "New output jumps to the newest lines without changing draft or activity state"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.streaming.new-output.1".to_owned(),
+        owner_id: "scroll.reading-anchor".to_owned(),
+        count: 1,
+        outcome: "at-latest".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.streaming.new-output",
+        "live-output",
+        "jumped-latest",
+        "reading jumped to newest output while draft and activity stayed put",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn transcript_search_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-turn",
+        "Add a short follow-up about the guard.",
+        "latest-turn",
+        "completed-answer",
+        "composer",
+        None,
+        0,
+    );
+    before.transcript =
+        "You asked for the rate-limit path. The shared request guard applies the limit."
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "match-1".to_owned();
+    after.focus = "search-next".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Search open: 3 matches for \"guard\". Draft and reading position preserved.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.transcript.search-open".to_owned(),
+        label: "Search transcript".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "search opens with deterministic matches while draft and position stay put"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.transcript.search-open.1".to_owned(),
+        owner_id: "transcript.search".to_owned(),
+        count: 1,
+        outcome: "3-matches".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.transcript.search-open",
+        "search",
+        "matches",
+        "transcript search reported three deterministic matches",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn transcript_search_next() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-turn",
+        "Add a short follow-up about the guard.",
+        "match-1",
+        "match-1",
+        "search-next",
+        Some("transcript.search"),
+        0,
+    );
+    before.transcript = "Search: 3 matches for \"guard\". Currently match 1.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "match-2".to_owned();
+    after.scroll_anchor = "match-2".to_owned();
+    after.virtual_tick = 1;
+    after.transcript = "Search: advanced to match 2 of 3. Draft unchanged.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.transcript.search-next".to_owned(),
+        label: "Next match".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "next match moves selection without mutating draft or adding turns".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.transcript.search-next.1".to_owned(),
+        owner_id: "transcript.search".to_owned(),
+        count: 1,
+        outcome: "match-2".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.transcript.search-next",
+        "search",
+        "advanced",
+        "selection advanced to match-2",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn transcript_search_no_results() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-turn",
+        "Add a short follow-up about the guard.",
+        "latest-turn",
+        "completed-answer",
+        "composer",
+        None,
+        0,
+    );
+    before.transcript = "The shared request guard applies the limit.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "search-no-results".to_owned();
+    after.focus = "search-close".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Search open: No matches for \"xyzzy-not-found\". Draft and position preserved."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.transcript.search-no-results".to_owned(),
+        label: "Search transcript".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "no matches stays recoverable without leaving the conversation".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.transcript.search-no-results.1".to_owned(),
+        owner_id: "transcript.search".to_owned(),
+        count: 1,
+        outcome: "no-matches".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.transcript.search-no-results",
+        "search",
+        "no-matches",
+        "recoverable empty result with draft preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn transcript_search_close() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-turn",
+        "Add a short follow-up about the guard.",
+        "match-2",
+        "match-2",
+        "search-close",
+        Some("transcript.search"),
+        0,
+    );
+    before.transcript = "Search open at match 2 of 3.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "completed-answer".to_owned();
+    after.focus = "composer".to_owned();
+    after.scroll_anchor = "match-2".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Search closed. Returned to the originating position with draft intact.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.transcript.search-close".to_owned(),
+        label: "Close search".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "closing search restores the originating reading position".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.transcript.search-close.1".to_owned(),
+        owner_id: "transcript.search".to_owned(),
+        count: 1,
+        outcome: "closed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.transcript.search-close",
+        "search",
+        "closed",
+        "search closed with origin reading position restored",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn transcript_copy_message() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-turn",
+        "Add a short follow-up about the guard.",
+        "latest-turn",
+        "message-answer-public",
+        "composer",
+        None,
+        0,
+    );
+    before.transcript =
+        "The shared request guard applies the limit before route work begins.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "message-answer-public".to_owned();
+    after.focus = "copy-confirmed".to_owned();
+    after.virtual_tick = 1;
+    after.transcript = before.transcript.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.transcript.copy-message".to_owned(),
+        label: "Copy message".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "copy acts on the selected public message only and never adds a turn".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.transcript.copy.1".to_owned(),
+        owner_id: "message.answer-public".to_owned(),
+        count: 1,
+        outcome: "copied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.transcript.copy",
+        "clipboard",
+        "copied",
+        "copied only the public answer text; no hidden rationale or secrets",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn shell_foreground_interrupt() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "shell",
+        "Also list remaining risks after commands finish.",
+        "shell-mixed-foreground",
+        "shell-foreground-running",
+        "shell-foreground-interrupt",
+        Some("activity.shell.foreground-cargo"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.turn_id = "turn.daily-work.shell.21".to_owned();
+    before.transcript =
+        "Foreground cargo test running. Background watch continues.".to_owned();
+    before.partial_response =
+        "Compiling cortex-server v0.1.0\nFinished test profile in 3.1s".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "shell-foreground-interrupted".to_owned();
+    after.focus = "shell-continue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Foreground interrupted. Background still running. Captured output kept.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.foreground-interrupt".to_owned(),
+        label: "Stop command".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "interrupt stops only the selected foreground process".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.foreground-interrupt.1".to_owned(),
+        owner_id: "activity.shell.foreground-cargo".to_owned(),
+        count: 1,
+        outcome: "interrupted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.foreground-interrupt",
+        "shell-command",
+        "foreground-stopped",
+        "foreground stopped once; background and captured output preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn shell_background_stop() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "shell",
+        "Also list remaining risks after commands finish.",
+        "shell-mixed-background",
+        "shell-background-running",
+        "shell-background-stop",
+        Some("activity.shell.background-watch"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.turn_id = "turn.daily-work.shell.21".to_owned();
+    before.transcript =
+        "Background watch is running while the completed foreground command stays visible."
+            .to_owned();
+    before.partial_response = "watch: file .../session.rs changed".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "shell-background-stopped".to_owned();
+    after.focus = "shell-continue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Background stopped by scoped action. Foreground output and captures preserved."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.background-stop".to_owned(),
+        label: "Stop background".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "Stop background command terminates only that process and keeps captures".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.background-stop.1".to_owned(),
+        owner_id: "activity.shell.background-watch".to_owned(),
+        count: 1,
+        outcome: "stopped".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.background-stop",
+        "shell-command",
+        "background-stopped",
+        "background stopped once without touching unrelated activities",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_task_control_base(selection: &str, focus: &str) -> ScenarioState {
+    let mut s = disclosure_base(
+        "tool-task",
+        "Follow up after the delegated audit finishes.",
+        "task-audit-auth",
+        selection,
+        focus,
+        Some("activity.task.selected"),
+        0,
+    );
+    s.user_task = "Audit the auth module and add the rate-limit tests.".to_owned();
+    s.turn_id = "turn.daily-work.task-audit.22".to_owned();
+    s.transcript =
+        "Delegated tasks: audit complete, tests running, build queued, refresh blocked."
+            .to_owned();
+    s.state_hash = state_hash(&s);
+    s
+}
+
+fn tool_task_stop_selected() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = tool_task_control_base("task-add-tests", "task-stop");
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "task-add-tests-stopped".to_owned();
+    after.focus = "task-continue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Selected test task stopped. Sibling audit, build, and refresh states unchanged."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-task.stop-selected".to_owned(),
+        label: "Stop this task · ends only the selected test work".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "stop applies only to the selected task and states the consequence first".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-task.stop.1".to_owned(),
+        owner_id: "activity.task.add-tests".to_owned(),
+        count: 1,
+        outcome: "stopped".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-task.stop",
+        "delegated-task",
+        "selected-stopped",
+        "only the selected running task stopped; siblings kept identity and order",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_task_retry_selected() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = tool_task_control_base("task-refresh-risk", "task-retry");
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "task-refresh-risk-retrying".to_owned();
+    after.focus = "task-continue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Selected blocked refresh task retrying once. Siblings unchanged.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-task.retry-selected".to_owned(),
+        label: "Retry this task · restarts only the blocked refresh review".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "retry applies only to the selected blocked task".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-task.retry.1".to_owned(),
+        owner_id: "activity.task.refresh-risk".to_owned(),
+        count: 1,
+        outcome: "retrying".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-task.retry",
+        "delegated-task",
+        "selected-retrying",
+        "only the selected blocked task entered retry; siblings preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_task_cancel_selected() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = tool_task_control_base("task-build-suite", "task-cancel");
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "task-build-suite-cancelled".to_owned();
+    after.focus = "task-continue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Selected queued build task cancelled. Siblings and findings unchanged.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-task.cancel-selected".to_owned(),
+        label: "Cancel this task · drops only the queued build".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "cancel removes only the selected queued task".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-task.cancel.1".to_owned(),
+        owner_id: "activity.task.build-suite".to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-task.cancel",
+        "delegated-task",
+        "selected-cancelled",
+        "only the selected queued task cancelled; sibling order retained",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn large_output_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "shell",
+        "Also list tests after this suite output.",
+        "shell-large-compact",
+        "shell-large-summary",
+        "large-output-open",
+        Some("activity.shell.large-cargo"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.turn_id = "turn.daily-work.shell.21".to_owned();
+    before.transcript =
+        "Large cargo output compact: showing 12 of 240 lines · 228 omitted.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "shell-large-full".to_owned();
+    after.focus = "large-output-search".to_owned();
+    after.scroll_anchor = "shell-large-full".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Full detail open for 240 lines. Search and copy available. Return restores compact."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.large-output-open".to_owned(),
+        label: "Full detail".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "full detail opens searchable complete output without clipping silently".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.large-output-open.1".to_owned(),
+        owner_id: "activity.shell.large-cargo".to_owned(),
+        count: 1,
+        outcome: "full-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.large-output-open",
+        "large-output",
+        "opened",
+        "bounded summary opened lossless full detail with search and copy",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn large_output_search() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "shell",
+        "Also list tests after this suite output.",
+        "shell-large-full",
+        "shell-large-full",
+        "large-output-search",
+        Some("activity.shell.large-cargo"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.turn_id = "turn.daily-work.shell.21".to_owned();
+    before.transcript = "Full cargo output open. Search idle.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "output-match-1".to_owned();
+    after.focus = "large-output-copy".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Search output: match 1 for rate_limited. Complete output hash unchanged.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.large-output-search".to_owned(),
+        label: "Search output".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "search inside complete output preserves the lossless payload".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.large-output-search.1".to_owned(),
+        owner_id: "activity.shell.large-cargo".to_owned(),
+        count: 1,
+        outcome: "match".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.large-output-search",
+        "large-output",
+        "matched",
+        "searching complete output selected output-match-1 without clipping",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn large_output_close() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "shell",
+        "Also list tests after this suite output.",
+        "shell-large-full",
+        "output-match-1",
+        "large-output-return",
+        Some("activity.shell.large-cargo"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.turn_id = "turn.daily-work.shell.21".to_owned();
+    before.transcript = "Full cargo output open at a search match.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "shell-large-summary".to_owned();
+    after.focus = "large-output-open".to_owned();
+    after.scroll_anchor = "shell-large-compact".to_owned();
+    after.virtual_tick = 1;
+    after.transcript =
+        "Returned to compact: showing 12 of 240 lines · 228 omitted.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.large-output-close".to_owned(),
+        label: "Return".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return restores the compact activity with bounded omitted count".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.large-output-close.1".to_owned(),
+        owner_id: "activity.shell.large-cargo".to_owned(),
+        count: 1,
+        outcome: "compact".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.large-output-close",
+        "large-output",
+        "returned",
+        "exact return to compact bounded summary with complete output still available",
     );
     (before, after, action, transition, attempt, effect)
 }

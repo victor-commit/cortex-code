@@ -146,11 +146,15 @@ fn classify_chat_turn_fixture(fixture_id: &str) -> Result<ChatTurnJourney, Strin
         return Ok(ChatTurnJourney::Flow6MissionReturn);
     }
 
-    if fixture_id.starts_with("case.tool-running-interrupt") {
+    if fixture_id.starts_with("case.tool-running-interrupt")
+        || fixture_id.starts_with("case.queued-interrupt-tool")
+    {
         return Ok(ChatTurnJourney::ToolInterrupt);
     }
 
-    if fixture_id.starts_with("case.streaming-interrupt") {
+    if fixture_id.starts_with("case.streaming-interrupt")
+        || fixture_id.starts_with("case.queued-interrupt-streaming")
+    {
         return Ok(ChatTurnJourney::StreamingInterrupt);
     }
 
@@ -174,6 +178,9 @@ fn classify_chat_turn_fixture(fixture_id: &str) -> Result<ChatTurnJourney, Strin
         || fixture_id.starts_with("case.mcp-return")
         || fixture_id.starts_with("case.connect-connected-return")
         || fixture_id.starts_with("case.login-cancel")
+        || fixture_id.starts_with("case.agent-question-submit")
+        || fixture_id.starts_with("case.transcript-")
+        || fixture_id.starts_with("case.queued-interrupt-shell")
     {
         return Ok(ChatTurnJourney::Flow1Daily);
     }
@@ -322,6 +329,16 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (candidates, events, transitions) = match screen_id {
         "home" => render_home(&mut canvas, screen_id, fixture_id)?,
         "chat-turn" => match chat_turn_journey.expect("chat-turn journey classified") {
+            ChatTurnJourney::StreamingInterrupt
+                if fixture_id.starts_with("case.queued-interrupt-streaming") =>
+            {
+                render_chat_turn_interaction(&mut canvas, screen_id, fixture_id)?
+            }
+            ChatTurnJourney::ToolInterrupt
+                if fixture_id.starts_with("case.queued-interrupt-tool") =>
+            {
+                render_chat_turn_interaction(&mut canvas, screen_id, fixture_id)?
+            }
             ChatTurnJourney::ToolInterrupt => {
                 render_tool_interrupted_chat_turn(&mut canvas, screen_id, fixture_id)?
             }
@@ -384,11 +401,20 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             ChatTurnJourney::Flow1Daily if fixture_id == "conversation-completed" => {
                 render_daily_chat_turn(&mut canvas, screen_id, fixture_id)?
             }
+            ChatTurnJourney::Flow1Daily if chat_turn_interaction_mode(fixture_id) != "baseline" => {
+                render_chat_turn_interaction(&mut canvas, screen_id, fixture_id)?
+            }
             ChatTurnJourney::Flow1Daily => {
                 render_chat_turn(&mut canvas, screen_id, fixture_id)?
             }
         },
-        "streaming" => render_streaming(&mut canvas, screen_id, fixture_id)?,
+        "streaming" => {
+            if streaming_mode(fixture_id) != "baseline" {
+                render_streaming_interaction(&mut canvas, screen_id, fixture_id)?
+            } else {
+                render_streaming(&mut canvas, screen_id, fixture_id)?
+            }
+        }
         "reasoning-collapsed" => render_reasoning_collapsed(&mut canvas, screen_id, fixture_id)?,
         "reasoning" => render_reasoning(&mut canvas, screen_id, fixture_id)?,
         "tool-running" => render_tool_running(&mut canvas, screen_id, fixture_id)?,
@@ -397,6 +423,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             render_tool_success_expanded(&mut canvas, screen_id, fixture_id)?
         }
         "tool-calls" => render_tool_calls(&mut canvas, screen_id, fixture_id)?,
+        "tool-task" | "tool-task-expanded" if tool_task_mode(fixture_id) != "baseline" => {
+            render_tool_task_controls(&mut canvas, screen_id, fixture_id)?
+        }
         "tool-task" => render_tool_task(&mut canvas, screen_id, fixture_id)?,
         "tool-task-expanded" => render_tool_task_expanded(&mut canvas, screen_id, fixture_id)?,
         "rich-response" => render_rich_response(&mut canvas, screen_id, fixture_id)?,
@@ -3702,12 +3731,93 @@ fn chat_long_scroll_turn_id(fixture_id: &str) -> &'static str {
 }
 
 fn shell_mode(fixture_id: &str) -> &'static str {
-    if fixture_id.contains("interrupt") {
+    if fixture_id.contains("large-output") || fixture_id.contains("large_output") {
+        if fixture_id.contains("search") {
+            "large-full-search"
+        } else if fixture_id.contains("close") || fixture_id.contains("compact") {
+            "large-compact"
+        } else if fixture_id.contains("open") || fixture_id.contains("full") {
+            "large-full"
+        } else {
+            "large-compact"
+        }
+    } else if fixture_id.contains("mixed")
+        || fixture_id.contains("foreground")
+        || fixture_id.contains("background")
+    {
+        if fixture_id.contains("background-stop") || fixture_id.contains("background_stop") {
+            "mixed-background-stopped"
+        } else if fixture_id.contains("foreground") && fixture_id.contains("interrupt") {
+            "mixed-foreground-interrupted"
+        } else {
+            "mixed"
+        }
+    } else if fixture_id.contains("queued-interrupt") {
+        "queued-interrupt"
+    } else if fixture_id.contains("interrupt") {
         "interrupted"
     } else if fixture_id.contains("complete") {
         "completed"
     } else {
         "running"
+    }
+}
+
+fn streaming_mode(fixture_id: &str) -> &'static str {
+    if fixture_id.contains("agent-question") {
+        if fixture_id.contains("submit") {
+            "agent-question-submit"
+        } else if fixture_id.contains("cancel") {
+            "agent-question-cancel"
+        } else {
+            "agent-question"
+        }
+    } else if fixture_id.contains("reading-anchor") || fixture_id.contains("new-output") {
+        if fixture_id.contains("jump") {
+            "reading-anchor-latest"
+        } else {
+            "reading-anchor"
+        }
+    } else if fixture_id.contains("queued-interrupt") {
+        "queued-interrupt"
+    } else {
+        "baseline"
+    }
+}
+
+fn chat_turn_interaction_mode(fixture_id: &str) -> &'static str {
+    if fixture_id.contains("transcript-search-no-results") {
+        "search-no-results"
+    } else if fixture_id.contains("transcript-search-next") {
+        "search-next"
+    } else if fixture_id.contains("transcript-search-close") {
+        "search-closed"
+    } else if fixture_id.contains("transcript-search") {
+        "search-open"
+    } else if fixture_id.contains("transcript-copy") {
+        "copy-confirmed"
+    } else if fixture_id.contains("agent-question-submit") {
+        "agent-question-resumed"
+    } else if fixture_id.contains("queued-interrupt") {
+        "queued-preserved"
+    } else {
+        "baseline"
+    }
+}
+
+fn tool_task_mode(fixture_id: &str) -> &'static str {
+    if fixture_id.contains("controls-expanded") || fixture_id.contains("task.controls-expanded") {
+        "controls-expanded"
+    } else if fixture_id.contains("stop-selected") {
+        "stop-selected"
+    } else if fixture_id.contains("retry-selected") {
+        "retry-selected"
+    } else if fixture_id.contains("cancel-selected") {
+        "cancel-selected"
+    } else if fixture_id.contains("controls") || fixture_id.contains("task.controls") {
+        "controls"
+    } else {
+        "baseline"
     }
 }
 
@@ -3730,6 +3840,18 @@ fn render_shell(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let mode = shell_mode(fixture_id);
+    if matches!(
+        mode,
+        "mixed"
+            | "mixed-foreground-interrupted"
+            | "mixed-background-stopped"
+            | "large-compact"
+            | "large-full"
+            | "large-full-search"
+            | "queued-interrupt"
+    ) {
+        return render_shell_interaction(canvas, screen_id, fixture_id, mode);
+    }
     canvas.write(
         4,
         4,
@@ -4910,4 +5032,1201 @@ fn transition(
         kind: kind.to_owned(),
         path: path.to_owned(),
     }
+}
+
+fn render_streaming_interaction(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let mode = streaming_mode(fixture_id);
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+
+    match mode {
+        "agent-question" | "agent-question-cancel" => {
+            canvas.write(
+                9,
+                4,
+                "I need one choice before continuing the recovery note.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                11,
+                4,
+                "Which recovery path should we keep for the shared request guard?",
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                13,
+                4,
+                "● Paused activity · waiting for your answer",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                COMPOSER_TOP,
+                2,
+                &format!("╭{}╮", "─".repeat(114)),
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                COMPOSER_TOP + 1,
+                2,
+                "│ Answer needed · pick one option, then submit once",
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                COMPOSER_TOP + 2,
+                2,
+                "│ › Keep the shared guard · continue this activity",
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                COMPOSER_TOP + 3,
+                2,
+                "│   Switch to per-route limits · change the plan",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                COMPOSER_TOP + 4,
+                2,
+                "│ [enter] Submit answer   [esc] Cancel · keep paused",
+                TextStyle::accent(),
+            )?;
+            canvas.write(
+                COMPOSER_BOTTOM,
+                2,
+                &format!("╰{}╯", "─".repeat(114)),
+                TextStyle::muted(),
+            )?;
+            let question = semantic(
+                screen_id,
+                fixture_id,
+                "transcript",
+                "agent-question",
+                reference(11, 4, 78),
+                "focused",
+                None,
+            );
+            let dock = semantic(
+                screen_id,
+                fixture_id,
+                "action-dock",
+                "agent-question-dock",
+                reference(COMPOSER_TOP + 1, 4, 64),
+                "focused",
+                Some(action(
+                    "action.agent-question.submit",
+                    "Submit answer",
+                    false,
+                )),
+            );
+            let cancel = semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "agent-question-cancel",
+                reference(COMPOSER_TOP + 4, 34, 68),
+                "summary",
+                Some(action("action.agent-question.cancel", "Cancel", false)),
+            );
+            let status = semantic(
+                screen_id,
+                fixture_id,
+                "statusline",
+                "shared-statusline",
+                reference(CANVAS_ROWS - 1, 2, 38),
+                "summary",
+                None,
+            );
+            let pairs = [question, dock, cancel, status];
+            return Ok((
+                pairs
+                    .iter()
+                    .map(|(candidate, _)| candidate.clone())
+                    .collect(),
+                pairs.iter().map(|(_, event)| event.clone()).collect(),
+                vec![
+                    transition(
+                        "action.agent-question.submit",
+                        "streaming",
+                        "chat-turn",
+                        "direct",
+                        "submit resumes that exact activity once and restores the prior composer draft",
+                    ),
+                    transition(
+                        "action.agent-question.cancel",
+                        "streaming",
+                        "streaming",
+                        "direct",
+                        "cancel keeps the activity paused with the prior draft intact",
+                    ),
+                ],
+            ));
+        }
+        "reading-anchor" => {
+            canvas.write(
+                9,
+                4,
+                "Earlier · the rate-limit guard still defines the safe path.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                11,
+                4,
+                "That earlier detail stays in view while new lines arrive below.",
+                TextStyle::text(),
+            )?;
+            let live = ActivityRow::new(
+                "Writing reply",
+                ActivityState::Running,
+                "new output waiting below",
+            )
+            .with_interrupt("Stop reply")
+            .compact();
+            write_component(canvas, 14, 4, &live)?;
+            canvas.write(
+                16,
+                4,
+                "› New output · jump to newest without forcing scroll  [enter]",
+                TextStyle::accent(),
+            )?;
+            composer(
+                canvas,
+                "Note the remaining risk after this section.",
+                None,
+            )?;
+            let anchor = semantic(
+                screen_id,
+                fixture_id,
+                "transcript",
+                "reading-anchor",
+                reference(9, 4, 70),
+                "focused",
+                None,
+            );
+            let affordance = semantic(
+                screen_id,
+                fixture_id,
+                "live-state",
+                "new-output",
+                reference(16, 4, 72),
+                "summary",
+                Some(action("action.streaming.new-output", "New output", false)),
+            );
+            let draft = semantic(
+                screen_id,
+                fixture_id,
+                "queued-input",
+                "follow-up",
+                reference(COMPOSER_TOP, 4, 52),
+                "summary",
+                None,
+            );
+            let status = semantic(
+                screen_id,
+                fixture_id,
+                "statusline",
+                "shared-statusline",
+                reference(CANVAS_ROWS - 1, 2, 38),
+                "summary",
+                None,
+            );
+            let pairs = [anchor, affordance, draft, status];
+            return Ok((
+                pairs
+                    .iter()
+                    .map(|(candidate, _)| candidate.clone())
+                    .collect(),
+                pairs.iter().map(|(_, event)| event.clone()).collect(),
+                vec![transition(
+                    "action.streaming.new-output",
+                    "streaming",
+                    "streaming",
+                    "direct",
+                    "New output jumps to the newest lines without changing draft or activity state",
+                )],
+            ));
+        }
+        "reading-anchor-latest" => {
+            canvas.write(
+                9,
+                4,
+                "Newest · below the earlier rate-limit guard section.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                11,
+                4,
+                "The latest paragraph landed here after Jump to newest.",
+                TextStyle::text(),
+            )?;
+            let live = ActivityRow::new(
+                "Writing reply",
+                ActivityState::Running,
+                "latest output visible",
+            )
+            .with_interrupt("Stop reply")
+            .compact();
+            write_component(canvas, 14, 4, &live)?;
+            canvas.write(
+                16,
+                4,
+                "At newest output · draft unchanged · activity still running",
+                TextStyle::muted(),
+            )?;
+            composer(
+                canvas,
+                "Note the remaining risk after this section.",
+                None,
+            )?;
+        }
+        _ => {
+            // queued-interrupt streaming before state.
+            canvas.write(
+                9,
+                4,
+                "The shared request guard applies the limit before route work begins.",
+                TextStyle::text(),
+            )?;
+            let live = ActivityRow::new(
+                "Writing reply",
+                ActivityState::Running,
+                "24s · two queued follow-ups waiting",
+            )
+            .with_interrupt("Stop reply")
+            .compact();
+            write_component(canvas, 12, 4, &live)?;
+            canvas.write(
+                14,
+                4,
+                "Queued 1 · Also list unit tests. [attachment: queue-notes-a.md]",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                15,
+                4,
+                "Queued 2 · Then summarize risks. [attachment: queue-notes-b.md]",
+                TextStyle::muted(),
+            )?;
+            composer(
+                canvas,
+                "Hold these two follow-ups until streaming ends.",
+                None,
+            )?;
+        }
+    }
+
+    let partial = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "partial-answer",
+        reference(9, 4, 68),
+        "summary",
+        None,
+    );
+    let live_state = semantic(
+        screen_id,
+        fixture_id,
+        "live-state",
+        "active-response",
+        reference(12, 4, 70),
+        "summary",
+        Some(action("action.streaming.interrupt", "Stop reply", false)),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [partial, live_state, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.streaming.interrupt",
+            "streaming",
+            "chat-turn",
+            "direct",
+            "interrupt keeps both queued prompts and attachments in original order",
+        )],
+    ))
+}
+
+fn render_chat_turn_interaction(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let mode = chat_turn_interaction_mode(fixture_id);
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+
+    match mode {
+        "queued-preserved" => {
+            canvas.write(
+                9,
+                4,
+                "The shared request guard applies the limit before route work begins.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                12,
+                4,
+                "● Reply stopped safely. Queued follow-ups retained in order.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                14,
+                4,
+                "Queued 1 · queue-item-1 rev=1 · Also list unit tests. [attachment: queue-notes-a.md]",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                15,
+                4,
+                "Queued 2 · queue-item-2 rev=2 · Then summarize risks. [attachment: queue-notes-b.md]",
+                TextStyle::text(),
+            )?;
+            composer(canvas, "Reply to Code", Some("Send reply"))?;
+        }
+        "agent-question-resumed" => {
+            canvas.write(
+                9,
+                4,
+                "Answer submitted once. Activity resumed with the prior draft restored.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                12,
+                4,
+                "Keep the shared guard · continue this activity",
+                TextStyle::muted(),
+            )?;
+            composer_with_draft(
+                canvas,
+                "Keep the risk note short before we publish.",
+                "risk-notes.md",
+                Some("Send reply"),
+            )?;
+        }
+        "search-open" | "search-next" => {
+            canvas.write(
+                9,
+                4,
+                "The shared request guard applies the limit before route work begins.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                12,
+                4,
+                if mode == "search-next" {
+                    "Search · 3 matches for \"guard\" · match 2 of 3"
+                } else {
+                    "Search · 3 matches for \"guard\" · match 1 of 3"
+                },
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                14,
+                4,
+                "› match · shared request guard",
+                TextStyle::accent(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "[n] Next match   [esc] Close search · return to origin",
+                TextStyle::muted(),
+            )?;
+            composer(
+                canvas,
+                "Add a short follow-up about the guard.",
+                None,
+            )?;
+        }
+        "search-no-results" => {
+            canvas.write(
+                9,
+                4,
+                "The shared request guard applies the limit before route work begins.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                12,
+                4,
+                "Search · No matches for \"xyzzy-not-found\"",
+                TextStyle::bright(),
+            )?;
+            canvas.write(
+                14,
+                4,
+                "Try another term, or close search to return to the prior position.",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "[esc] Close search",
+                TextStyle::muted(),
+            )?;
+            composer(
+                canvas,
+                "Add a short follow-up about the guard.",
+                None,
+            )?;
+        }
+        "search-closed" => {
+            canvas.write(
+                9,
+                4,
+                "The shared request guard applies the limit before route work begins.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                12,
+                4,
+                "Search closed · returned to the originating reading position.",
+                TextStyle::muted(),
+            )?;
+            composer(
+                canvas,
+                "Add a short follow-up about the guard.",
+                Some("Send reply"),
+            )?;
+        }
+        "copy-confirmed" => {
+            canvas.write(
+                9,
+                4,
+                "The shared request guard applies the limit before route work begins.",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                12,
+                4,
+                "Copied · selected message only · no hidden rationale",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                14,
+                4,
+                "copy confirmed · turn count unchanged",
+                TextStyle::muted(),
+            )?;
+            composer(
+                canvas,
+                "Add a short follow-up about the guard.",
+                Some("Send reply"),
+            )?;
+        }
+        _ => {
+            canvas.write(
+                9,
+                4,
+                "The shared request guard applies the limit before route work begins.",
+                TextStyle::text(),
+            )?;
+            composer(canvas, "Reply to Code", Some("Send reply"))?;
+        }
+    }
+
+    let body = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "interaction-body",
+        reference(9, 4, 70),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.chat-turn.continue",
+        reference(COMPOSER_TOP, 4, 36),
+        "summary",
+        Some(action("action.chat-turn.send-reply", "Send reply", false)),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [body, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.send-reply",
+            "chat-turn",
+            "streaming",
+            "direct",
+            "the conversation continues from the interaction state",
+        )],
+    ))
+}
+
+fn render_shell_interaction(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+    mode: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(
+        4,
+        4,
+        "You · Check the branch, then run the focused tests.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "I will check the branch, run the suite, and keep long output bounded.",
+        TextStyle::text(),
+    )?;
+
+    match mode {
+        "queued-interrupt" => {
+            write_component(
+                canvas,
+                12,
+                4,
+                &ActivityRow::new(
+                    "Shell · cargo test --workspace",
+                    ActivityState::Failed,
+                    "Interrupted · queue retained",
+                )
+                .with_elapsed("4s")
+                .compact(),
+            )?;
+            canvas.write(
+                13,
+                4,
+                "  ⎿ Compiling cortex-server v0.1.0",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                15,
+                4,
+                "Queued 1 · queue-item-1 rev=1 · Also list unit tests. [attachment: queue-notes-a.md]",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                16,
+                4,
+                "Queued 2 · queue-item-2 rev=2 · Then summarize risks. [attachment: queue-notes-b.md]",
+                TextStyle::text(),
+            )?;
+            composer(canvas, "Reply to Code", Some("Send reply"))?;
+        }
+        "mixed" | "mixed-foreground-interrupted" | "mixed-background-stopped" => {
+            let fg_state = if mode == "mixed-foreground-interrupted" {
+                ActivityState::Failed
+            } else {
+                ActivityState::Running
+            };
+            let fg_detail = if mode == "mixed-foreground-interrupted" {
+                "Foreground · Interrupted · exit kept"
+            } else {
+                "Foreground · running · 4s elapsed"
+            };
+            let mut fg = ActivityRow::new(
+                "Shell · cargo test --workspace",
+                fg_state,
+                fg_detail,
+            )
+            .compact();
+            if mode == "mixed" {
+                fg = fg.with_interrupt("Stop command");
+            }
+            write_component(canvas, 12, 4, &fg)?;
+            canvas.write(
+                13,
+                4,
+                "  ⎿ Compiling cortex-server v0.1.0",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                14,
+                4,
+                "  ⎿ test routes::login::rate_limited ... ok",
+                TextStyle::muted(),
+            )?;
+
+            let bg_state = if mode == "mixed-background-stopped" {
+                ActivityState::Failed
+            } else {
+                ActivityState::Running
+            };
+            let bg_detail = if mode == "mixed-background-stopped" {
+                "Background · Stopped · captured output kept"
+            } else {
+                "Background · running · watch active"
+            };
+            write_component(
+                canvas,
+                17,
+                4,
+                &ActivityRow::new("Shell · cargo watch -x check", bg_state, bg_detail).compact(),
+            )?;
+            canvas.write(
+                18,
+                4,
+                "  ⎿ watch: file .../session.rs changed",
+                TextStyle::muted(),
+            )?;
+            if mode != "mixed-background-stopped" {
+                canvas.write(
+                    20,
+                    4,
+                    "› [s] Stop background · ends only this background command",
+                    TextStyle::text(),
+                )?;
+            } else {
+                canvas.write(
+                    20,
+                    4,
+                    "Background stopped · unrelated activities preserved",
+                    TextStyle::muted(),
+                )?;
+            }
+            if mode == "mixed" {
+                composer(
+                    canvas,
+                    "Type a follow-up, it will wait until foreground work finishes",
+                    None,
+                )?;
+            } else {
+                composer(canvas, "Reply to Code", Some("Send reply"))?;
+            }
+        }
+        "large-compact" => {
+            write_component(
+                canvas,
+                12,
+                4,
+                &ActivityRow::new(
+                    "Shell · cargo test --workspace",
+                    ActivityState::Succeeded,
+                    "exit 0 · 12 of 240 lines · 228 omitted",
+                )
+                .compact(),
+            )?;
+            canvas.write(
+                13,
+                4,
+                "  ⎿ Compiling cortex-server v0.1.0",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                14,
+                4,
+                "  ⎿ test routes::login::rate_limited ... ok",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                15,
+                4,
+                "  ⎿ … 228 lines omitted · full detail keeps every line",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                17,
+                4,
+                "› [enter] Full detail · searchable complete output",
+                TextStyle::accent(),
+            )?;
+            canvas.write(
+                18,
+                4,
+                "  [c] Copy summary   Return stays on this compact activity",
+                TextStyle::muted(),
+            )?;
+            composer(canvas, "Also list tests after this suite output.", None)?;
+        }
+        "large-full" | "large-full-search" => {
+            write_component(
+                canvas,
+                11,
+                4,
+                &ActivityRow::new(
+                    "Shell · cargo test --workspace",
+                    ActivityState::Expanded,
+                    "full detail · 240 lines · lossless",
+                )
+                .compact(),
+            )?;
+            canvas.write(
+                12,
+                4,
+                "  ⎿ Compiling cortex-server v0.1.0",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                13,
+                4,
+                "  ⎿ test routes::login::rate_limited ... ok",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                14,
+                4,
+                "  ⎿ test routes::api::quota_enforced ... ok",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                15,
+                4,
+                "  ⎿ showing lines 1-12 of 240 · scroll for more · lossless",
+                TextStyle::muted(),
+            )?;
+            if mode == "large-full-search" {
+                canvas.write(
+                    16,
+                    4,
+                    "Search output · match 1 for rate_limited",
+                    TextStyle::bright(),
+                )?;
+                canvas.write(
+                    17,
+                    4,
+                    "› output-match-1 · test routes::login::rate_limited ... ok",
+                    TextStyle::accent(),
+                )?;
+            } else {
+                canvas.write(
+                    16,
+                    4,
+                    "Search output · type to filter · complete hash retained",
+                    TextStyle::text(),
+                )?;
+            }
+            canvas.write(
+                19,
+                4,
+                "[c] Copy   [esc] Return · restore compact 12 of 240 · 228 omitted",
+                TextStyle::muted(),
+            )?;
+            composer(canvas, "Also list tests after this suite output.", None)?;
+        }
+        _ => {}
+    }
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 56),
+        "summary",
+        None,
+    );
+    let activity = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        match mode {
+            "mixed-background-stopped" => "shell-background-stopped",
+            "mixed-foreground-interrupted" => "shell-foreground-interrupted",
+            "large-full" | "large-full-search" => "shell-large-full",
+            "large-compact" => "shell-large-summary",
+            "queued-interrupt" => "shell-cargo-test-interrupted",
+            _ => "shell-mixed-foreground",
+        },
+        reference(12, 4, 78),
+        "summary",
+        Some(action(
+            match mode {
+                "mixed-background-stopped" => "action.shell.background-stop",
+                "mixed-foreground-interrupted" => "action.shell.foreground-interrupt",
+                "large-full" | "large-full-search" => "action.shell.large-output-search",
+                "large-compact" => "action.shell.large-output-open",
+                "queued-interrupt" => "action.shell.interrupt",
+                _ => "action.shell.foreground-interrupt",
+            },
+            match mode {
+                "mixed-background-stopped" => "Stop background",
+                "large-compact" => "Full detail",
+                "large-full" | "large-full-search" => "Search output",
+                "queued-interrupt" => "Stop command",
+                _ => "Stop command",
+            },
+            false,
+        )),
+    );
+    let secondary = match mode {
+        "mixed" | "mixed-foreground-interrupted" => Some(semantic(
+            screen_id,
+            fixture_id,
+            "activity",
+            "shell-mixed-background",
+            reference(17, 4, 70),
+            "summary",
+            Some(action(
+                "action.shell.background-stop",
+                "Stop background",
+                false,
+            )),
+        )),
+        "large-full" | "large-full-search" => Some(semantic(
+            screen_id,
+            fixture_id,
+            "activity",
+            "shell-large-return",
+            reference(19, 4, 70),
+            "summary",
+            Some(action(
+                "action.shell.large-output-close",
+                "Return",
+                false,
+            )),
+        )),
+        _ => None,
+    };
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let mut candidates = vec![request.0.clone(), activity.0.clone(), status.0.clone()];
+    let mut events = vec![request.1.clone(), activity.1.clone(), status.1.clone()];
+    if let Some(sec) = secondary {
+        candidates.push(sec.0);
+        events.push(sec.1);
+    }
+    let transitions = match mode {
+        "large-compact" => vec![transition(
+            "action.shell.large-output-open",
+            "shell",
+            "shell",
+            "direct",
+            "full detail opens searchable complete output without clipping silently",
+        )],
+        "large-full" | "large-full-search" => vec![
+            transition(
+                "action.shell.large-output-search",
+                "shell",
+                "shell",
+                "direct",
+                "search inside complete output preserves the lossless payload",
+            ),
+            transition(
+                "action.shell.large-output-close",
+                "shell",
+                "shell",
+                "direct",
+                "return restores the compact activity with bounded omitted count",
+            ),
+        ],
+        "mixed-background-stopped" => vec![transition(
+            "action.shell.background-stop",
+            "shell",
+            "shell",
+            "direct",
+            "Stop background command terminates only that process and keeps captures",
+        )],
+        "queued-interrupt" => vec![transition(
+            "action.shell.interrupt",
+            "shell",
+            "shell",
+            "direct",
+            "shell interrupt preserves queued prompts, attachments, and captured output",
+        )],
+        "mixed-foreground-interrupted" => vec![
+            transition(
+                "action.shell.foreground-interrupt",
+                "shell",
+                "shell",
+                "direct",
+                "interrupt stops only the selected foreground process",
+            ),
+            transition(
+                "action.shell.background-stop",
+                "shell",
+                "shell",
+                "direct",
+                "Stop background command terminates only that process and keeps captures",
+            ),
+        ],
+        _ => vec![
+            transition(
+                "action.shell.foreground-interrupt",
+                "shell",
+                "shell",
+                "direct",
+                "interrupt stops only the selected foreground process",
+            ),
+            transition(
+                "action.shell.background-stop",
+                "shell",
+                "shell",
+                "direct",
+                "Stop background command terminates only that process and keeps captures",
+            ),
+        ],
+    };
+    Ok((candidates, events, transitions))
+}
+
+fn render_tool_task_controls(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let mode = tool_task_mode(fixture_id);
+    canvas.write(
+        4,
+        4,
+        "You · Audit the auth module and add the rate-limit tests.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "I split the audit from the test work so findings can guide the patch.",
+        TextStyle::text(),
+    )?;
+
+    write_component(
+        canvas,
+        12,
+        4,
+        &ActivityRow::new(
+            "Audit the auth module",
+            if mode == "controls-expanded" {
+                ActivityState::Expanded
+            } else {
+                ActivityState::Succeeded
+            },
+            "6 findings ready",
+        )
+        .with_elapsed("3m12s")
+        .compact(),
+    )?;
+    if mode == "controls-expanded" {
+        canvas.write(
+            13,
+            4,
+            "  ✗ Needs attention · Refresh tokens skip revoked sessions.",
+            TextStyle::text(),
+        )?;
+    }
+
+    let tests_state = if mode == "stop-selected" {
+        ActivityState::Failed
+    } else {
+        ActivityState::Running
+    };
+    let tests_detail = if mode == "stop-selected" {
+        "Stopped · only this task · 2 of 3 files kept"
+    } else {
+        "2 of 3 files · in progress"
+    };
+    write_component(
+        canvas,
+        15,
+        4,
+        &ActivityRow::new("Add rate-limit tests", tests_state, tests_detail)
+            .with_elapsed("48s")
+            .compact(),
+    )?;
+    let stop_focused = matches!(mode, "stop-selected" | "controls" | "controls-expanded");
+    canvas.write(
+        16,
+        4,
+        if stop_focused {
+            "› [s] Stop this task · ends only the selected test work"
+        } else {
+            "  [s] Stop this task · ends only the selected test work"
+        },
+        if stop_focused {
+            TextStyle::text()
+        } else {
+            TextStyle::muted()
+        },
+    )?;
+
+    let build_state = if mode == "cancel-selected" {
+        ActivityState::Failed
+    } else {
+        ActivityState::Waiting
+    };
+    let build_detail = if mode == "cancel-selected" {
+        "Cancelled · only the queued build dropped"
+    } else {
+        "queued after the test files"
+    };
+    write_component(
+        canvas,
+        18,
+        4,
+        &ActivityRow::new("Build the test suite", build_state, build_detail).compact(),
+    )?;
+    canvas.write(
+        19,
+        4,
+        if mode == "cancel-selected" {
+            "› [c] Cancel this task · drops only the queued build"
+        } else {
+            "  [c] Cancel this task · drops only the queued build"
+        },
+        TextStyle::muted(),
+    )?;
+
+    let refresh_state = if mode == "retry-selected" {
+        ActivityState::Running
+    } else {
+        ActivityState::Failed
+    };
+    let refresh_detail = if mode == "retry-selected" {
+        "Retrying · only this blocked review"
+    } else {
+        "Blocked · needs a decision"
+    };
+    write_component(
+        canvas,
+        21,
+        4,
+        &ActivityRow::new("Review refresh session risk", refresh_state, refresh_detail)
+            .compact(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        if mode == "retry-selected" {
+            "› [r] Retry this task · restarts only the blocked refresh review"
+        } else {
+            "  [r] Retry this task · restarts only the blocked refresh review"
+        },
+        TextStyle::muted(),
+    )?;
+    composer(
+        canvas,
+        "Type a follow-up, it will wait until this turn finishes",
+        None,
+    )?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 58),
+        "summary",
+        None,
+    );
+    let stop_ev = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        if mode == "stop-selected" {
+            "task-add-tests-stopped"
+        } else {
+            "task-add-tests"
+        },
+        reference(15, 4, 74),
+        "focused",
+        Some(action(
+            "action.tool-task.stop-selected",
+            "Stop this task · ends only the selected test work",
+            false,
+        )),
+    );
+    let cancel_ev = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        if mode == "cancel-selected" {
+            "task-build-suite-cancelled"
+        } else {
+            "task-build-suite"
+        },
+        reference(18, 4, 70),
+        "summary",
+        Some(action(
+            "action.tool-task.cancel-selected",
+            "Cancel this task · drops only the queued build",
+            false,
+        )),
+    );
+    let retry_ev = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        if mode == "retry-selected" {
+            "task-refresh-risk-retrying"
+        } else {
+            "task-refresh-risk"
+        },
+        reference(21, 4, 74),
+        "summary",
+        Some(action(
+            "action.tool-task.retry-selected",
+            "Retry this task · restarts only the blocked refresh review",
+            false,
+        )),
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, stop_ev, cancel_ev, retry_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.tool-task.stop-selected",
+                screen_id,
+                "tool-task",
+                "direct",
+                "stop applies only to the selected task and states the consequence first",
+            ),
+            transition(
+                "action.tool-task.retry-selected",
+                screen_id,
+                "tool-task",
+                "direct",
+                "retry applies only to the selected blocked task",
+            ),
+            transition(
+                "action.tool-task.cancel-selected",
+                screen_id,
+                "tool-task",
+                "direct",
+                "cancel removes only the selected queued task",
+            ),
+        ],
+    ))
 }
