@@ -969,7 +969,7 @@ fn render_fork_picker(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Historical points always fork; only the latest state resumes directly.",
+        "No filter · source, checkpoint, and destination are one decision",
         TextStyle::muted(),
     )?;
 
@@ -998,7 +998,7 @@ fn render_fork_picker(
             "source",
             "retry-policy-review",
             reference(13, 4, 58),
-            "focused",
+            "summary",
             None,
         ),
         semantic(
@@ -1007,7 +1007,7 @@ fn render_fork_picker(
             "checkpoint",
             "retry-policy-checkpoint",
             reference(17, 4, 48),
-            "focused",
+            "summary",
             None,
         ),
         semantic(
@@ -1016,6 +1016,24 @@ fn render_fork_picker(
             "destination",
             "new-conversation-from-checkpoint",
             reference(21, 4, 58),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "selected-detail",
+            "fork-new-session-from-checkpoint",
+            reference(DOCK_TOP + 1, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-consequence",
+            "source-unchanged",
+            reference(DOCK_TOP + 2, 4, 58),
             "focused",
             None,
         ),
@@ -1054,6 +1072,15 @@ fn render_fork_picker(
             reference(DOCK_TOP + 3, 23, 42),
             "summary",
             Some(action("action.fork-picker.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter-not-needed",
+            "no-filter-fork-one-decision",
+            reference(DOCK_TOP + 5, 4, 72),
+            "summary",
+            None,
         ),
         semantic(
             screen_id,

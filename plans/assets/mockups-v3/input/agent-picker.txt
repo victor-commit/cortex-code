@@ -34,7 +34,7 @@
   │ Changes access; review the concrete project scope before applying.                                               │  
   │ › [enter] Review access change · [esc] Cancel                                                                    │  
   │ [↑↓] Choose · each row explains how Code will work                                                               │  
-  │ Each row shows its outcome; access details open after review.                                                    │  
+  │ No filter · three work-style choices fit on one screen                                                           │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

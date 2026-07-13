@@ -34,7 +34,7 @@
   │ Preview is temporary until Apply; Cancel restores Dark exactly.                                                  │  
   │ › [enter] Apply theme · [esc] Cancel · restores previous theme                                                   │  
   │ [↑↓] Preview · only the focused theme is temporary                                                               │  
-  │ Applied · Dark remains committed until you choose Apply.                                                         │  
+  │ No filter · four themes fit on one screen                                                                        │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

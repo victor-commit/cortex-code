@@ -5,4 +5,5 @@
 
 pub mod components;
 pub mod layout;
+pub mod picker_contract;
 pub mod tokens;

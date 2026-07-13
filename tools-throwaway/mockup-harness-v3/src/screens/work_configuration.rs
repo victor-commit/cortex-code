@@ -627,6 +627,15 @@ fn render_model_picker(
         "summary",
         Some(action("action.model-picker.filter", "Filter models", false)),
     ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "filter",
+        "filterable-model-catalog",
+        reference(DOCK_TOP + 4, 18, 36),
+        "summary",
+        None,
+    ));
     Ok((
         pairs
             .iter()
@@ -1099,7 +1108,7 @@ fn render_agent_picker(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Each row shows its outcome; access details open after review.",
+        "No filter · three work-style choices fit on one screen",
         TextStyle::muted(),
     )?;
 
@@ -1245,6 +1254,15 @@ fn render_agent_picker(
             "Choose work style",
             false,
         )),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "filter-not-needed",
+        "no-filter-three-work-styles",
+        reference(DOCK_TOP + 5, 4, 62),
+        "summary",
+        None,
     ));
     Ok((
         pairs
@@ -1392,7 +1410,7 @@ fn render_skills_picker(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Apply commits the full pending set at once; Cancel restores the prior set.",
+        "No filter · four session skills fit on one screen",
         TextStyle::muted(),
     )?;
 
@@ -1515,6 +1533,15 @@ fn render_skills_picker(
             "summary",
             None,
         ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter-not-needed",
+            "no-filter-four-session-skills",
+            reference(DOCK_TOP + 5, 4, 58),
+            "summary",
+            None,
+        ),
     ];
     Ok((
         pairs
@@ -1618,7 +1645,7 @@ fn render_subagent_picker(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Cancel returns to the conversation without starting a helper.",
+        "No filter · three task helpers fit on one screen",
         TextStyle::muted(),
     )?;
 
@@ -1714,6 +1741,15 @@ fn render_subagent_picker(
             "statusline",
             "shared-statusline",
             reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter-not-needed",
+            "no-filter-three-task-helpers",
+            reference(DOCK_TOP + 5, 4, 56),
             "summary",
             None,
         ),
@@ -1823,7 +1859,7 @@ fn render_variant_picker(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Cancel keeps Balanced on the same base model.",
+        "No filter · three response variants fit on one screen",
         TextStyle::muted(),
     )?;
 
@@ -1919,6 +1955,15 @@ fn render_variant_picker(
             "statusline",
             "shared-statusline",
             reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter-not-needed",
+            "no-filter-three-response-variants",
+            reference(DOCK_TOP + 5, 4, 60),
             "summary",
             None,
         ),
@@ -2021,7 +2066,7 @@ fn render_theme_picker(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Applied · Dark remains committed until you choose Apply.",
+        "No filter · four themes fit on one screen",
         TextStyle::muted(),
     )?;
 
@@ -2135,6 +2180,15 @@ fn render_theme_picker(
             "statusline",
             "shared-statusline",
             reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter-not-needed",
+            "no-filter-four-themes",
+            reference(DOCK_TOP + 5, 4, 48),
             "summary",
             None,
         ),

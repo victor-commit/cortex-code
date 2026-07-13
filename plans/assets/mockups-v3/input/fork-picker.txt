@@ -34,7 +34,7 @@
   │ Source history stays unchanged after confirmation.                                                               │  
   │ › [enter] Fork · [esc] Cancel                                                                                    │  
   │ Cancel returns to the exact timeline selection and source preview.                                               │  
-  │ Historical points always fork; only the latest state resumes directly.                                           │  
+  │ No filter · source, checkpoint, and destination are one decision                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

@@ -34,7 +34,7 @@
   │ Pending set · Commit cleanly, Design reviews, Review images · apply once.                                        │  
   │ › [enter] Apply skills · [esc] Cancel                                                                            │  
   │ [space] Toggle · [↑↓] Move · enabled state is labeled on each row                                                │  
-  │ Apply commits the full pending set at once; Cancel restores the prior set.                                       │  
+  │ No filter · four session skills fit on one screen                                                                │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

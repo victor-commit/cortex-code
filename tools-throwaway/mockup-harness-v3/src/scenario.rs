@@ -1166,6 +1166,9 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "model-filter-no-match" => model_filter_no_match(),
         "model-filter-clear" => model_filter_clear(),
         "model-filter-cancel" => model_filter_cancel(),
+        "model-filtered-apply" => model_filtered_apply(),
+        "agent-picker-cancel" => agent_picker_cancel(),
+        "session-picker-cancel" => session_picker_cancel(),
         "skills-apply" => skills_apply(),
         "skills-cancel" => skills_cancel(),
         "skills-access-pending" => skills_access_pending(),
@@ -1641,6 +1644,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "model-filter-no-match"
             | "model-filter-clear"
             | "model-filter-cancel"
+            | "model-filtered-apply"
     ) {
         preserved_field_hashes.insert(
             "model_catalog".to_owned(),
@@ -1651,11 +1655,16 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                 after: sha256_hex(b"Claude Sonnet 4.5|Claude Opus 4.8|GPT-5.2 Codex"),
             },
         );
+        let applied_after = if case_id == "model-filtered-apply" {
+            b"Claude Opus 4.8".as_slice()
+        } else {
+            b"Claude Sonnet 4.5".as_slice()
+        };
         preserved_field_hashes.insert(
             "current_model".to_owned(),
             PreservedFieldHash {
                 before: sha256_hex(b"Claude Sonnet 4.5"),
-                after: sha256_hex(b"Claude Sonnet 4.5"),
+                after: sha256_hex(applied_after),
             },
         );
     }
@@ -1722,6 +1731,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "model-filter-no-match"
             | "model-filter-clear"
             | "model-filter-cancel"
+            | "model-filtered-apply"
     ) {
         match after.screen_id.as_str() {
             "model-picker-filtered" if case_id == "model-filter-no-match" => {
@@ -1730,6 +1740,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             "model-picker-filtered" => "flow3-model-picker-filtered".to_owned(),
             "model-picker" => "flow3-model-picker".to_owned(),
             "chat-turn" => "flow1.daily-work.stable".to_owned(),
+            other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
+    } else if case_id == "agent-picker-cancel" {
+        match after.screen_id.as_str() {
+            "agent-picker" => "flow3-agent-picker".to_owned(),
+            "chat-turn" => "flow1.daily-work.stable".to_owned(),
+            other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
+    } else if case_id == "session-picker-cancel" {
+        match after.screen_id.as_str() {
+            "chat-turn" => "flow1.daily-work.stable".to_owned(),
+            "session-picker" => "flow3-session-picker".to_owned(),
             other => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else if matches!(
@@ -6968,6 +6990,164 @@ fn model_filter_clear() -> (
         "the complete catalog restored without leaving the picker",
     );
     (before, after, action, transition, attempt, effect)
+}
+
+fn model_filtered_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "model-picker-filtered",
+        vec!["chat-turn", "model-picker", "model-picker-filtered"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "filter-query-claude",
+        Some("filter.claude"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.queued_follow_up = "model-filter=claude".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "model-picker", "model-picker-filtered"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "composer",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    after.queued_follow_up = String::new();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.model-picker.apply".to_owned(),
+        label: "Apply model".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "applying the focused filtered model commits only that choice and restores the exact conversation origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.filtered-apply.1".to_owned(),
+        owner_id: "pending.model.claude-opus-4-8".to_owned(),
+        count: 1,
+        outcome: "applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.filtered-apply",
+        "configuration",
+        "model-applied",
+        "the selected Claude Opus 4.8 match was applied once without losing draft or origin",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn agent_picker_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "agent-picker",
+        vec!["chat-turn", "agent-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "autonomous-changes",
+        "work-style-selection",
+        Some("pending.work-style.autonomous"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "careful-edits".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.pending_work_style = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.agent-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel keeps Careful edits applied and restores the exact conversation origin, draft, and scroll"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.agent-picker.cancel.1".to_owned(),
+        owner_id: "pending.work-style.autonomous".to_owned(),
+        count: 0,
+        outcome: "cancelled-without-change".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.agent-picker.cancel",
+        "configuration",
+        "no-change",
+        "the pending Autonomous changes selection was discarded without changing work style or access",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn session_picker_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "session-picker",
+        "all",
+        "retry-policy-review",
+        Some("preview.retry-policy-review"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    session_case(
+        before,
+        after,
+        "action.session-picker.back",
+        "Back",
+        "cancel",
+        "back restores the exact conversation origin without resuming or forking a session",
+        "attempt.session-picker.back.1",
+        0,
+        "cancelled",
+        "effect.session-picker.back",
+        "session-picker",
+        "no-change",
+        "cancel restored the conversation draft, focus, and scroll without changing the current session",
+    )
 }
 
 fn model_filter_cancel() -> (

@@ -34,7 +34,7 @@
   │ Apply changes only the response variant; the base model stays the same.                                          │  
   │ › [enter] Apply variant · [esc] Cancel                                                                           │  
   │ [↑↓] Choose · each row explains the practical tradeoff                                                           │  
-  │ Cancel keeps Balanced on the same base model.                                                                    │  
+  │ No filter · three response variants fit on one screen                                                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

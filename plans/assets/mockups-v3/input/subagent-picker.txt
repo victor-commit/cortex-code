@@ -34,7 +34,7 @@
   │ Delegation stays task-local; your session work style is unchanged.                                               │  
   │ › [enter] Use this helper · [esc] Cancel                                                                         │  
   │ [↑↓] Choose · outcome describes fit for the current task                                                         │  
-  │ Cancel returns to the conversation without starting a helper.                                                    │  
+  │ No filter · three task helpers fit on one screen                                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  
