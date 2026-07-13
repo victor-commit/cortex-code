@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                               │ Inspector                              
+    Daily work · current conversation                                          │   Context                              
+    Find where the server applies the rate limit and explain the safe path.    │   Files                                
+                                                                               │   LSP                                  
+    You · Find where the server applies the rate limit and explain the safe pa │   Todo                                 
+                                                                               │ › Subs                                 
+                                                                               │ [esc] Return to conversation           
+    Code                                                                       │                                        
+                                                                               │ Delegated work                         
+    The shared request guard applies the limit before route work begins.       │ 1 running · 1 done · 1 queued          
+    → src/auth/middleware.rs owns the rate-limit decision.                     │                                        
+    → The login and API routes reuse the same safety rule.                     │ ● Explore auth paths · running         
+                                                                               │   find existing middleware · 12s       
+    ● Reading src/auth/middleware.rs · checked the login path                  │                                        
+                                                                               │ ✓ Summarize redaction · done           
+                                                                               │   finished the audit notes             
+                                                                               │                                        
+                                                                               │ ○ Design token refresh · queued        
+                                                                               │   waits until explore finishes         
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Also list the tests that should cover the search.                                                                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

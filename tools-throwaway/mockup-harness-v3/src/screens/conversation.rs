@@ -187,6 +187,8 @@ fn classify_chat_turn_fixture(fixture_id: &str) -> Result<ChatTurnJourney, Strin
         || fixture_id.starts_with("case.agent-question-submit")
         || fixture_id.starts_with("case.transcript-")
         || fixture_id.starts_with("case.queued-interrupt-shell")
+        || fixture_id.starts_with("case.inspector-close-")
+        || fixture_id.starts_with("case.inspector-") && fixture_id.contains("after.chat-turn")
     {
         return Ok(ChatTurnJourney::Flow1Daily);
     }
@@ -1950,6 +1952,12 @@ fn render_chat_turn(
     // claim a terminal answer or "next prompt" handoff for the open rate-limit request.
     let open_turn_prestream = fixture_id == "flow1.daily-work.stable"
         || fixture_id.starts_with("flow1-storyboard.chat-turn");
+    // Inspector close restores the completed-looking daily turn with the preserved draft.
+    if fixture_id.starts_with("case.inspector-close-")
+        || (fixture_id.starts_with("case.inspector-") && fixture_id.contains("after.chat-turn"))
+    {
+        return render_inspector_restored_turn(canvas, screen_id, fixture_id);
+    }
     // Some Flow2 alias fixtures reuse this anatomy; their You-line must still match the
     // continuous pause-window task (no Daily rate-limit bleed).
     let flow2_resume = matches!(
@@ -2438,6 +2446,90 @@ fn render_session_resumed_turn(
             "direct",
             "the resumed session sends from its restored draft in the selected conversation",
         )],
+    ))
+}
+
+fn render_inspector_restored_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        10,
+        4,
+        "The shared request guard applies the limit before route work begins.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        "→ src/auth/middleware.rs owns the rate-limit decision.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        4,
+        "→ The login and API routes reuse the same safety rule.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "Inspector closed · full-width conversation restored.",
+        TextStyle::muted(),
+    )?;
+    composer(
+        canvas,
+        "Also list the tests that should cover the search.",
+        None,
+    )?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 58),
+        "summary",
+        None,
+    );
+    let answer = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "assistant-answer",
+        reference(10, 4, 68),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "queued-input",
+        "restored-draft",
+        reference(COMPOSER_TOP + 1, 4, 52),
+        "summary",
+        None,
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [request, answer, composer_ev, status];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        Vec::new(),
     ))
 }
 

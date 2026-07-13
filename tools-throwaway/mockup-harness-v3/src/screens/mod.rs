@@ -6,4 +6,5 @@ pub mod mission_workflow;
 pub mod provider_mcp;
 pub mod recovery;
 pub mod session_history;
+pub mod views_inspectors;
 pub mod work_configuration;

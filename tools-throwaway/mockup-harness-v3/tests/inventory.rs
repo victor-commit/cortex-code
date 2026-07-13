@@ -200,6 +200,11 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "workflow-monitor-failure",
             "reviewer-output",
             "reviewer-approved",
+            "sidebar-context",
+            "sidebar-files",
+            "sidebar-lsp",
+            "sidebar-todo",
+            "sidebar-subagents",
         ]
         .contains(&screen.id)
         {

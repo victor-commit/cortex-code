@@ -691,8 +691,9 @@ impl Component for Inspector {
                 },
             ));
         }
+        // Keep the return line short enough for the 37-column inspector.
         lines.push(ComponentLine::new(
-            format!("[esc] Return to conversation ({})", self.origin),
+            "[esc] Return to conversation".to_owned(),
             TextStyle::muted(),
         ));
         lines

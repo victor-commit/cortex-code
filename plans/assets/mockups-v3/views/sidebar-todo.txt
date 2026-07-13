@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                               │ Inspector                              
+    Daily work · current conversation                                          │   Context                              
+    Find where the server applies the rate limit and explain the safe path.    │   Files                                
+                                                                               │   LSP                                  
+    You · Find where the server applies the rate limit and explain the safe pa │ › Todo                                 
+                                                                               │   Subs                                 
+                                                                               │ [esc] Return to conversation           
+    Code                                                                       │                                        
+                                                                               │ Plan · 3 of 5 done                     
+    The shared request guard applies the limit before route work begins.       │ 1 in progress · 1 pending              
+    → src/auth/middleware.rs owns the rate-limit decision.                     │                                        
+    → The login and API routes reuse the same safety rule.                     │ ✓ Read auth middleware · done          
+                                                                               │ ✓ Add token-bucket limiter · done      
+    ● Reading src/auth/middleware.rs · checked the login path                  │ ✓ Wire POST /login route · done        
+                                                                               │ ● Add tests/login_ratelimit.rs         
+                                                                               │   cover the fifth attempt · in progress
+                                                                               │ ○ Run cargo test and cargo fmt         
+                                                                               │   verify the full change · pending     
+                                                                               │                                        
+                                                                               │ 3 of 5 done · 1 in progress · 1 pending
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Also list the tests that should cover the search.                                                                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

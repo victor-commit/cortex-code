@@ -89,6 +89,11 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("input", "variant-picker"),
         ("input", "theme-picker"),
         ("views", "timeline"),
+        ("views", "sidebar-context"),
+        ("views", "sidebar-files"),
+        ("views", "sidebar-lsp"),
+        ("views", "sidebar-todo"),
+        ("views", "sidebar-subagents"),
     ] {
         assert!(
             Path::new(&format!(
@@ -167,6 +172,11 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("input", "variant-picker"),
         ("input", "theme-picker"),
         ("views", "timeline"),
+        ("views", "sidebar-context"),
+        ("views", "sidebar-files"),
+        ("views", "sidebar-lsp"),
+        ("views", "sidebar-todo"),
+        ("views", "sidebar-subagents"),
     ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);

@@ -1296,6 +1296,17 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-monitor-to-failure-bridge" => mission_monitor_to_failure_bridge(),
         "mission-failure-to-review-bridge" => mission_failure_to_review_bridge(),
         "mission-review-to-approved-bridge" => mission_review_to_approved_bridge(),
+        "inspector-tab-files" => inspector_tab_switch("sidebar-context", "sidebar-files", "files"),
+        "inspector-tab-lsp" => inspector_tab_switch("sidebar-files", "sidebar-lsp", "lsp"),
+        "inspector-tab-todo" => inspector_tab_switch("sidebar-lsp", "sidebar-todo", "todo"),
+        "inspector-tab-subagents" => {
+            inspector_tab_switch("sidebar-todo", "sidebar-subagents", "subagents")
+        }
+        "inspector-close-context" => inspector_close("sidebar-context"),
+        "inspector-close-files" => inspector_close("sidebar-files"),
+        "inspector-close-lsp" => inspector_close("sidebar-lsp"),
+        "inspector-close-todo" => inspector_close("sidebar-todo"),
+        "inspector-close-subagents" => inspector_close("sidebar-subagents"),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -10840,6 +10851,135 @@ fn shell_complete() -> (
         "shell-command",
         "completed",
         "running command finished with exit 0 and preserved captured output",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn inspector_shared_origin(screen_id: &str) -> ScenarioState {
+    let mut state = disclosure_base(
+        screen_id,
+        "Also list the tests that should cover the search.",
+        "inspector-transcript-anchor",
+        "inspector-active-panel",
+        "inspector-tab-or-close",
+        Some("activity.rate-limit-path"),
+        0,
+    );
+    state.turn_id = "turn.daily-work.inspector.18".to_owned();
+    state.user_task =
+        "Find where the server applies the rate limit and explain the safe path.".to_owned();
+    state.visible_origin = "Daily work · current conversation".to_owned();
+    state.transcript = "Shared request guard remains visible beside the contextual inspector."
+        .to_owned();
+    state.queued_follow_up = "Also list the tests that should cover the search.".to_owned();
+    state.state_hash = state_hash(&state);
+    state
+}
+
+fn inspector_tab_switch(
+    from_screen: &str,
+    to_screen: &str,
+    tab_label: &str,
+) -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // Match the short on-screen tab labels used by InspectorTab.
+    let action_label = match tab_label {
+        "files" => "Files",
+        "lsp" => "LSP",
+        "todo" => "Todo",
+        "subagents" => "Subs",
+        other => other,
+    };
+    let action_id_label = action_label.to_lowercase();
+    let before = inspector_shared_origin(from_screen);
+    let mut after = before.clone();
+    after.screen_id = to_screen.to_owned();
+    after.selection = format!("inspector-tab-{tab_label}");
+    after.focus = format!("inspector-panel-{tab_label}");
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: format!("action.inspector.tab.{action_id_label}"),
+        label: format!("Open {action_label}"),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "tab updates only the narrow inspector while the shared turn, draft, and scroll stay put"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: format!("attempt.inspector.tab.{action_id_label}.1"),
+        owner_id: "inspector.tabs".to_owned(),
+        count: 1,
+        outcome: "switched".to_owned(),
+    };
+    let effect = simulated_effect(
+        &format!("effect.inspector.tab.{action_id_label}"),
+        "inspector-navigation",
+        "tab-switched",
+        "contextual tab changed without disturbing the shared transcript, draft, or scroll anchor",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn inspector_close(
+    screen_id: &str,
+) -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = inspector_shared_origin(screen_id);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.selection = "restored-full-width-conversation".to_owned();
+    after.focus = "restored-composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Inspector closed. Full-width conversation restored with the same turn and draft."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.inspector.close".to_owned(),
+        label: "Close inspector".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "close restores the full-width origin conversation, draft, and scroll anchor"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: format!("attempt.inspector.close.{screen_id}.1"),
+        owner_id: "inspector.close".to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        &format!("effect.inspector.close.{screen_id}"),
+        "inspector-navigation",
+        "closed",
+        "inspector closed without diverting to home or another destination",
     );
     (before, after, action, transition, attempt, effect)
 }
