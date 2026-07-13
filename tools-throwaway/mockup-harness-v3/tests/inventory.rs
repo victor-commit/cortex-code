@@ -185,6 +185,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "login",
             "connect-provider",
             "connect-method",
+            "connect-apikey",
             "connect-oauth",
             "connect-connected",
             "mcp",

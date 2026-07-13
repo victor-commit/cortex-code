@@ -561,7 +561,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Auth,
         flow: FlowOwner::ProviderAndMcpConnection,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "connect-oauth",

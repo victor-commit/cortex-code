@@ -85,6 +85,7 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "login",
     "connect-provider",
     "connect-method",
+    "connect-apikey",
     "connect-oauth",
     "connect-connected",
     "mcp",

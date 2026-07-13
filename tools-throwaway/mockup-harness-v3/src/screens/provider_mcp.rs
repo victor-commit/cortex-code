@@ -265,9 +265,12 @@ fn provider_row(id: &str) -> &'static ProviderCatalogueRow {
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let surface = match screen_id {
-        "login" | "connect-provider" | "connect-method" | "connect-oauth" | "connect-connected" => {
-            Surface::ActionDock
-        }
+        "login"
+        | "connect-provider"
+        | "connect-method"
+        | "connect-apikey"
+        | "connect-oauth"
+        | "connect-connected" => Surface::ActionDock,
         "mcp" => Surface::TemporaryDetailView,
         _ => return Err(format!("unknown Flow 4 screen: {screen_id}")),
     };
@@ -278,6 +281,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "login" => render_login(&mut canvas, screen_id, fixture_id, origin)?,
         "connect-provider" => render_connect_provider(&mut canvas, screen_id, fixture_id, origin)?,
         "connect-method" => render_connect_method(&mut canvas, screen_id, fixture_id, origin)?,
+        "connect-apikey" => render_connect_apikey(&mut canvas, screen_id, fixture_id, origin)?,
         "connect-oauth" => render_connect_oauth(&mut canvas, screen_id, fixture_id)?,
         "connect-connected" => render_connect_connected(&mut canvas, screen_id, fixture_id)?,
         "mcp" => render_mcp(&mut canvas, screen_id, fixture_id)?,
@@ -311,6 +315,12 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 "Continue with browser sign-in".to_owned()
             }
         }
+        "connect-apikey" => match api_key_validation_state(fixture_id) {
+            ApiKeyValidation::Valid => "Connect".to_owned(),
+            ApiKeyValidation::Checking => "Checking the key".to_owned(),
+            ApiKeyValidation::Failure => "Try again".to_owned(),
+            ApiKeyValidation::Empty | ApiKeyValidation::Malformed => "Enter an API key".to_owned(),
+        },
         "connect-oauth" => "I've authorized".to_owned(),
         "connect-connected" => match origin {
             ProviderOrigin::BlockedModel => "Return to model choices".to_owned(),
@@ -1008,6 +1018,368 @@ fn render_connect_method(
                 ),
             ),
         ],
+    ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApiKeyValidation {
+    Empty,
+    Malformed,
+    Checking,
+    Valid,
+    Failure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CredentialSource {
+    Local,
+    Environment,
+    Managed,
+}
+
+impl CredentialSource {
+    fn subject(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Environment => "environment",
+            Self::Managed => "managed",
+        }
+    }
+
+    fn handling_note(self) -> &'static str {
+        match self {
+            Self::Local => {
+                "Saved in removable local storage on this machine · never echoed."
+            }
+            Self::Environment => {
+                "Read from a non-removable environment variable · never echoed."
+            }
+            Self::Managed => {
+                "Supplied by managed organization credentials · not removable here · never echoed."
+            }
+        }
+    }
+
+    fn dock_note(self) -> &'static str {
+        match self {
+            Self::Local => "Local key stays on this device and can be removed later.",
+            Self::Environment => "Environment credentials stay set by the host; cannot remove here.",
+            Self::Managed => "Managed credentials stay under organization control; cannot remove here.",
+        }
+    }
+}
+
+fn api_key_validation_state(fixture_id: &str) -> ApiKeyValidation {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("malformed") || lower.contains("invalid") {
+        ApiKeyValidation::Malformed
+    } else if lower.contains("empty") {
+        ApiKeyValidation::Empty
+    } else if lower.contains("checking") || lower.contains("validating") {
+        ApiKeyValidation::Checking
+    } else if lower.contains("failure")
+        || lower.contains("failed")
+        || lower.contains("rejected")
+    {
+        ApiKeyValidation::Failure
+    } else {
+        // Default published and valid fixtures are ready-to-connect.
+        ApiKeyValidation::Valid
+    }
+}
+
+fn api_key_credential_source(fixture_id: &str) -> CredentialSource {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("environment") || lower.contains("env-var") || lower.contains("env.")
+    {
+        CredentialSource::Environment
+    } else if lower.contains("managed") || lower.contains("organization") {
+        CredentialSource::Managed
+    } else {
+        // Default, local, valid, empty, malformed, checking, failure: local removable entry.
+        CredentialSource::Local
+    }
+}
+
+fn api_key_provider_id(fixture_id: &str) -> &'static str {
+    method_provider_id(fixture_id)
+}
+
+/// Masked face: non-secret prefix + mask run + short tail. Full secret never rendered.
+fn api_key_masked_field(state: ApiKeyValidation) -> &'static str {
+    match state {
+        ApiKeyValidation::Empty => "›                                              █",
+        // Malformed is short / incomplete; still fully masked.
+        ApiKeyValidation::Malformed => "sk- ········                                   █",
+        ApiKeyValidation::Checking
+        | ApiKeyValidation::Valid
+        | ApiKeyValidation::Failure => "sk- ························ 4f2a           █",
+    }
+}
+
+fn api_key_validation_copy(state: ApiKeyValidation) -> &'static str {
+    match state {
+        ApiKeyValidation::Empty => "Paste or type an API key to continue.",
+        ApiKeyValidation::Malformed => "That entry looks incomplete. Check the key and try again.",
+        ApiKeyValidation::Checking => "● Checking the key… not connected yet.",
+        ApiKeyValidation::Valid => "● Looks valid · ready to connect.",
+        ApiKeyValidation::Failure => {
+            "Could not connect with this key. Try again with a different key."
+        }
+    }
+}
+
+fn render_connect_apikey(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+    origin: ProviderOrigin,
+) -> Result<ScreenEvidence, String> {
+    let origin_label = origin.visible_label();
+    let provider = provider_row(api_key_provider_id(fixture_id));
+    let source = api_key_credential_source(fixture_id);
+    let state = api_key_validation_state(fixture_id);
+    let title = format!("Add an API key for {}", provider.name);
+    let masked = api_key_masked_field(state);
+    let validation = api_key_validation_copy(state);
+    let handling = source.handling_note();
+
+    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(4, 4, &title, TextStyle::bright())?;
+    canvas.write(
+        6,
+        4,
+        "The key is never shown in full. Only this device validates it.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        8,
+        4,
+        &format!("Provider · {} · locked for this connection", provider.name),
+        TextStyle::text(),
+    )?;
+
+    canvas.write(11, 4, "API key", TextStyle::muted())?;
+    canvas.write(12, 4, masked, TextStyle::bright())?;
+    let validation_style = match state {
+        ApiKeyValidation::Valid => TextStyle {
+            foreground: ColorToken::Ok,
+            background: None,
+            bold: false,
+        },
+        ApiKeyValidation::Failure | ApiKeyValidation::Malformed => TextStyle {
+            foreground: ColorToken::Bad,
+            background: None,
+            bold: false,
+        },
+        ApiKeyValidation::Checking | ApiKeyValidation::Empty => TextStyle::text(),
+    };
+    canvas.write(14, 4, validation, validation_style)?;
+    canvas.write(16, 4, handling, TextStyle::muted())?;
+    canvas.write(
+        18,
+        4,
+        "Cancel discards only what you typed. Provider and method stay selected.",
+        TextStyle::muted(),
+    )?;
+
+    // Interactive dock primary: Connect only when valid-looking; Try again on
+    // failure. Empty/malformed restate the requirement (not a silent Connect).
+    // Checking is a non-final automatic wait with zero primary (cancel only).
+    let primary: Option<(&str, &str, &str, &str, &str)> = match state {
+        ApiKeyValidation::Valid => Some((
+            "Connect",
+            "action.connect-apikey.connect",
+            "connect-connected",
+            "direct",
+            "valid-looking key advances to the connected confirmation after provider check",
+        )),
+        ApiKeyValidation::Failure => Some((
+            "Try again",
+            "action.connect-apikey.retry",
+            "connect-apikey",
+            "direct",
+            "one recovery clears the failure and returns to local re-entry",
+        )),
+        ApiKeyValidation::Empty => Some((
+            "Enter an API key",
+            "action.connect-apikey.need-key",
+            "connect-apikey",
+            "direct",
+            "empty input cannot submit a connection",
+        )),
+        ApiKeyValidation::Malformed => Some((
+            "Fix the key",
+            "action.connect-apikey.fix-key",
+            "connect-apikey",
+            "direct",
+            "malformed input cannot submit a connection",
+        )),
+        ApiKeyValidation::Checking => None,
+    };
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        &format!("API key · {}", provider.name),
+        TextStyle::bright(),
+    )?;
+    dock_line(canvas, DOCK_TOP + 2, source.dock_note(), TextStyle::text())?;
+    let primary_row = match primary {
+        Some((label, _, _, _, _)) => format!("› [enter] {label}"),
+        None => "  Waiting · no connect action yet".to_owned(),
+    };
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        &primary_row,
+        if matches!(
+            state,
+            ApiKeyValidation::Valid | ApiKeyValidation::Failure
+        ) {
+            TextStyle::accent()
+        } else {
+            TextStyle::muted()
+        },
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [esc] Cancel · discard key input",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Cancel returns to method choice without saving the key.",
+        TextStyle::muted(),
+    )?;
+
+    let primary_end = 4 + primary_row.chars().count() as u16;
+    let masked_end = 4 + masked.chars().count() as u16;
+    let validation_end = 4 + validation.chars().count() as u16;
+    let handling_end = 4 + handling.chars().count() as u16;
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            origin.origin_subject(),
+            reference(3, 4, 4 + origin_label.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "provider",
+            provider.id,
+            reference(4, 4, 4 + title.chars().count() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "masked-field",
+            "api-key-input",
+            reference(12, 4, masked_end),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "validation-state",
+            match state {
+                ApiKeyValidation::Empty => "empty",
+                ApiKeyValidation::Malformed => "malformed",
+                ApiKeyValidation::Checking => "checking",
+                ApiKeyValidation::Valid => "looks-valid",
+                ApiKeyValidation::Failure => "failure",
+            },
+            reference(14, 4, validation_end),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "credential-source",
+            source.subject(),
+            reference(16, 4, handling_end),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.connect-apikey.cancel",
+            reference(DOCK_TOP + 4, 4, 38),
+            "summary",
+            Some(action(
+                "action.connect-apikey.cancel",
+                "Cancel · discard key input",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    if let Some((label, action_id, _, _, _)) = primary {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            action_id,
+            reference(DOCK_TOP + 3, 4, primary_end),
+            "focused",
+            Some(action(action_id, label, false)),
+        ));
+    } else {
+        // Automatic wait: live state is owner; no primary action.
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "live-state",
+            "checking-key",
+            reference(DOCK_TOP + 3, 4, primary_end),
+            "focused",
+            None,
+        ));
+    }
+
+    let mut transitions = vec![transition(
+        "action.connect-apikey.cancel",
+        "connect-apikey",
+        "connect-method",
+        "cancel",
+        "cancel discards only the secret input and restores method choice",
+    )];
+    if let Some((_, action_id, target, kind, path)) = primary {
+        transitions.insert(
+            0,
+            transition(action_id, "connect-apikey", target, kind, path),
+        );
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
     ))
 }
 

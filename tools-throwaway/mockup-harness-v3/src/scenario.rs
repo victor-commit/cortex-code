@@ -1250,6 +1250,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "connect-provider-back-conversation" => connect_provider_back_conversation(),
         "connect-provider-back-blocked-model" => connect_provider_back_blocked_model(),
         "connect-method-back" => connect_method_back(),
+        "connect-apikey-cancel" => connect_apikey_cancel(),
         "connect-connected-return" => connect_connected_return(),
         "mcp-return" => mcp_return(),
         "turn-error-retry" => turn_error_retry(),
@@ -1992,6 +1993,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "connect-provider-back-conversation"
             | "connect-provider-back-blocked-model"
             | "connect-method-back"
+            | "connect-apikey-cancel"
             | "connect-connected-return"
             | "mcp-return"
             | "login-choose-provider"
@@ -2018,9 +2020,16 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("connect-provider-back-blocked-model", "login") => {
                 "auth.login.blocked-model".to_owned()
             }
+            ("connect-apikey-cancel", "connect-apikey") => {
+                "auth.connect-apikey.valid".to_owned()
+            }
+            ("connect-apikey-cancel", "connect-method") => {
+                "auth.connect-method.openai.api-key".to_owned()
+            }
             (_, "login") => "gate.provider-and-mcp.login".to_owned(),
             (_, "connect-provider") => "gate.provider-and-mcp.connect-provider".to_owned(),
             (_, "connect-method") => "gate.provider-and-mcp.connect-method".to_owned(),
+            (_, "connect-apikey") => "canonical.connect-apikey".to_owned(),
             (_, "connect-oauth") => "gate.provider-and-mcp.connect-oauth".to_owned(),
             (_, "connect-connected") => "gate.provider-and-mcp.connect-connected".to_owned(),
             (_, "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
@@ -7049,6 +7058,91 @@ fn connect_method_back() -> (
         "provider-connection",
         "no-change",
         "method back kept provider selection and credentials unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_apikey_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-apikey",
+    ];
+    let mut before = state(
+        "connect-apikey",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "api-key",
+        "api-key-input",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    // Before state may hold secret input transiently in real software; the
+    // mock only records a non-secret placeholder so evidence never echoes it.
+    before.attachment = "masked-key-entry".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "connect-method",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "api-key",
+        "method-choice",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    // Secret discarded; non-secret origin draft, stack, and transcript preserved.
+    after.attachment = String::new();
+    after.origin_stack = before.origin_stack.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.connect-apikey.cancel".to_owned(),
+        label: "Cancel · discard key input".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel discards only the secret input and restores method choice".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-apikey.cancel.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "secret-discarded".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-apikey.cancel",
+        "provider-connection",
+        "secret-discarded",
+        "API key input was discarded without writing credentials",
     );
     (before, after, action, transition, attempt, effect)
 }

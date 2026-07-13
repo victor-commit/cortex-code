@@ -522,6 +522,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         "login"
             | "connect-provider"
             | "connect-method"
+            | "connect-apikey"
             | "connect-oauth"
             | "connect-connected"
             | "mcp"

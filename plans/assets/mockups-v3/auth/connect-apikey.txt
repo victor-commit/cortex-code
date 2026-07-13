@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Provider connection · blocked model action                                                                          
+    Add an API key for OpenAI                                                                                           
+                                                                                                                        
+    The key is never shown in full. Only this device validates it.                                                      
+                                                                                                                        
+    Provider · OpenAI · locked for this connection                                                                      
+                                                                                                                        
+                                                                                                                        
+    API key                                                                                                             
+    sk- ························ 4f2a           █                                                                       
+                                                                                                                        
+    ● Looks valid · ready to connect.                                                                                   
+                                                                                                                        
+    Saved in removable local storage on this machine · never echoed.                                                    
+                                                                                                                        
+    Cancel discards only what you typed. Provider and method stay selected.                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ API key · OpenAI                                                                                                 │  
+  │ Local key stays on this device and can be removed later.                                                         │  
+  │ › [enter] Connect                                                                                                │  
+  │   [esc] Cancel · discard key input                                                                               │  
+  │ Cancel returns to method choice without saving the key.                                                          │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  
