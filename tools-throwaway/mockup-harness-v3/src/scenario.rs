@@ -1251,6 +1251,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "connect-provider-back-blocked-model" => connect_provider_back_blocked_model(),
         "connect-method-back" => connect_method_back(),
         "connect-apikey-cancel" => connect_apikey_cancel(),
+        "connect-oauth-cancel" => connect_oauth_cancel(),
+        "connect-oauth-state-match" => connect_oauth_state_match(),
+        "connect-oauth-state-mismatch" => connect_oauth_state_mismatch(),
+        "connect-oauth-pkce-supported" => connect_oauth_pkce_supported(),
+        "connect-oauth-late-callback" => connect_oauth_late_callback(),
         "connect-connected-return" => connect_connected_return(),
         "mcp-return" => mcp_return(),
         "turn-error-retry" => turn_error_retry(),
@@ -1994,6 +1999,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "connect-provider-back-blocked-model"
             | "connect-method-back"
             | "connect-apikey-cancel"
+            | "connect-oauth-cancel"
+            | "connect-oauth-state-match"
+            | "connect-oauth-state-mismatch"
+            | "connect-oauth-pkce-supported"
+            | "connect-oauth-late-callback"
             | "connect-connected-return"
             | "mcp-return"
             | "login-choose-provider"
@@ -2026,11 +2036,44 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("connect-apikey-cancel", "connect-method") => {
                 "auth.connect-method.openai.api-key".to_owned()
             }
+            ("connect-oauth-cancel", "connect-oauth") => {
+                "auth.connect-oauth.device.waiting".to_owned()
+            }
+            ("connect-oauth-cancel", "connect-method") => {
+                "gate.provider-and-mcp.connect-method".to_owned()
+            }
+            ("connect-oauth-state-match", "connect-oauth") => {
+                "auth.connect-oauth.loopback.waiting".to_owned()
+            }
+            ("connect-oauth-state-match", "connect-connected") => {
+                "gate.provider-and-mcp.connect-connected".to_owned()
+            }
+            ("connect-oauth-state-mismatch", "connect-oauth") => {
+                "auth.connect-oauth.state-mismatch".to_owned()
+            }
+            ("connect-oauth-pkce-supported", "connect-oauth") => {
+                "auth.connect-oauth.loopback.waiting".to_owned()
+            }
+            ("connect-oauth-pkce-supported", "connect-connected") => {
+                "gate.provider-and-mcp.connect-connected".to_owned()
+            }
+            ("connect-oauth-late-callback", "connect-method") => {
+                "gate.provider-and-mcp.connect-method".to_owned()
+            }
+            ("connect-oauth-late-callback", "connect-oauth") => {
+                "auth.connect-oauth.device.waiting".to_owned()
+            }
+            ("connect-oauth-finish", "connect-oauth") => {
+                "auth.connect-oauth.device.waiting".to_owned()
+            }
+            ("connect-method-oauth", "connect-oauth") => {
+                "auth.connect-oauth.device.waiting".to_owned()
+            }
             (_, "login") => "gate.provider-and-mcp.login".to_owned(),
             (_, "connect-provider") => "gate.provider-and-mcp.connect-provider".to_owned(),
             (_, "connect-method") => "gate.provider-and-mcp.connect-method".to_owned(),
             (_, "connect-apikey") => "canonical.connect-apikey".to_owned(),
-            (_, "connect-oauth") => "gate.provider-and-mcp.connect-oauth".to_owned(),
+            (_, "connect-oauth") => "auth.connect-oauth.device.waiting".to_owned(),
             (_, "connect-connected") => "gate.provider-and-mcp.connect-connected".to_owned(),
             (_, "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
             (_, "model-picker") => "gate.work-configuration.model-picker".to_owned(),
@@ -7143,6 +7186,407 @@ fn connect_apikey_cancel() -> (
         "provider-connection",
         "secret-discarded",
         "API key input was discarded without writing credentials",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_oauth_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-oauth",
+    ];
+    let mut before = state(
+        "connect-oauth",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "oauth-waiting",
+        "oauth-wait",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    // Pending OAuth attempt metadata is non-secret; never attach device_code,
+    // code_verifier, or access tokens to scenario state.
+    before.attachment = "oauth-attempt.active|listener.held|pkce.context.held".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "connect-method",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "browser-sign-in",
+        "method-choice",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.selection = "browser-sign-in".to_owned();
+    after.attachment = "oauth-attempt.inactive|listener.released|pkce.context.discarded".to_owned();
+    after.origin_stack = before.origin_stack.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.connect-oauth.cancel".to_owned(),
+        label: "Cancel sign-in".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel invalidates the waiting sign-in attempt, releases listeners, and restores method choice"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-oauth.cancel.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "cancelled-inactive".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-oauth.cancel",
+        "provider-connection",
+        "attempt-invalidated|listener-released",
+        "OAuth wait cancelled; loopback listener released and PKCE/state context discarded without connecting",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_oauth_state_match() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-oauth",
+    ];
+    let mut before = state(
+        "connect-oauth",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "oauth-loopback-waiting",
+        "oauth-wait",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment = "oauth-attempt.active|state.expected.held".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "connect-connected",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai-connected",
+        "connection-success",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.attachment = "oauth-attempt.completed|state-validated".to_owned();
+    after.origin_stack = before.origin_stack.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.connect-oauth.finish".to_owned(),
+        label: "Browser authorization succeeded".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "matched browser return state validates and connects the provider".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-oauth.state-match.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 1,
+        outcome: "state-validated".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-oauth.state-match",
+        "provider-connection",
+        "provider-connected|state-validated",
+        "loopback return matched expected state and recorded one OpenAI connection",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_oauth_state_mismatch() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-oauth",
+    ];
+    let mut before = state(
+        "connect-oauth",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "oauth-loopback-waiting",
+        "oauth-wait",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment = "oauth-attempt.active|state.expected.held".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "connect-oauth",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "oauth-state-mismatch",
+        "oauth-recovery",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.attachment = "oauth-attempt.active|state-mismatch|not-connected".to_owned();
+    after.origin_stack = before.origin_stack.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.connect-oauth.state-mismatch".to_owned(),
+        label: "Browser reply rejected".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "mismatched browser return state fails without connecting and stays recoverable"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-oauth.state-mismatch.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 1,
+        outcome: "state-mismatch-rejected".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-oauth.state-mismatch",
+        "provider-connection",
+        "state-mismatch|rejected",
+        "loopback return did not match expected state; no connection was written",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_oauth_pkce_supported() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-oauth",
+    ];
+    let mut before = state(
+        "connect-oauth",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "oauth-loopback-waiting",
+        "oauth-wait",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    // Proof materials stay symbolically referenced, never as raw verifier bytes.
+    before.attachment = "oauth-attempt.active|proof.context.held".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "connect-connected",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai-connected",
+        "connection-success",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.attachment = "oauth-attempt.completed|proof-verified".to_owned();
+    after.origin_stack = before.origin_stack.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.connect-oauth.finish".to_owned(),
+        label: "Browser authorization succeeded".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "provider-supported browser proof verifies and connects without exposing secrets"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-oauth.pkce.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 1,
+        outcome: "proof-verified".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-oauth.pkce-supported",
+        "provider-connection",
+        "provider-connected|proof-verified",
+        "loopback return verified provider-supported proof and recorded one OpenAI connection",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_oauth_late_callback() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // After cancel, the user is back on method choice. A late browser callback
+    // or poll response against the invalidated attempt cannot connect.
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+    ];
+    let mut before = state(
+        "connect-method",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "browser-sign-in",
+        "method-choice",
+        Some("pending.provider.openai"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment = "oauth-attempt.inactive|listener.released|pkce.context.discarded".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.attachment =
+        "oauth-attempt.inactive|late-callback.ignored|not-connected".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.connect-oauth.late-callback".to_owned(),
+        label: "Late browser reply ignored".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "late callback or poll against an invalidated attempt is rejected without connecting"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-oauth.late-callback.1".to_owned(),
+        owner_id: "pending.provider.openai".to_owned(),
+        count: 0,
+        outcome: "late-rejected-inactive".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-oauth.late-callback",
+        "provider-connection",
+        "late-rejected|attempt-inactive",
+        "late browser return arrived after cancel; listener already released and no credential was written",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -17914,7 +18358,7 @@ fn connect_oauth_finish() -> (
         1,
     );
     apply_flow4_provider_identity(&mut after);
-        after.origin_stack = before.origin_stack.clone();
+    after.origin_stack = before.origin_stack.clone();
     after.conversation_id = before.conversation_id.clone();
     after.transcript_id = before.transcript_id.clone();
     after.session_id = before.session_id.clone();
@@ -17924,10 +18368,12 @@ fn connect_oauth_finish() -> (
     after.draft = before.draft.clone();
     after.transcript = before.transcript.clone();
     after.state_hash = state_hash(&after);
-let action = ActionEvidence {
+    let action = ActionEvidence {
         action_id: "action.connect-oauth.finish".to_owned(),
-        label: "I've authorized".to_owned(),
+        label: "Browser authorization succeeded".to_owned(),
         enabled: true,
+        // Public finish stays an enabled storyboard edge for ordered gate
+        // bridges; the waiting canvas itself publishes zero primary actions.
         automatic: false,
     };
     let transition = TransitionTrace {

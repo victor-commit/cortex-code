@@ -282,7 +282,9 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "connect-provider" => render_connect_provider(&mut canvas, screen_id, fixture_id, origin)?,
         "connect-method" => render_connect_method(&mut canvas, screen_id, fixture_id, origin)?,
         "connect-apikey" => render_connect_apikey(&mut canvas, screen_id, fixture_id, origin)?,
-        "connect-oauth" => render_connect_oauth(&mut canvas, screen_id, fixture_id)?,
+        "connect-oauth" => {
+            render_connect_oauth(&mut canvas, screen_id, fixture_id, origin)?
+        }
         "connect-connected" => render_connect_connected(&mut canvas, screen_id, fixture_id)?,
         "mcp" => render_mcp(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
@@ -321,7 +323,14 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             ApiKeyValidation::Failure => "Try again".to_owned(),
             ApiKeyValidation::Empty | ApiKeyValidation::Malformed => "Enter an API key".to_owned(),
         },
-        "connect-oauth" => "I've authorized".to_owned(),
+        "connect-oauth" => match oauth_phase(fixture_id) {
+            OAuthPhase::Consent => "Open browser".to_owned(),
+            OAuthPhase::Waiting => "Waiting for authorization".to_owned(),
+            OAuthPhase::Denied | OAuthPhase::Expired | OAuthPhase::StateMismatch => {
+                "Try again".to_owned()
+            }
+            OAuthPhase::BrowserFailed => "Open browser".to_owned(),
+        },
         "connect-connected" => match origin {
             ProviderOrigin::BlockedModel => "Return to model choices".to_owned(),
             ProviderOrigin::Onboarding => "Return to onboarding".to_owned(),
@@ -1383,51 +1392,345 @@ fn render_connect_apikey(
     ))
 }
 
+const OAUTH_USER_CODE: &str = "WDJB-MJHT";
+const OAUTH_DEVICE_URL: &str = "https://auth.openai.com/device";
+const OAUTH_LOOPBACK_URL: &str = "https://auth.openai.com/authorize";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OAuthFlowKind {
+    Device,
+    Loopback,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OAuthPhase {
+    Consent,
+    Waiting,
+    Denied,
+    Expired,
+    BrowserFailed,
+    StateMismatch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OAuthWaitingTick {
+    Early,
+    Later,
+}
+
+fn oauth_provider_id(fixture_id: &str) -> &'static str {
+    method_provider_id(fixture_id)
+}
+
+fn oauth_flow_kind(fixture_id: &str) -> OAuthFlowKind {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("loopback") || lower.contains("redirect") || lower.contains("pkce") {
+        OAuthFlowKind::Loopback
+    } else {
+        // Default published, gate, device, failure, and consent fixtures use device auth.
+        OAuthFlowKind::Device
+    }
+}
+
+fn oauth_phase(fixture_id: &str) -> OAuthPhase {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("consent")
+        || lower.contains("before-launch")
+        || lower.contains("hostile-scope")
+        || lower.contains("secret-scope")
+        || lower.contains("sanitized-scope")
+    {
+        OAuthPhase::Consent
+    } else if lower.contains("denied") || lower.contains("access-denied") {
+        OAuthPhase::Denied
+    } else if lower.contains("expired") || lower.contains("timed-out") {
+        OAuthPhase::Expired
+    } else if lower.contains("browser-failed")
+        || lower.contains("open-browser-failed")
+        || lower.contains("browser_failed")
+    {
+        OAuthPhase::BrowserFailed
+    } else if lower.contains("state-mismatch") || lower.contains("state_mismatch") {
+        OAuthPhase::StateMismatch
+    } else {
+        OAuthPhase::Waiting
+    }
+}
+
+fn oauth_waiting_tick(fixture_id: &str) -> OAuthWaitingTick {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("later") || lower.contains("tick-2") || lower.contains("tick.2") {
+        OAuthWaitingTick::Later
+    } else {
+        OAuthWaitingTick::Early
+    }
+}
+
+fn oauth_scope_line(fixture_id: &str) -> &'static str {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("hostile-scope") {
+        // Hostile control sequences are stripped; readable scope remains.
+        "Code will request: read models · run completions"
+    } else if lower.contains("secret-scope") {
+        // Secret-like scope values are redacted; only non-secret names may show.
+        "Code will request: read models · [redacted]"
+    } else {
+        "Code will request: read models · run completions"
+    }
+}
+
 fn render_connect_oauth(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
+    origin: ProviderOrigin,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(3, 4, FLOW4_PROVIDER_ORIGIN, TextStyle::muted())?;
-    canvas.write(4, 4, "Authorize OpenAI", TextStyle::bright())?;
-    canvas.write(
-        6,
-        4,
-        "Finish these browser steps, then return to Code.",
-        TextStyle::muted(),
-    )?;
+    let origin_label = origin.visible_label();
+    let provider = provider_row(oauth_provider_id(fixture_id));
+    let flow = oauth_flow_kind(fixture_id);
+    let phase = oauth_phase(fixture_id);
+    let tick = oauth_waiting_tick(fixture_id);
+    let title = format!("Authorize {}", provider.name);
+    let scope_line = oauth_scope_line(fixture_id);
 
-    canvas.write(9, 4, "1  Open this sign-in page in your browser", TextStyle::text())?;
-    canvas.write(10, 7, "https://auth.openai.com/device", TextStyle::bright())?;
-    canvas.write(12, 4, "2  Enter this one-time code", TextStyle::text())?;
-    canvas.write(13, 7, "WDJB-MJHT", TextStyle::bright())?;
-    canvas.write(14, 7, "Code expires in 14m", TextStyle::muted())?;
-    canvas.write(17, 4, "● Waiting for authorization", TextStyle::bright())?;
-    canvas.write(
-        18,
-        6,
-        "Code is watching for a successful browser approval.",
-        TextStyle::muted(),
-    )?;
+    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(4, 4, &title, TextStyle::bright())?;
+
+    let flow_label = match flow {
+        OAuthFlowKind::Device => "Device authorization · one-time browser code",
+        OAuthFlowKind::Loopback => "Local browser return · no code to type",
+    };
+    canvas.write(6, 4, flow_label, TextStyle::muted())?;
+
+    // Body content depends on phase; secrets (device_code, tokens, state, verifier)
+    // and callback query strings never render.
+    let (status_line, status_detail, status_style) = match phase {
+        OAuthPhase::Consent => (
+            "Review what Code will request before the browser opens.",
+            scope_line,
+            TextStyle::text(),
+        ),
+        OAuthPhase::Waiting => {
+            let liveness = match (flow, tick) {
+                (OAuthFlowKind::Device, OAuthWaitingTick::Early) => {
+                    "Elapsed 0m 40s · code expires in 14m"
+                }
+                (OAuthFlowKind::Device, OAuthWaitingTick::Later) => {
+                    "Elapsed 3m 20s · code expires in 11m"
+                }
+                (OAuthFlowKind::Loopback, OAuthWaitingTick::Early) => {
+                    "Elapsed 0m 25s · local return still open"
+                }
+                (OAuthFlowKind::Loopback, OAuthWaitingTick::Later) => {
+                    "Elapsed 2m 10s · local return still open"
+                }
+            };
+            ("● Waiting for authorization", liveness, TextStyle::bright())
+        }
+        OAuthPhase::Denied => (
+            "Authorization was denied in the browser.",
+            "Nothing was saved. You can try again with the same provider.",
+            TextStyle {
+                foreground: ColorToken::Bad,
+                background: None,
+                bold: false,
+            },
+        ),
+        OAuthPhase::Expired => (
+            "This sign-in attempt expired.",
+            "The one-time code is no longer valid. Start a new browser sign-in.",
+            TextStyle {
+                foreground: ColorToken::Bad,
+                background: None,
+                bold: false,
+            },
+        ),
+        OAuthPhase::BrowserFailed => (
+            "Could not open the browser on this machine.",
+            "Open the sign-in page yourself, or try again when a browser is available.",
+            TextStyle {
+                foreground: ColorToken::Bad,
+                background: None,
+                bold: false,
+            },
+        ),
+        OAuthPhase::StateMismatch => (
+            "The browser reply did not match this sign-in attempt.",
+            "Nothing was connected. Start a fresh browser sign-in to continue.",
+            TextStyle {
+                foreground: ColorToken::Bad,
+                background: None,
+                bold: false,
+            },
+        ),
+    };
+
+    // Actionable browser steps: device shows URL + user_code; loopback shows open page only.
+    match (flow, phase) {
+        (OAuthFlowKind::Device, OAuthPhase::Consent) => {
+            canvas.write(
+                8,
+                4,
+                "1  Confirm consent, then open the provider sign-in page",
+                TextStyle::text(),
+            )?;
+            canvas.write(9, 7, OAUTH_DEVICE_URL, TextStyle::bright())?;
+            canvas.write(
+                11,
+                4,
+                "2  You will enter a one-time code on that page",
+                TextStyle::text(),
+            )?;
+            canvas.write(13, 4, status_line, status_style)?;
+            canvas.write(14, 6, status_detail, TextStyle::muted())?;
+            canvas.write(
+                16,
+                4,
+                "The provider keeps the secret device exchange. Code never shows it.",
+                TextStyle::muted(),
+            )?;
+        }
+        (OAuthFlowKind::Device, _) => {
+            canvas.write(
+                8,
+                4,
+                "1  Open this sign-in page in your browser",
+                TextStyle::text(),
+            )?;
+            canvas.write(9, 7, OAUTH_DEVICE_URL, TextStyle::bright())?;
+            canvas.write(11, 4, "2  Enter this one-time code", TextStyle::text())?;
+            canvas.write(12, 7, OAUTH_USER_CODE, TextStyle::bright())?;
+            canvas.write(
+                13,
+                7,
+                "Copy this code · it is not a secret access token",
+                TextStyle::muted(),
+            )?;
+            canvas.write(15, 4, status_line, status_style)?;
+            canvas.write(16, 6, status_detail, TextStyle::muted())?;
+            if matches!(phase, OAuthPhase::Waiting) {
+                canvas.write(
+                    18,
+                    4,
+                    "Code is watching for a successful browser approval.",
+                    TextStyle::muted(),
+                )?;
+            }
+        }
+        (OAuthFlowKind::Loopback, OAuthPhase::Consent) => {
+            canvas.write(
+                8,
+                4,
+                "1  Confirm consent, then open this sign-in page",
+                TextStyle::text(),
+            )?;
+            canvas.write(9, 7, OAUTH_LOOPBACK_URL, TextStyle::bright())?;
+            canvas.write(
+                11,
+                4,
+                "2  Finish in the browser · Code waits for a local return",
+                TextStyle::text(),
+            )?;
+            canvas.write(13, 4, status_line, status_style)?;
+            canvas.write(14, 6, status_detail, TextStyle::muted())?;
+            canvas.write(
+                16,
+                4,
+                "No one-time code to type. No callback details are shown here.",
+                TextStyle::muted(),
+            )?;
+        }
+        (OAuthFlowKind::Loopback, _) => {
+            canvas.write(
+                8,
+                4,
+                "1  Open this sign-in page in your browser",
+                TextStyle::text(),
+            )?;
+            canvas.write(9, 7, OAUTH_LOOPBACK_URL, TextStyle::bright())?;
+            canvas.write(
+                11,
+                4,
+                "2  Finish authorizing · Code receives a local return",
+                TextStyle::text(),
+            )?;
+            canvas.write(
+                12,
+                7,
+                "No device code · no callback query is displayed",
+                TextStyle::muted(),
+            )?;
+            canvas.write(14, 4, status_line, status_style)?;
+            canvas.write(15, 6, status_detail, TextStyle::muted())?;
+            if matches!(phase, OAuthPhase::Waiting) {
+                canvas.write(
+                    17,
+                    4,
+                    "A local return listener remains active until success or cancel.",
+                    TextStyle::muted(),
+                )?;
+            }
+        }
+    }
+
+    // Primary dock action: zero primary while waiting; one recovery/launch otherwise.
+    let primary: Option<(&str, &str, &str, &str, &str)> = match phase {
+        OAuthPhase::Consent => Some((
+            "Open browser",
+            "action.connect-oauth.open-browser",
+            "connect-oauth",
+            "direct",
+            "consent is acknowledged before browser launch opens the live wait",
+        )),
+        OAuthPhase::Waiting => None,
+        OAuthPhase::Denied | OAuthPhase::Expired | OAuthPhase::StateMismatch => Some((
+            "Try again",
+            "action.connect-oauth.retry",
+            "connect-oauth",
+            "direct",
+            "one recovery starts a fresh browser sign-in for the same provider",
+        )),
+        OAuthPhase::BrowserFailed => Some((
+            "Open browser",
+            "action.connect-oauth.open-browser",
+            "connect-oauth",
+            "direct",
+            "one recovery reopens or hand-links the sign-in page",
+        )),
+    };
 
     write_dock_border(canvas)?;
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Browser sign-in in progress",
+        &format!("Browser sign-in · {}", provider.name),
         TextStyle::bright(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 2,
-        "Cancel stops the wait and does not connect the provider.",
-        TextStyle::text(),
-    )?;
+    let dock_note = match phase {
+        OAuthPhase::Waiting => "Waiting · reopen browser stays secondary · cancel stops cleanly",
+        OAuthPhase::Consent => "Consent first · nothing is stored until authorization succeeds",
+        OAuthPhase::Denied | OAuthPhase::Expired | OAuthPhase::StateMismatch => {
+            "One recovery restart · cancel returns to method choice"
+        }
+        OAuthPhase::BrowserFailed => "Open browser again · cancel returns without connecting",
+    };
+    dock_line(canvas, DOCK_TOP + 2, dock_note, TextStyle::text())?;
+    let primary_row = match primary {
+        Some((label, _, _, _, _)) => format!("› [enter] {label}"),
+        None => {
+            // Secondary reopen remains visible but is not the primary owner during wait.
+            "  [r] Reopen browser · secondary only".to_owned()
+        }
+    };
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] I've authorized",
-        TextStyle::accent(),
+        &primary_row,
+        if primary.is_some() {
+            TextStyle::accent()
+        } else {
+            TextStyle::muted()
+        },
     )?;
     dock_line(
         canvas,
@@ -1438,17 +1741,30 @@ fn render_connect_oauth(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "Nothing is stored until authorization succeeds.",
+        "Cancel invalidates this attempt and releases any local return.",
         TextStyle::muted(),
     )?;
 
-    let pairs = [
+    let status_row = match (flow, phase) {
+        (OAuthFlowKind::Device, OAuthPhase::Consent) => 13u16,
+        (OAuthFlowKind::Device, _) => 15,
+        (OAuthFlowKind::Loopback, OAuthPhase::Consent) => 13,
+        (OAuthFlowKind::Loopback, _) => 14,
+    };
+    let user_code_row = 12u16;
+    let primary_end = 4 + primary_row.chars().count() as u16;
+    let origin_end = 4 + origin_label.chars().count() as u16;
+    let title_end = 4 + title.chars().count() as u16;
+    let flow_end = 4 + flow_label.chars().count() as u16;
+    let status_end = 4 + status_line.chars().count() as u16;
+
+    let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
             "origin",
-            "blocked-model-origin",
-            reference(3, 4, 48),
+            origin.origin_subject(),
+            reference(3, 4, origin_end),
             "summary",
             None,
         ),
@@ -1456,50 +1772,35 @@ fn render_connect_oauth(
             screen_id,
             fixture_id,
             "provider",
-            "openai",
-            reference(4, 4, 20),
+            provider.id,
+            reference(4, 4, title_end),
             "focused",
             None,
         ),
         semantic(
             screen_id,
             fixture_id,
-            "live-state",
-            "waiting-for-authorization",
-            reference(17, 4, 31),
-            "focused",
+            "oauth-flow",
+            match flow {
+                OAuthFlowKind::Device => "device-authorization",
+                OAuthFlowKind::Loopback => "loopback-redirect",
+            },
+            reference(6, 4, flow_end),
+            "summary",
             None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "one-time-code",
-            "user-code",
-            reference(13, 7, 16),
-            "focused",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "primary-action",
-            "action.connect-oauth.finish",
-            reference(DOCK_TOP + 3, 4, 28),
-            "focused",
-            Some(action(
-                "action.connect-oauth.finish",
-                "I've authorized",
-                false,
-            )),
         ),
         semantic(
             screen_id,
             fixture_id,
             "cancel-action",
             "action.connect-oauth.cancel",
-            reference(DOCK_TOP + 4, 4, 26),
+            reference(DOCK_TOP + 4, 4, 28),
             "summary",
-            Some(action("action.connect-oauth.cancel", "Cancel sign-in", false)),
+            Some(action(
+                "action.connect-oauth.cancel",
+                "Cancel sign-in",
+                false,
+            )),
         ),
         semantic(
             screen_id,
@@ -1511,13 +1812,124 @@ fn render_connect_oauth(
             None,
         ),
     ];
-    Ok((
-        pairs
-            .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .collect(),
-        pairs.iter().map(|(_, event)| event.clone()).collect(),
-        vec![
+
+    match phase {
+        OAuthPhase::Waiting => {
+            let live_subject = match tick {
+                OAuthWaitingTick::Early => "waiting-for-authorization.early",
+                OAuthWaitingTick::Later => "waiting-for-authorization.later",
+            };
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "live-state",
+                live_subject,
+                reference(status_row, 4, status_end),
+                "focused",
+                // Automatic success edge for ordered finish cases. Not a
+                // primary-action family, so waiting keeps zero primaries.
+                Some(action(
+                    "action.connect-oauth.finish",
+                    "Browser authorization succeeded",
+                    true,
+                )),
+            ));
+            // Secondary reopen only (not a primary-action family during wait).
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "action.connect-oauth.reopen-browser",
+                reference(DOCK_TOP + 3, 4, primary_end),
+                "summary",
+                Some(action(
+                    "action.connect-oauth.reopen-browser",
+                    "Reopen browser",
+                    false,
+                )),
+            ));
+        }
+        OAuthPhase::Consent | OAuthPhase::Denied | OAuthPhase::Expired
+        | OAuthPhase::BrowserFailed | OAuthPhase::StateMismatch => {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "oauth-status",
+                match phase {
+                    OAuthPhase::Consent => "consent-before-launch",
+                    OAuthPhase::Denied => "denied",
+                    OAuthPhase::Expired => "expired",
+                    OAuthPhase::BrowserFailed => "browser-failed",
+                    OAuthPhase::StateMismatch => "state-mismatch",
+                    OAuthPhase::Waiting => unreachable!(),
+                },
+                reference(status_row, 4, status_end),
+                "focused",
+                None,
+            ));
+        }
+    }
+
+    if matches!(flow, OAuthFlowKind::Device)
+        && !matches!(phase, OAuthPhase::Consent)
+    {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "one-time-code",
+            "user-code",
+            reference(user_code_row, 7, 7 + OAUTH_USER_CODE.chars().count() as u16),
+            "focused",
+            None,
+        ));
+    }
+
+    if let Some((label, action_id, _, _, _)) = primary {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            action_id,
+            reference(DOCK_TOP + 3, 4, primary_end),
+            "focused",
+            Some(action(action_id, label, false)),
+        ));
+    }
+
+    if phase == OAuthPhase::Consent
+        || fixture_id.to_ascii_lowercase().contains("hostile-scope")
+        || fixture_id.to_ascii_lowercase().contains("secret-scope")
+        || fixture_id.to_ascii_lowercase().contains("sanitized-scope")
+    {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "scope-consent",
+            "sanitized-scopes",
+            reference(14, 6, 6 + scope_line.chars().count() as u16),
+            "summary",
+            None,
+        ));
+    }
+
+    let mut transitions = vec![transition(
+        "action.connect-oauth.cancel",
+        "connect-oauth",
+        "connect-method",
+        "cancel",
+        "cancel invalidates the waiting sign-in attempt, releases listeners, and restores method choice",
+    )];
+    if let Some((_, action_id, target, kind, path)) = primary {
+        transitions.insert(
+            0,
+            transition(action_id, "connect-oauth", target, kind, path),
+        );
+    } else {
+        // Public finish remains an ordered success edge for gate bridges; it is
+        // an automatic non-primary owner, so the live waiting canvas still has
+        // zero primary-action family events.
+        transitions.insert(
+            0,
             transition(
                 "action.connect-oauth.finish",
                 "connect-oauth",
@@ -1525,14 +1937,23 @@ fn render_connect_oauth(
                 "direct",
                 "successful authentication records the connected provider",
             ),
-            transition(
-                "action.connect-oauth.cancel",
-                "connect-oauth",
-                "connect-method",
-                "cancel",
-                "cancel invalidates the waiting sign-in attempt without connecting",
-            ),
-        ],
+        );
+        transitions.push(transition(
+            "action.connect-oauth.reopen-browser",
+            "connect-oauth",
+            "connect-oauth",
+            "direct",
+            "reopen keeps the same pending attempt and remains secondary during wait",
+        ));
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
     ))
 }
 

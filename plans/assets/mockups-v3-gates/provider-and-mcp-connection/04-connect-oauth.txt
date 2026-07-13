@@ -4,19 +4,19 @@
     Provider connection · blocked model action                                                                          
     Authorize OpenAI                                                                                                    
                                                                                                                         
-    Finish these browser steps, then return to Code.                                                                    
-                                                                                                                        
+    Device authorization · one-time browser code                                                                        
                                                                                                                         
     1  Open this sign-in page in your browser                                                                           
        https://auth.openai.com/device                                                                                   
                                                                                                                         
     2  Enter this one-time code                                                                                         
        WDJB-MJHT                                                                                                        
-       Code expires in 14m                                                                                              
-                                                                                                                        
+       Copy this code · it is not a secret access token                                                                 
                                                                                                                         
     ● Waiting for authorization                                                                                         
-      Code is watching for a successful browser approval.                                                               
+      Elapsed 0m 40s · code expires in 14m                                                                              
+                                                                                                                        
+    Code is watching for a successful browser approval.                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +30,11 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Browser sign-in in progress                                                                                      │  
-  │ Cancel stops the wait and does not connect the provider.                                                         │  
-  │ › [enter] I've authorized                                                                                        │  
+  │ Browser sign-in · OpenAI                                                                                         │  
+  │ Waiting · reopen browser stays secondary · cancel stops cleanly                                                  │  
+  │   [r] Reopen browser · secondary only                                                                            │  
   │   [esc] Cancel sign-in                                                                                           │  
-  │ Nothing is stored until authorization succeeds.                                                                  │  
+  │ Cancel invalidates this attempt and releases any local return.                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

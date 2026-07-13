@@ -131,14 +131,26 @@ fn connect_oauth_is_live_and_cancelable_without_connecting() {
     assert!(text.contains("Enter this one-time code"));
     assert!(text.contains("WDJB-MJHT"));
     assert!(text.contains("● Waiting for authorization"));
-    assert!(text.contains("› [enter] I've authorized"));
+    // Live wait has zero primary; secondary reopen + Cancel only.
+    assert!(!text.contains("› [enter] I've authorized"));
+    assert!(
+        text.contains("Reopen browser") || text.contains("secondary"),
+        "reopen stays secondary during wait"
+    );
     assert!(text.contains("[esc] Cancel sign-in"));
     assert!(!text.contains("device_code"));
     assert!(!text.contains("client_secret"));
+    assert!(
+        !audit
+            .events
+            .iter()
+            .any(|event| event.identity.family == "primary-action"),
+        "waiting has zero primary-action events"
+    );
     assert!(audit.transitions.iter().any(|transition| {
         transition.action_id == "action.connect-oauth.finish"
             && transition.to_screen_id == "connect-connected"
-            && transition.kind == "direct"
+            && (transition.kind == "direct" || transition.kind == "automatic")
     }));
     assert!(audit.transitions.iter().any(|transition| {
         transition.action_id == "action.connect-oauth.cancel"
