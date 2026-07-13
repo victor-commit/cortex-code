@@ -1,5 +1,5 @@
 //! Flow 5 pilot states for turn, tool, blocked-command, network, rate-limit,
-//! context exhaustion, and checkpoint recovery.
+//! context exhaustion, interrupt, toasts, and checkpoint recovery.
 //!
 //! Turn failures keep partial replies inline with one adjacent primary recovery.
 //! Tool failures keep the exact invocation, completed siblings, partial output,
@@ -11,6 +11,8 @@
 //! without losing recovery origin or submitting more than once.
 //! Context exhaustion preserves the refactor state, keeps token detail under
 //! Evidence, and offers Compact and continue as the only primary recovery.
+//! Interrupt is neutral (not a failure): retained partial, visible seam, Continue reply.
+//! Toasts stay compact, severity-ordered, notice-owned, and nonblocking.
 //! Rate-limit owns one automatic countdown with optional secondary Retry now.
 //! Checkpoint undo names exact file effects, preserves unrelated work, and
 //! offers symmetric redo with conflict and no-op safety.
@@ -79,6 +81,28 @@ const CONTEXT_CONSEQUENCE: &str =
 const CONTEXT_PRIMARY: &str = "Compact and continue";
 const CONTEXT_SECONDARY: &str = "Start new session";
 const CONTEXT_PENDING: &str = "pending.context.release-notes";
+const INTERRUPT_STATEMENT: &str = "You stopped this reply";
+const INTERRUPT_KEPT: &str = "Partial answer kept · saved in this conversation";
+const INTERRUPT_PRIMARY: &str = "Continue reply";
+const INTERRUPT_SECONDARY: &str = "Rephrase request";
+const INTERRUPT_QUEUE_LINE: &str =
+    "Queued follow-ups and attachments stay queued in their original order.";
+const INTERRUPT_CONTINUE_NOTE: &str =
+    "Continue runs first, then queued follow-ups keep their order.";
+const INTERRUPT_REPHRASE_NOTE: &str =
+    "Rephrase restores the original prompt in the composer for editing.";
+const INTERRUPT_PENDING: &str = "pending.interrupt.release-notes";
+const COMPOSER_TOP: u16 = 32;
+const COMPOSER_BOTTOM: u16 = 37;
+const TOAST_FAILURE: &str = "Settings were not saved";
+const TOAST_WARN: &str = "Connection recovered after a brief pause";
+// Note: rendered toast lines use a shorter visual form; the full phrase is
+// split across two compact rows so the canvas stays within 120 columns.
+const TOAST_INFO: &str = "Model switched";
+const TOAST_SUCCESS: &str = "Checkpoint saved";
+const TOAST_RETRY: &str = "Retry save";
+const TOAST_TRANSCRIPT: &str = "Your preferences stay in this project after they are saved.";
+const TOAST_ORIGIN_LINE: &str = "Recovery · paused conversation";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -135,6 +159,13 @@ enum BlockedCommandVariant {
     AfterWorkStyle,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToastVariant {
+    Full,
+    AfterAutoDismiss,
+    AfterRetry,
+}
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let surface = match screen_id {
@@ -142,9 +173,11 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         | "error-network"
         | "error-context"
         | "rate-limit"
+        | "interrupt"
         | "checkpoint-undo"
         | "tool-failed"
         | "blocked-command" => Surface::ActionDock,
+        "toasts" => Surface::ConversationShell,
         _ => return Err(format!("unknown Flow 5 recovery screen: {screen_id}")),
     };
     ScreenComposition::new(screen_id, surface, statusline.clone()).validate()?;
@@ -154,16 +187,19 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "error-network" => render_error_network(&mut canvas, screen_id, fixture_id)?,
         "error-context" => render_error_context(&mut canvas, screen_id, fixture_id)?,
         "rate-limit" => render_rate_limit(&mut canvas, screen_id, fixture_id)?,
+        "interrupt" => render_interrupt(&mut canvas, screen_id, fixture_id)?,
+        "toasts" => render_toasts(&mut canvas, screen_id, fixture_id)?,
         "checkpoint-undo" => render_checkpoint_undo(&mut canvas, screen_id, fixture_id)?,
         "tool-failed" => render_tool_failed(&mut canvas, screen_id, fixture_id)?,
         "blocked-command" => render_blocked_command(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
-    let paused_activity = if screen_id == "error-context" {
-        CONTEXT_PENDING
-    } else {
-        PENDING_NETWORK
+    let paused_activity = match screen_id {
+        "error-context" => CONTEXT_PENDING,
+        "interrupt" => INTERRUPT_PENDING,
+        "toasts" => PENDING_NETWORK,
+        _ => PENDING_NETWORK,
     };
     Ok(AuditDocument {
         screen_id: screen_id.to_owned(),
@@ -513,6 +549,561 @@ fn tool_failed_variant(fixture_id: &str) -> ToolFailedVariant {
     } else {
         ToolFailedVariant::MissingFile
     }
+}
+
+fn toast_variant(fixture_id: &str) -> ToastVariant {
+    if fixture_id.contains("auto-dismiss") || fixture_id.contains("after-dismiss") {
+        ToastVariant::AfterAutoDismiss
+    } else if fixture_id.contains("retry") || fixture_id.contains("after-retry") {
+        ToastVariant::AfterRetry
+    } else {
+        ToastVariant::Full
+    }
+}
+
+fn style_for_token(token: crate::chrome::tokens::ColorToken) -> TextStyle {
+    TextStyle {
+        foreground: token,
+        background: None,
+        bold: matches!(
+            token,
+            crate::chrome::tokens::ColorToken::Bright
+                | crate::chrome::tokens::ColorToken::Accent
+                | crate::chrome::tokens::ColorToken::Bad
+                | crate::chrome::tokens::ColorToken::Ok
+        ),
+    }
+}
+
+fn render_interrupt(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let _ = fixture_id;
+    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, PARTIAL_REPLY, TextStyle::text())?;
+    canvas.write(10, 4, "█", TextStyle::bright())?;
+    canvas.write(11, 4, COMPLETED_WORK, TextStyle::muted())?;
+    // Neutral seam: muted rule only. No BAD red or failure glyph.
+    canvas.write(
+        13,
+        4,
+        "────────────────────────────────────────────────────────",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        &format!("● {INTERRUPT_STATEMENT} · 12s in"),
+        TextStyle::bright(),
+    )?;
+    canvas.write(16, 4, INTERRUPT_KEPT, TextStyle::text())?;
+    canvas.write(17, 4, INTERRUPT_QUEUE_LINE, TextStyle::muted())?;
+    canvas.write(
+        18,
+        4,
+        "Draft kept · Keep the risk note short before we publish.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        19,
+        4,
+        "Attachment · notes/risk-follow-up.md · stays queued second",
+        TextStyle::muted(),
+    )?;
+    canvas.write(20, 4, INTERRUPT_CONTINUE_NOTE, TextStyle::muted())?;
+    canvas.write(21, 4, INTERRUPT_REPHRASE_NOTE, TextStyle::muted())?;
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Resume the stopped reply",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Continue keeps the partial answer and runs before queued work.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        &format!("› [enter] {INTERRUPT_PRIMARY}"),
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        &format!("  [r] {INTERRUPT_SECONDARY}"),
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "  [esc] Cancel · keep the partial answer",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "paused-conversation",
+            reference(2, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-request",
+            "release-notes-prompt",
+            reference(5, 4, 70),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "partial-reply",
+            "interrupted-answer",
+            reference(9, 4, 95),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "interrupt-statement",
+            "user-stopped-reply",
+            reference(15, 4, 4 + INTERRUPT_STATEMENT.chars().count() as u16 + 10),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "partial-kept",
+            reference(16, 4, 4 + INTERRUPT_KEPT.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "queued-input",
+            "risk-follow-up",
+            reference(17, 4, 4 + INTERRUPT_QUEUE_LINE.chars().count() as u16),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.interrupt.continue-reply",
+            reference(
+                DOCK_TOP + 3,
+                4,
+                4 + INTERRUPT_PRIMARY.chars().count() as u16 + 10,
+            ),
+            "focused",
+            Some(action(
+                "action.interrupt.continue-reply",
+                INTERRUPT_PRIMARY,
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.interrupt.rephrase-request",
+            reference(
+                DOCK_TOP + 4,
+                4,
+                4 + INTERRUPT_SECONDARY.chars().count() as u16 + 6,
+            ),
+            "summary",
+            Some(action(
+                "action.interrupt.rephrase-request",
+                INTERRUPT_SECONDARY,
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.interrupt.cancel",
+            reference(DOCK_TOP + 5, 4, 46),
+            "summary",
+            Some(action("action.interrupt.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.interrupt.continue-reply",
+                "interrupt",
+                "chat-turn",
+                "direct",
+                "continue appends only new text from the retained partial in the same turn",
+            ),
+            transition(
+                "action.interrupt.rephrase-request",
+                "interrupt",
+                "chat-turn",
+                "direct",
+                "rephrase restores the original prompt into the composer for editing",
+            ),
+            transition(
+                "action.interrupt.cancel",
+                "interrupt",
+                "interrupt",
+                "cancel",
+                "cancel keeps the partial answer, queued follow-ups, and draft",
+            ),
+        ],
+    ))
+}
+
+fn render_toasts(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    use crate::chrome::tokens::ColorToken;
+
+    let variant = toast_variant(fixture_id);
+    // Conversation remains fully readable under the compact toast stack.
+    canvas.write(2, 4, TOAST_ORIGIN_LINE, TextStyle::muted())?;
+    canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, "You · /settings save", TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, TOAST_TRANSCRIPT, TextStyle::text())?;
+    canvas.write(11, 4, COMPLETED_WORK, TextStyle::muted())?;
+    canvas.write(
+        12,
+        4,
+        "Draft kept · Keep the risk note short before we publish.",
+        TextStyle::muted(),
+    )?;
+
+    // Borderless toast stack, upper-right, severity-ordered regardless of timestamps.
+    // Construction order would be success (t0), info (t1), warn (t2), failure (t3).
+    // Visible order is failure, warn, info, success.
+    // Keep lines within the fixed 120-wide canvas (toast_col + longest line <= 120).
+    let toast_col: u16 = 68;
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "paused-conversation",
+            reference(2, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-request",
+            "settings-save",
+            reference(5, 4, 28),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "preferences-saved-note",
+            reference(9, 4, 4 + TOAST_TRANSCRIPT.chars().count() as u16),
+            "summary",
+            None,
+        ),
+    ];
+
+    match variant {
+        ToastVariant::Full => {
+            // Failure (created last) · actionable · persistent
+            canvas.write(
+                2,
+                toast_col,
+                &format!("│ ✗ BAD  {TOAST_FAILURE}"),
+                style_for_token(ColorToken::Bad),
+            )?;
+            canvas.write(
+                3,
+                toast_col,
+                &format!("│  [s] {TOAST_RETRY} · stays until you act"),
+                TextStyle::muted(),
+            )?;
+            // Warning (created third)
+            canvas.write(
+                5,
+                toast_col,
+                &format!("│ ● WARN  {TOAST_WARN}"),
+                style_for_token(ColorToken::Warn),
+            )?;
+            canvas.write(6, toast_col, "│  clears on its own", TextStyle::muted())?;
+            // Info (created second)
+            canvas.write(
+                8,
+                toast_col,
+                &format!("│ ● INFO  {TOAST_INFO}"),
+                style_for_token(ColorToken::Info),
+            )?;
+            canvas.write(9, toast_col, "│  clears on its own", TextStyle::muted())?;
+            // Success (created first)
+            canvas.write(
+                11,
+                toast_col,
+                &format!("│ ✓ OK    {TOAST_SUCCESS}"),
+                style_for_token(ColorToken::Ok),
+            )?;
+            canvas.write(12, toast_col, "│  clears on its own", TextStyle::muted())?;
+
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast",
+                "failure-settings-save",
+                reference(2, toast_col, toast_col + 38),
+                "focused",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.toasts.retry-save",
+                reference(3, toast_col, toast_col + 40),
+                "focused",
+                Some(action("action.toasts.retry-save", TOAST_RETRY, false)),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast",
+                "warn-connection",
+                reference(5, toast_col, toast_col + 42),
+                "summary",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast",
+                "info-model",
+                reference(8, toast_col, toast_col + 28),
+                "summary",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast",
+                "success-checkpoint",
+                reference(11, toast_col, toast_col + 28),
+                "summary",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast-lifetime",
+                "failure-persistent",
+                reference(3, toast_col + 4, toast_col + 40),
+                "summary",
+                None,
+            ));
+        }
+        ToastVariant::AfterAutoDismiss => {
+            // Only the actionable failure remains after transient notices auto-dismiss.
+            canvas.write(
+                2,
+                toast_col,
+                &format!("│ ✗ BAD  {TOAST_FAILURE}"),
+                style_for_token(ColorToken::Bad),
+            )?;
+            canvas.write(
+                3,
+                toast_col,
+                &format!("│  [s] {TOAST_RETRY} · stays until you act"),
+                TextStyle::muted(),
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast",
+                "failure-settings-save",
+                reference(2, toast_col, toast_col + 38),
+                "focused",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.toasts.retry-save",
+                reference(3, toast_col, toast_col + 40),
+                "focused",
+                Some(action("action.toasts.retry-save", TOAST_RETRY, false)),
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast-lifetime",
+                "transient-dismissed",
+                reference(2, toast_col, toast_col + 20),
+                "summary",
+                None,
+            ));
+        }
+        ToastVariant::AfterRetry => {
+            // Failure cleared after the notice-owned Retry save succeeded.
+            canvas.write(
+                2,
+                toast_col,
+                "│ ✓ OK    Settings saved",
+                style_for_token(ColorToken::Ok),
+            )?;
+            canvas.write(3, toast_col, "│  clears on its own", TextStyle::muted())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "toast",
+                "success-settings-saved",
+                reference(2, toast_col, toast_col + 28),
+                "summary",
+                None,
+            ));
+        }
+    }
+
+    // Normal composer remains the focus owner; toasts never replace it.
+    canvas.write(
+        COMPOSER_TOP,
+        2,
+        &format!("╭{}╮", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        COMPOSER_TOP + 1,
+        2,
+        "│ › Reply when ready…",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        COMPOSER_TOP + 2,
+        2,
+        &format!("│   Draft · {DRAFT}"),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        COMPOSER_BOTTOM - 1,
+        4,
+        "[enter] Send reply",
+        TextStyle::accent(),
+    )?;
+    canvas.write(
+        COMPOSER_BOTTOM,
+        2,
+        &format!("╰{}╯", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "composer",
+        "focus-owner",
+        reference(COMPOSER_TOP + 1, 4, 28),
+        "focused",
+        Some(action("action.composer.send", "Send reply", false)),
+    ));
+    // Automatic lifetime tick for transient notices. Always present so the
+    // automatic-transition bijection matches the transition list.
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "automatic-transition",
+        "action.toasts.auto-dismiss",
+        reference(12, toast_col, toast_col + 22),
+        "summary",
+        Some(ActionEvidence {
+            action_id: "action.toasts.auto-dismiss".to_owned(),
+            label: "Auto-dismiss routine notices".to_owned(),
+            enabled: true,
+            automatic: true,
+        }),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    let transitions = vec![
+        transition(
+            "action.toasts.retry-save",
+            "toasts",
+            "chat-turn",
+            "direct",
+            "notice-owned retry returns to the conversation that emitted the toast",
+        ),
+        transition(
+            "action.toasts.auto-dismiss",
+            "toasts",
+            "toasts",
+            "automatic",
+            "success and info notices auto-dismiss while failure stays until acted on",
+        ),
+        transition(
+            "action.composer.send",
+            "toasts",
+            "chat-turn",
+            "direct",
+            "composer remains usable while toasts stay nonblocking",
+        ),
+    ];
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
 }
 
 fn blocked_command_variant(fixture_id: &str) -> BlockedCommandVariant {

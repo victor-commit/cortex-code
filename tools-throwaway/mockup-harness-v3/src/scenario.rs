@@ -1146,6 +1146,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "compact-context-resume-chat" => compact_context_resume_chat(),
         "error-context-evidence-open" => error_context_evidence_open(),
         "error-context-evidence-close" => error_context_evidence_close(),
+        "interrupt-continue-reply" => interrupt_continue_reply(),
+        "interrupt-rephrase-request" => interrupt_rephrase_request(),
+        "toasts-auto-dismiss-tick" => toasts_auto_dismiss_tick(),
+        "toasts-retry-save" => toasts_retry_save(),
         "shell-interrupt" => shell_interrupt(),
         "shell-complete" => shell_complete(),
         "todo-progress" => todo_progress(),
@@ -1539,6 +1543,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "compact-context-resume-chat"
             | "error-context-evidence-open"
             | "error-context-evidence-close"
+            | "interrupt-continue-reply"
+            | "interrupt-rephrase-request"
     ) {
         let completed_edits = "notes/release.md|notes/risks.md|accepted-retry-window";
         let pending_task = "finish-short-risk-note-before-publish";
@@ -1554,6 +1560,72 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             PreservedFieldHash {
                 before: sha256_hex(pending_task.as_bytes()),
                 after: sha256_hex(pending_task.as_bytes()),
+            },
+        );
+    }
+    if matches!(
+        case_id,
+        "interrupt-continue-reply" | "interrupt-rephrase-request"
+    ) {
+        let prefix = FLOW5_PARTIAL;
+        preserved_field_hashes.insert(
+            "answer_prefix".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(prefix.as_bytes()),
+                after: sha256_hex(prefix.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "queue".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(FLOW5_QUEUE.as_bytes()),
+                after: sha256_hex(FLOW5_QUEUE.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "queued_follow_up".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"Queue the short risk follow-up after restore."),
+                after: sha256_hex(b"Queue the short risk follow-up after restore."),
+            },
+        );
+        preserved_field_hashes.insert(
+            "attachment".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"notes/risk-follow-up.md"),
+                after: sha256_hex(b"notes/risk-follow-up.md"),
+            },
+        );
+        if case_id == "interrupt-continue-reply" {
+            preserved_field_hashes.insert(
+                "draft".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(FLOW5_DRAFT.as_bytes()),
+                    after: sha256_hex(FLOW5_DRAFT.as_bytes()),
+                },
+            );
+        }
+    }
+    if matches!(case_id, "toasts-auto-dismiss-tick" | "toasts-retry-save") {
+        preserved_field_hashes.insert(
+            "draft".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(FLOW5_DRAFT.as_bytes()),
+                after: sha256_hex(FLOW5_DRAFT.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "session_id".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"session.recovery.1"),
+                after: sha256_hex(b"session.recovery.1"),
+            },
+        );
+        preserved_field_hashes.insert(
+            "focus_owner".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"composer"),
+                after: sha256_hex(b"composer"),
             },
         );
     }
@@ -2481,6 +2553,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "compact-context-resume-chat"
             | "error-context-evidence-open"
             | "error-context-evidence-close"
+            | "interrupt-continue-reply"
+            | "interrupt-rephrase-request"
+            | "toasts-auto-dismiss-tick"
+            | "toasts-retry-save"
     ) {
         match (case_id, after.screen_id.as_str()) {
             ("turn-error-retry", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
@@ -2500,6 +2576,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("error-context-evidence-close", "error-context") => {
                 "canonical.error-context".to_owned()
             }
+            ("interrupt-continue-reply", "chat-turn") | ("interrupt-rephrase-request", "chat-turn") => {
+                "gate.recovery.chat-turn".to_owned()
+            }
+            ("toasts-auto-dismiss-tick", "toasts") => "toasts.auto-dismiss".to_owned(),
+            ("toasts-retry-save", "chat-turn") => "gate.recovery.chat-turn".to_owned(),
             ("tool-failed-retry-safe", "tool-running") => "canonical.tool-running".to_owned(),
             ("tool-failed-retry-completed-effect", "tool-failed") => {
                 "tool-failed.completed".to_owned()
@@ -18881,6 +18962,302 @@ fn error_context_evidence_close() -> (
         "context-evidence",
         "collapsed",
         "token diagnostics hid again while draft, edits, and pending task stayed preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn apply_interrupt_identity(state: &mut ScenarioState) {
+    apply_flow5_identity(state);
+    state.paused_activity_id = "pending.interrupt.release-notes".to_owned();
+    state.attachment = "notes/risk-follow-up.md".to_owned();
+    state.queued_follow_up = "Queue the short risk follow-up after restore.".to_owned();
+    state.queue = FLOW5_QUEUE.to_owned();
+    state.partial_response = FLOW5_PARTIAL.to_owned();
+    state.scroll_anchor = "turn-partial".to_owned();
+    state.state_hash = state_hash(state);
+}
+
+fn interrupt_continue_reply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "interrupt",
+        vec!["chat-turn", "streaming", "interrupt"],
+        FLOW5_DRAFT,
+        "interrupted-answer",
+        "continue-reply",
+        "interrupt-recovery",
+        Some("pending.interrupt.release-notes"),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_interrupt_identity(&mut before);
+    let completed_append =
+        "Finish the short risk note and keep the queue ready for the next turn.";
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "streaming", "interrupt"],
+        FLOW5_DRAFT,
+        "turn-resume",
+        "composer",
+        "composer",
+        Some("pending.interrupt.release-notes"),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "pending.interrupt.release-notes".to_owned();
+    after.attachment = "notes/risk-follow-up.md".to_owned();
+    after.queued_follow_up = "Queue the short risk follow-up after restore.".to_owned();
+    after.queue = FLOW5_QUEUE.to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.partial_response = format!(
+        "{} {}",
+        FLOW5_PARTIAL.trim_end_matches('…'),
+        completed_append
+    );
+    after.transcript = format!(
+        "You · Summarize the remaining release notes and the still-open risks.\n{} {}",
+        FLOW5_PARTIAL.trim_end_matches('…'),
+        completed_append
+    );
+    after.scroll_anchor = "turn-resume".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.interrupt.continue-reply".to_owned(),
+        label: "Continue reply".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "continue appends only new text from the retained partial in the same turn"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.interrupt.continue-reply.1".to_owned(),
+        owner_id: "pending.interrupt.release-notes".to_owned(),
+        count: 1,
+        outcome: "continued".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.interrupt.continue-reply",
+        "interrupt-resume",
+        "continued",
+        "same-turn continuation appended new text without duplicating the retained partial",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn interrupt_rephrase_request() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "interrupt",
+        vec!["chat-turn", "streaming", "interrupt"],
+        FLOW5_DRAFT,
+        "interrupted-answer",
+        "rephrase-request",
+        "interrupt-recovery",
+        Some("pending.interrupt.release-notes"),
+        "return-to-paused-turn",
+        0,
+    );
+    apply_interrupt_identity(&mut before);
+    let original =
+        "Summarize the remaining release notes and the still-open risks.".to_owned();
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "streaming", "interrupt"],
+        &original,
+        "turn-rephrase",
+        "composer",
+        "composer",
+        Some("pending.interrupt.release-notes"),
+        "return-to-paused-turn",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "pending.interrupt.release-notes".to_owned();
+    after.attachment = "notes/risk-follow-up.md".to_owned();
+    after.queued_follow_up = "Queue the short risk follow-up after restore.".to_owned();
+    after.queue = FLOW5_QUEUE.to_owned();
+    after.draft = original;
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.partial_response = FLOW5_PARTIAL.to_owned();
+    after.transcript = format!(
+        "You · Summarize the remaining release notes and the still-open risks.\n{FLOW5_PARTIAL}\nRephrase the request whenever you are ready."
+    );
+    after.scroll_anchor = "turn-rephrase".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.interrupt.rephrase-request".to_owned(),
+        label: "Rephrase request".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "rephrase restores the original prompt into the composer for editing".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.interrupt.rephrase-request.1".to_owned(),
+        owner_id: "pending.interrupt.release-notes".to_owned(),
+        count: 1,
+        outcome: "rephrase-ready".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.interrupt.rephrase-request",
+        "interrupt-rephrase",
+        "composer-restored",
+        "original prompt returned to the composer without clearing the partial answer",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn toasts_auto_dismiss_tick() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "toasts",
+        vec!["chat-turn", "toasts"],
+        FLOW5_DRAFT,
+        "toast-stack",
+        "failure-settings-save",
+        "composer",
+        Some("pending.network.release-notes"),
+        "stay-in-conversation",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "composer".to_owned();
+    before.selection = "failure-settings-save|warn|info|success".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "failure-settings-save".to_owned();
+    after.focus = "composer".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.toasts.auto-dismiss".to_owned(),
+        label: "Auto-dismiss routine notices".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "success and info notices auto-dismiss while failure stays until acted on"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.toasts.auto-dismiss.1".to_owned(),
+        owner_id: "toast.failure.settings-save".to_owned(),
+        count: 1,
+        outcome: "transient-cleared".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.toasts.auto-dismiss",
+        "toast-lifetime",
+        "auto-dismiss",
+        "routine notices cleared without moving composer focus",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn toasts_retry_save() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "toasts",
+        vec!["chat-turn", "toasts"],
+        FLOW5_DRAFT,
+        "toast-stack",
+        "failure-settings-save",
+        "composer",
+        Some("pending.network.release-notes"),
+        "return-to-origin-activity",
+        0,
+    );
+    apply_flow5_identity(&mut before);
+    before.focus = "composer".to_owned();
+    before.selection = "failure-settings-save".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "toasts"],
+        FLOW5_DRAFT,
+        "turn-resume",
+        "composer",
+        "composer",
+        Some("pending.network.release-notes"),
+        "return-to-origin-activity",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.submitted_prompt =
+        Some("Summarize the remaining release notes and the still-open risks.".to_owned());
+    after.transcript =
+        "You · Summarize the remaining release notes and the still-open risks.\nYou · /settings save\nSettings saved. Continue the release notes from the paused activity."
+            .to_owned();
+    after.partial_response = String::new();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.toasts.retry-save".to_owned(),
+        label: "Retry save".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "notice-owned retry returns to the conversation that emitted the toast".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.toasts.retry-save.1".to_owned(),
+        owner_id: "toast.failure.settings-save".to_owned(),
+        count: 1,
+        outcome: "saved".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.toasts.retry-save",
+        "toast-recovery",
+        "saved",
+        "settings saved via the failure toast action and restored the origin conversation",
     );
     (before, after, action, transition, attempt, effect)
 }

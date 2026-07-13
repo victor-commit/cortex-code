@@ -194,6 +194,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "error-network",
             "error-context",
             "rate-limit",
+            "interrupt",
+            "toasts",
             "checkpoint-undo",
             "tool-failed",
             "blocked-command",

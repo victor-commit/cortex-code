@@ -545,6 +545,8 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "error-network"
             | "error-context"
             | "rate-limit"
+            | "interrupt"
+            | "toasts"
             | "checkpoint-undo"
             | "tool-failed"
             | "blocked-command"

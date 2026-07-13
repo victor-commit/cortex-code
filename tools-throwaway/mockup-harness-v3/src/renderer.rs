@@ -94,6 +94,8 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "error-network",
     "error-context",
     "rate-limit",
+    "interrupt",
+    "toasts",
     "checkpoint-undo",
     "workflow-launch",
     "workflow-launch-blocked",

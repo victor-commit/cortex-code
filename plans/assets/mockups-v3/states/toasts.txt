@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                  │ ✗ BAD  Settings were not saved                    
+    Finish the release notes without losing the current work.       │  [s] Retry save · stays until you act             
+                                                                                                                        
+    You · /settings save                                            │ ● WARN  Connection recovered after a brief pause  
+                                                                    │  clears on its own                                
+    Code                                                                                                                
+                                                                    │ ● INFO  Model switched                            
+    Your preferences stay in this project after they are saved.     │  clears on its own                                
+                                                                                                                        
+    Completed earlier · retry window copy accepted for the release b│ ✓ OK    Checkpoint saved                          
+    Draft kept · Keep the risk note short before we publish.        │  clears on its own                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Reply when ready…                                                                                                 
+  │   Draft · Keep the risk note short before we publish.                                                               
+                                                                                                                        
+    [enter] Send reply                                                                                                  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

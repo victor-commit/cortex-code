@@ -617,14 +617,14 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::States,
         flow: FlowOwner::Recovery,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "toasts",
         category: Category::States,
         flow: FlowOwner::Recovery,
-        surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        surface: Surface::ConversationShell,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "checkpoint-undo",
