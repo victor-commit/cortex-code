@@ -44,6 +44,19 @@ pub(crate) const INSERTED_FILE: &str = "@src/net/retry_policy.rs";
 pub(crate) const MULTILINE_DRAFT: &str = "Check the retry path in @retry\n\
 Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
 Keep the summary short before we merge.";
+/// Exact multiline draft before `/` opens the slash menu (cancel restores this).
+pub(crate) const SLASH_PRE_OPEN_DRAFT: &str = "Check the retry path before we merge.\n\
+Then explain the failure path that still needs coverage before the merge.\n\
+Keep the summary short before we merge.";
+/// Draft while the slash menu is open: active command span is the leading `/`.
+pub(crate) const SLASH_OPEN_DRAFT: &str = "/\n\
+Check the retry path before we merge.\n\
+Then explain the failure path that still needs coverage before the merge.\n\
+Keep the summary short before we merge.";
+pub(crate) const SLASH_ACTIVE_SPAN: &str = "/";
+pub(crate) const SLASH_CONFIRMED_EXPORT: &str = "/export";
+/// Unchanged draft while the command palette is open (palette does not mutate it).
+pub(crate) const PALETTE_PRESERVED_DRAFT: &str = MULTILINE_DRAFT;
 pub(crate) const SHORT_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\"";
 pub(crate) const LONG_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\" && git diff -- src/net/retry_policy.rs > /tmp/retry.diff && printf '%s\\n' \"review complete\"";
 pub(crate) const UNSAFE_SHELL_COMMAND: &[u8] = b"printf 'retry\0'\n\x1b[31m";
@@ -75,6 +88,91 @@ const PROJECT_FILES: [FileCandidate; 3] = [
     },
 ];
 
+#[derive(Clone, Copy)]
+struct SlashCommand {
+    name: &'static str,
+    consequence: &'static str,
+}
+
+const SLASH_COMMANDS: [SlashCommand; 4] = [
+    SlashCommand {
+        name: "/export",
+        consequence: "Export this conversation as a file",
+    },
+    SlashCommand {
+        name: "/help",
+        consequence: "Open the command reference",
+    },
+    SlashCommand {
+        name: "/queue",
+        consequence: "Manage queued prompts",
+    },
+    SlashCommand {
+        name: "/actions",
+        consequence: "Open the full action palette",
+    },
+];
+
+#[derive(Clone, Copy)]
+struct PaletteAction {
+    label: &'static str,
+    consequence: &'static str,
+    opens_submenu: bool,
+    subject_id: &'static str,
+}
+
+const PALETTE_ROOT_ACTIONS: [PaletteAction; 4] = [
+    PaletteAction {
+        label: "Recall an older prompt",
+        consequence: "put an earlier prompt in the draft",
+        opens_submenu: false,
+        subject_id: "recall-older-prompt",
+    },
+    PaletteAction {
+        label: "Stash this draft",
+        consequence: "save it without sending",
+        opens_submenu: false,
+        subject_id: "stash-draft",
+    },
+    PaletteAction {
+        label: "Restore stashed draft",
+        consequence: "put the saved draft back in the composer",
+        opens_submenu: false,
+        subject_id: "restore-stashed-draft",
+    },
+    PaletteAction {
+        label: "Queued prompts",
+        consequence: "manage the queued prompt backlog",
+        opens_submenu: true,
+        subject_id: "queued-prompts",
+    },
+];
+
+#[derive(Clone, Copy)]
+struct SubmenuRow {
+    label: &'static str,
+    consequence: &'static str,
+    subject_id: &'static str,
+}
+
+const QUEUED_SUBMENU_ROWS: [SubmenuRow; 3] = [
+    SubmenuRow {
+        label: "Add buffer cap tests",
+        consequence: "run this prompt next",
+        subject_id: "queued-add-buffer-cap-tests",
+    },
+    SubmenuRow {
+        label: "Trace the retry backoff",
+        consequence: "drop this queued prompt",
+        subject_id: "queued-trace-retry-backoff",
+    },
+    SubmenuRow {
+        label: "Document the rate-limit path",
+        consequence: "run after the current turn",
+        subject_id: "queued-document-rate-limit",
+    },
+];
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
@@ -87,6 +185,11 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (candidates, events, transitions) = match screen_id {
         "composer-multiline" => render_multiline_composer(&mut canvas, screen_id, fixture_id)?,
         "file-mention" => render_file_mention(&mut canvas, screen_id, fixture_id)?,
+        "slash-menu" => render_slash_menu(&mut canvas, screen_id, fixture_id)?,
+        "command-palette" => render_command_palette(&mut canvas, screen_id, fixture_id)?,
+        "command-palette-submenu" => {
+            render_command_palette_submenu(&mut canvas, screen_id, fixture_id)?
+        }
         "permission-shell" => render_permission_shell(&mut canvas, screen_id, fixture_id)?,
         "permission-deny-reason" => {
             render_permission_deny_reason(&mut canvas, screen_id, fixture_id)?
@@ -1936,6 +2039,783 @@ fn render_file_mention(
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         transitions,
     ))
+}
+
+fn render_slash_menu(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    transcript(canvas)?;
+    let query = if fixture_id.contains("no-results") {
+        "/zzq"
+    } else if fixture_id.contains("filter-export") {
+        "/ex"
+    } else {
+        "/"
+    };
+    let fragment = query.trim_start_matches('/');
+    slash_draft_preview(canvas, query)?;
+    let matches = slash_matches(fragment);
+    write_dock_border(canvas)?;
+    // Header carries match count and local keys so all four commands fit the dock body.
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        &format!(
+            "/ commands · query: {query} · {} matching · [enter] Confirm · [esc] Cancel",
+            matches.len()
+        ),
+        TextStyle::bright(),
+    )?;
+
+    // Keep a stable owned subject id for filtered cases.
+    let filter_subject_owned = if fragment == "ex" {
+        "query-ex".to_owned()
+    } else if fragment.is_empty() {
+        "query-empty".to_owned()
+    } else {
+        format!("query-{fragment}")
+    };
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "paused-conversation",
+            reference(4, 4, 83),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "composer-multiline",
+            reference(12, 4, 45),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "multiline-authored-draft",
+            reference(13, 4, 40),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "active-command-span",
+            &format!("span-{query}"),
+            reference(13, 6, 6 + query.chars().count() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter",
+            &filter_subject_owned,
+            reference(DOCK_TOP + 1, 4, 72),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.slash-menu.confirm-selected",
+            reference(DOCK_TOP + 1, 52, 70),
+            "summary",
+            Some(action(
+                "action.slash-menu.confirm-selected",
+                "Confirm command",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.slash-menu.cancel",
+            reference(DOCK_TOP + 1, 74, 88),
+            "summary",
+            Some(action("action.slash-menu.cancel", "Cancel", false)),
+        ),
+    ];
+
+    if matches.is_empty() {
+        // Remove confirm when nothing is selectable; cancel remains.
+        pairs.retain(|(_, event)| event.identity.family != "primary-action");
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            &format!("No commands match {query}."),
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "Keep typing or cancel to restore the draft before /.",
+            TextStyle::muted(),
+        )?;
+        dock_line(canvas, DOCK_TOP + 4, "", TextStyle::text())?;
+        dock_line(canvas, DOCK_TOP + 5, "", TextStyle::text())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "empty-result",
+            &format!("no-match-{fragment}"),
+            reference(DOCK_TOP + 2, 4, 32 + query.chars().count() as u16),
+            "focused",
+            None,
+        ));
+    } else {
+        for (index, command) in matches.iter().enumerate() {
+            let row = DOCK_TOP + 2 + index as u16;
+            if row > DOCK_TOP + 5 {
+                break;
+            }
+            let selected = index == 0;
+            let marker = if selected { "›" } else { " " };
+            dock_line(
+                canvas,
+                row,
+                &format!("{marker} {} · {}", command.name, command.consequence),
+                if selected {
+                    TextStyle::accent()
+                } else {
+                    TextStyle::text()
+                },
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "command-match",
+                command.name,
+                reference(row, 6, 6 + command.name.chars().count() as u16),
+                "focused",
+                None,
+            ));
+            if selected {
+                pairs.push(semantic(
+                    screen_id,
+                    fixture_id,
+                    "selection",
+                    command.name,
+                    reference(row, 4, 6 + command.name.chars().count() as u16),
+                    "focused",
+                    None,
+                ));
+            }
+        }
+        for row in DOCK_TOP + 2 + matches.len().min(4) as u16..=DOCK_TOP + 5 {
+            dock_line(canvas, row, "", TextStyle::text())?;
+        }
+    }
+
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    let transitions = if matches.is_empty() {
+        vec![transition(
+            "action.slash-menu.cancel",
+            "slash-menu",
+            "composer-multiline",
+            "cancel",
+            "cancel restores the exact draft, cursor, height, selection, and scroll from before / opened",
+        )]
+    } else {
+        vec![
+            transition(
+                "action.slash-menu.confirm-selected",
+                "slash-menu",
+                "composer-multiline",
+                "direct",
+                "confirm replaces only the active command span and keeps surrounding draft text byte-stable",
+            ),
+            transition(
+                "action.slash-menu.cancel",
+                "slash-menu",
+                "composer-multiline",
+                "cancel",
+                "cancel restores the exact draft, cursor, height, selection, and scroll from before / opened",
+            ),
+        ]
+    };
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_command_palette(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    palette_transcript(canvas)?;
+    let query = if fixture_id.contains("no-results") {
+        "zzq"
+    } else if fixture_id.contains("filter-queue") {
+        "queue"
+    } else {
+        ""
+    };
+    let matches = palette_matches(query);
+    write_dock_border(canvas)?;
+    let primary_opens_submenu = matches.first().is_some_and(|row| row.opens_submenu);
+    let enter_label = if matches.is_empty() {
+        "[esc] Cancel"
+    } else if primary_opens_submenu {
+        "[enter] Open scope · [esc] Cancel"
+    } else {
+        "[enter] Run · [esc] Cancel"
+    };
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        &format!(
+            "Filter actions · query: {} · {} matching · {enter_label}",
+            if query.is_empty() { "(all)" } else { query },
+            matches.len()
+        ),
+        TextStyle::bright(),
+    )?;
+
+    let filter_subject_owned = if query == "queue" {
+        "query-queue".to_owned()
+    } else if query.is_empty() {
+        "query-empty".to_owned()
+    } else {
+        format!("query-{query}")
+    };
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "paused-conversation",
+            reference(4, 4, 83),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "composer-multiline",
+            reference(3, 4, 52),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "preserved-multiline-draft",
+            reference(12, 4, 45),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter",
+            &filter_subject_owned,
+            reference(DOCK_TOP + 1, 4, 70),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.command-palette.cancel",
+            reference(DOCK_TOP + 1, 78, 92),
+            "summary",
+            Some(action("action.command-palette.cancel", "Cancel", false)),
+        ),
+    ];
+
+    if matches.is_empty() {
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            &format!("No actions match {query}."),
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "Keep the original draft. Type another filter or cancel.",
+            TextStyle::muted(),
+        )?;
+        dock_line(canvas, DOCK_TOP + 4, "", TextStyle::text())?;
+        dock_line(canvas, DOCK_TOP + 5, "", TextStyle::text())?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "empty-result",
+            &format!("no-match-{query}"),
+            reference(DOCK_TOP + 2, 4, 28 + query.chars().count() as u16),
+            "focused",
+            None,
+        ));
+    } else {
+        // Header primary keys always expose the selected-row consequence.
+        if primary_opens_submenu {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.command-palette.open-submenu",
+                reference(DOCK_TOP + 1, 52, 72),
+                "focused",
+                Some(action(
+                    "action.command-palette.open-submenu",
+                    "Open scope",
+                    false,
+                )),
+            ));
+        } else {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "action.command-palette.run-selected",
+                reference(DOCK_TOP + 1, 52, 66),
+                "focused",
+                Some(action(
+                    "action.command-palette.run-selected",
+                    "Run action",
+                    false,
+                )),
+            ));
+        }
+        for (index, action_row) in matches.iter().enumerate() {
+            let row = DOCK_TOP + 2 + index as u16;
+            if row > DOCK_TOP + 5 {
+                break;
+            }
+            let selected = index == 0;
+            let marker = if selected { "›" } else { " " };
+            let disclosure = if action_row.opens_submenu { " ▸" } else { "" };
+            dock_line(
+                canvas,
+                row,
+                &format!(
+                    "{marker} {} · {}{disclosure}",
+                    action_row.label, action_row.consequence
+                ),
+                if selected {
+                    TextStyle::accent()
+                } else {
+                    TextStyle::text()
+                },
+            )?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "palette-action",
+                action_row.subject_id,
+                reference(row, 6, 6 + action_row.label.chars().count() as u16),
+                "focused",
+                None,
+            ));
+            if selected {
+                pairs.push(semantic(
+                    screen_id,
+                    fixture_id,
+                    "selection",
+                    action_row.subject_id,
+                    reference(row, 4, 6 + action_row.label.chars().count() as u16),
+                    "focused",
+                    None,
+                ));
+            }
+            if action_row.opens_submenu {
+                let end = 6
+                    + action_row.label.chars().count()
+                    + 3
+                    + action_row.consequence.chars().count()
+                    + 2;
+                // Affordance glyph is color-independent evidence for deeper scope.
+                pairs.push(semantic(
+                    screen_id,
+                    fixture_id,
+                    "submenu-affordance",
+                    action_row.subject_id,
+                    reference(row, end as u16 - 1, end as u16 + 1),
+                    "summary",
+                    None,
+                ));
+                // Always publish the open-submenu action on rows that can open a scope
+                // so root transitions stay bijective even when another row is selected.
+                if !selected || !primary_opens_submenu {
+                    pairs.push(semantic(
+                        screen_id,
+                        fixture_id,
+                        "secondary-action",
+                        "action.command-palette.open-submenu",
+                        reference(row, end as u16 - 1, end as u16 + 1),
+                        "summary",
+                        Some(action(
+                            "action.command-palette.open-submenu",
+                            "Open scope",
+                            false,
+                        )),
+                    ));
+                }
+            }
+        }
+        for row in DOCK_TOP + 2 + matches.len().min(4) as u16..=DOCK_TOP + 5 {
+            dock_line(canvas, row, "", TextStyle::text())?;
+        }
+    }
+
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    let mut transitions = vec![transition(
+        "action.command-palette.cancel",
+        "command-palette",
+        "composer-multiline",
+        "cancel",
+        "cancel returns to the originating composer with the exact original multiline draft and transcript position",
+    )];
+    if matches.iter().any(|row| row.opens_submenu) {
+        transitions.insert(
+            0,
+            transition(
+                "action.command-palette.open-submenu",
+                "command-palette",
+                "command-palette-submenu",
+                "direct",
+                "opening a root row with a deeper scope enters the named submenu without mutating the draft",
+            ),
+        );
+    }
+    if matches.iter().any(|row| !row.opens_submenu) {
+        transitions.insert(
+            0,
+            transition(
+                "action.command-palette.run-selected",
+                "command-palette",
+                "composer-multiline",
+                "direct",
+                "running a root action applies that consequence once and restores the origin composer",
+            ),
+        );
+    }
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_command_palette_submenu(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let _ = fixture_id;
+    palette_transcript(canvas)?;
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Palette › Queued prompts · scoped list · [back] Root",
+        TextStyle::bright(),
+    )?;
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "paused-conversation",
+            reference(4, 4, 83),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "composer-multiline",
+            reference(3, 4, 52),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "scope",
+            "queued-prompts",
+            reference(DOCK_TOP + 1, 4, 58),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "parent-scope",
+            "command-palette",
+            reference(DOCK_TOP + 1, 4, 11),
+            "summary",
+            None,
+        ),
+    ];
+
+    for (index, row_item) in QUEUED_SUBMENU_ROWS.iter().enumerate() {
+        let row = DOCK_TOP + 2 + index as u16;
+        let selected = index == 0;
+        let marker = if selected { "›" } else { " " };
+        dock_line(
+            canvas,
+            row,
+            &format!("{marker} {} · {}", row_item.label, row_item.consequence),
+            if selected {
+                TextStyle::accent()
+            } else {
+                TextStyle::text()
+            },
+        )?;
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "submenu-row",
+            row_item.subject_id,
+            reference(row, 6, 6 + row_item.label.chars().count() as u16),
+            "focused",
+            None,
+        ));
+        if selected {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "selection",
+                row_item.subject_id,
+                reference(row, 4, 6 + row_item.label.chars().count() as u16),
+                "focused",
+                None,
+            ));
+        }
+    }
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "› [back] Root  [enter] Run scoped action  [esc] Cancel · restore draft",
+        TextStyle::bright(),
+    )?;
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "primary-action",
+        "action.command-palette-submenu.back",
+        reference(DOCK_TOP + 5, 4, 16),
+        "focused",
+        Some(action(
+            "action.command-palette-submenu.back",
+            "Back to root",
+            false,
+        )),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "secondary-action",
+        "action.command-palette-submenu.run-selected",
+        reference(DOCK_TOP + 5, 18, 46),
+        "summary",
+        Some(action(
+            "action.command-palette-submenu.run-selected",
+            "Run scoped action",
+            false,
+        )),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "cancel-action",
+        "action.command-palette-submenu.cancel",
+        reference(DOCK_TOP + 5, 48, 80),
+        "summary",
+        Some(action(
+            "action.command-palette-submenu.cancel",
+            "Cancel",
+            false,
+        )),
+    ));
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.command-palette-submenu.back",
+                "command-palette-submenu",
+                "command-palette",
+                "cancel",
+                "back restores the root palette with the prior root query, selected row, and list position",
+            ),
+            transition(
+                "action.command-palette-submenu.run-selected",
+                "command-palette-submenu",
+                "composer-multiline",
+                "direct",
+                "running a scoped action returns to the origin composer with the unchanged draft",
+            ),
+            transition(
+                "action.command-palette-submenu.cancel",
+                "command-palette-submenu",
+                "composer-multiline",
+                "cancel",
+                "cancel from the submenu returns directly to the origin composer with the exact original multiline draft",
+            ),
+        ],
+    ))
+}
+
+fn slash_draft_preview(canvas: &mut Canvas, query: &str) -> Result<(), String> {
+    canvas.write(2, 4, FLOW2_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
+    canvas.write(12, 4, "Paused draft · 3 authored lines", TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        &format!("› {query} · active command span"),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "  Check the retry path before we merge.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "  Then explain the failure path that still needs coverage before the merge.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "  Keep the summary short before we merge.",
+        TextStyle::text(),
+    )?;
+    Ok(())
+}
+
+fn palette_transcript(canvas: &mut Canvas) -> Result<(), String> {
+    canvas.write(2, 4, FLOW2_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
+    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "The conversation stays visible while you choose an action.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        4,
+        "Preserved draft · unchanged while the palette is open",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "› Check the retry path in @retry",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "  Then explain the failure path that still needs coverage before the merge;",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "  Keep the summary short before we merge.",
+        TextStyle::text(),
+    )?;
+    Ok(())
+}
+
+fn slash_matches(fragment: &str) -> Vec<SlashCommand> {
+    let needle = fragment.to_ascii_lowercase();
+    SLASH_COMMANDS
+        .iter()
+        .copied()
+        .filter(|command| {
+            if needle.is_empty() {
+                true
+            } else {
+                command.name.trim_start_matches('/').to_ascii_lowercase().contains(&needle)
+                    || command.consequence.to_ascii_lowercase().contains(&needle)
+            }
+        })
+        .collect()
+}
+
+fn palette_matches(query: &str) -> Vec<PaletteAction> {
+    let needle = query.to_ascii_lowercase();
+    PALETTE_ROOT_ACTIONS
+        .iter()
+        .copied()
+        .filter(|action| {
+            if needle.is_empty() {
+                true
+            } else {
+                action.label.to_ascii_lowercase().contains(&needle)
+                    || action.consequence.to_ascii_lowercase().contains(&needle)
+            }
+        })
+        .collect()
 }
 
 fn transcript(canvas: &mut Canvas) -> Result<(), String> {

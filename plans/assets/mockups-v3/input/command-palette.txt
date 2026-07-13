@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Input and approval · paused conversation                                                                            
+    Check the retry path before we merge.                                                                               
+    You · Check the retry path before we merge.                                                                         
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The conversation stays visible while you choose an action.                                                          
+                                                                                                                        
+                                                                                                                        
+    Preserved draft · unchanged while the palette is open                                                               
+    › Check the retry path in @retry                                                                                    
+      Then explain the failure path that still needs coverage before the merge;                                         
+      Keep the summary short before we merge.                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Filter actions · query: (all) · 4 matching · [enter] Run · [esc] Cancel                                          │  
+  │ › Recall an older prompt · put an earlier prompt in the draft                                                    │  
+  │   Stash this draft · save it without sending                                                                     │  
+  │   Restore stashed draft · put the saved draft back in the composer                                               │  
+  │   Queued prompts · manage the queued prompt backlog ▸                                                            │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

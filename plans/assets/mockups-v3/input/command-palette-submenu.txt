@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Input and approval · paused conversation                                                                            
+    Check the retry path before we merge.                                                                               
+    You · Check the retry path before we merge.                                                                         
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    The conversation stays visible while you choose an action.                                                          
+                                                                                                                        
+                                                                                                                        
+    Preserved draft · unchanged while the palette is open                                                               
+    › Check the retry path in @retry                                                                                    
+      Then explain the failure path that still needs coverage before the merge;                                         
+      Keep the summary short before we merge.                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Palette › Queued prompts · scoped list · [back] Root                                                             │  
+  │ › Add buffer cap tests · run this prompt next                                                                    │  
+  │   Trace the retry backoff · drop this queued prompt                                                              │  
+  │   Document the rate-limit path · run after the current turn                                                      │  
+  │ › [back] Root  [enter] Run scoped action  [esc] Cancel · restore draft                                           │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

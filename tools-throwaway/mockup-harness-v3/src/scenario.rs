@@ -6,7 +6,10 @@ use crate::audit::{
     action_json, audit_screen, field, quote, sha256_hex, transition_json, ActionEvidence,
     AuditDocument, TransitionTrace,
 };
-use crate::screens::input_and_approval::{INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT};
+use crate::screens::input_and_approval::{
+    INSERTED_FILE, MENTION_FRAGMENT, MULTILINE_DRAFT, PALETTE_PRESERVED_DRAFT,
+    SLASH_ACTIVE_SPAN, SLASH_CONFIRMED_EXPORT, SLASH_OPEN_DRAFT, SLASH_PRE_OPEN_DRAFT,
+};
 
 const FLOW2_SESSION_ID: &str = "session.retry-review.18";
 const FLOW2_PAUSED_ACTIVITY_ID: &str = "activity.retry-policy-edit.18";
@@ -1093,6 +1096,13 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "file-mention-insert" => file_mention_insert(),
         "file-mention-dismiss" => file_mention_dismiss(),
         "file-mention-no-results" => file_mention_no_results(),
+        "slash-confirm-export" => slash_confirm_export(),
+        "slash-cancel" => slash_cancel(),
+        "slash-invalid-trigger" => slash_invalid_trigger(),
+        "palette-open-submenu" => palette_open_submenu(),
+        "palette-submenu-back" => palette_submenu_back(),
+        "palette-cancel" => palette_cancel(),
+        "palette-submenu-cancel" => palette_submenu_cancel(),
         "diff-review" => diff_review(),
         "diff-apply-all" => diff_apply_all(),
         "diff-cancel" => diff_cancel(),
@@ -1384,6 +1394,25 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             PreservedFieldHash {
                 before: sha256_hex(before.draft.replacen(MENTION_FRAGMENT, "", 1).as_bytes()),
                 after: sha256_hex(after.draft.replacen(INSERTED_FILE, "", 1).as_bytes()),
+            },
+        );
+    }
+    if case_id == "slash-confirm-export" {
+        preserved_field_hashes.insert(
+            "draft_surrounding".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(
+                    before
+                        .draft
+                        .replacen(SLASH_ACTIVE_SPAN, "", 1)
+                        .as_bytes(),
+                ),
+                after: sha256_hex(
+                    after
+                        .draft
+                        .replacen(SLASH_CONFIRMED_EXPORT, "", 1)
+                        .as_bytes(),
+                ),
             },
         );
     }
@@ -9614,6 +9643,510 @@ fn file_mention_no_results() -> (
         "filter",
         "simulated-no-results",
         "the visible @zzq query produced zero project-file rows without discarding the draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn slash_confirm_export() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let confirmed_draft = SLASH_OPEN_DRAFT.replacen(SLASH_ACTIVE_SPAN, SLASH_CONFIRMED_EXPORT, 1);
+    let mut before = state(
+        "slash-menu",
+        vec!["chat-turn", "composer-multiline", "slash-menu"],
+        SLASH_OPEN_DRAFT,
+        "turn-retry-review",
+        "active-command-span-0..1",
+        "draft-cursor-1",
+        Some("slash.query.empty"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    apply_flow2_identity(&mut before);
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "slash-menu"],
+        &confirmed_draft,
+        "turn-retry-review",
+        "no-selection",
+        "draft-cursor-7",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    apply_flow2_identity(&mut after);
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.slash-menu.confirm-selected".to_owned(),
+        label: "Confirm command".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirm replaced only the active / span with /export; surrounding authored lines remain byte-for-byte stable"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.slash-menu.confirm.1".to_owned(),
+        owner_id: "slash.span.0..1".to_owned(),
+        count: 1,
+        outcome: "confirmed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.slash-menu.confirm",
+        "draft-edit",
+        "simulated-span-replacement",
+        "only the active command span became /export",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn slash_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "slash-menu",
+        vec!["chat-turn", "composer-multiline", "slash-menu"],
+        SLASH_OPEN_DRAFT,
+        "turn-retry-review",
+        "active-command-span-0..1",
+        "draft-cursor-1",
+        Some("slash.query.empty"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    // Cancel restores the pre-open draft snapshot (draft before `/` was typed).
+    before.draft = SLASH_PRE_OPEN_DRAFT.to_owned();
+    apply_flow2_identity(&mut before);
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline", "slash-menu"],
+        SLASH_PRE_OPEN_DRAFT,
+        "turn-retry-review",
+        "active-command-span-0..1",
+        "draft-cursor-0",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    after.focus = before.focus.clone();
+    after.selection = before.selection.clone();
+    apply_flow2_identity(&mut after);
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.slash-menu.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the exact draft, cursor, height, selection, and scroll from before / opened"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.slash-menu.cancel.1".to_owned(),
+        owner_id: "slash.span.0..1".to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.slash-menu.cancel",
+        "draft-edit",
+        "simulated-restore",
+        "cancel restored the pre-open draft snapshot byte for byte",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn slash_invalid_trigger() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let embedded = "See https://example.com/path for details\n\
+Then explain the failure path that still needs coverage before the merge.\n\
+Keep the summary short before we merge.";
+    let mut before = state(
+        "composer-multiline",
+        vec!["chat-turn", "composer-multiline"],
+        embedded,
+        "turn-retry-review",
+        "no-menu",
+        "draft-cursor-24",
+        None,
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    apply_flow2_identity(&mut before);
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.composer-multiline.slash-invalid-trigger".to_owned(),
+        label: "Type embedded slash".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "a slash embedded in a URL or word does not open the command menu".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.slash-menu.invalid-trigger.1".to_owned(),
+        owner_id: "composer.embedded-slash".to_owned(),
+        count: 1,
+        outcome: "no-menu".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.slash-menu.invalid-trigger",
+        "filter",
+        "simulated-no-menu",
+        "command-valid positions only; embedded / kept the composer unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn palette_open_submenu() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "command-palette",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "root-action-queued-prompts",
+        "root-query-",
+        Some("palette.root"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    apply_flow2_identity(&mut before);
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "command-palette-submenu",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "submenu-action-add-buffer",
+        "submenu-scope-queued-prompts",
+        Some("palette.submenu.queued-prompts"),
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    apply_flow2_identity(&mut after);
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.command-palette.open-submenu".to_owned(),
+        label: "Open scope".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "opening Queued prompts enters the named submenu without mutating the draft"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.command-palette.open-submenu.1".to_owned(),
+        owner_id: "palette.root.queued-prompts".to_owned(),
+        count: 1,
+        outcome: "opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.command-palette.open-submenu",
+        "navigation",
+        "simulated-scope-enter",
+        "submenu opened with explicit queued-prompts scope",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn palette_submenu_back() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "command-palette-submenu",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "submenu-action-add-buffer",
+        "submenu-scope-queued-prompts",
+        Some("palette.submenu.queued-prompts"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    apply_flow2_identity(&mut before);
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "command-palette",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "root-action-queued-prompts",
+        "root-query-",
+        Some("palette.root"),
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    apply_flow2_identity(&mut after);
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.command-palette-submenu.back".to_owned(),
+        label: "Back to root".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "back restores the root palette with the prior root query, selected row, and list position"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.command-palette-submenu.back.1".to_owned(),
+        owner_id: "palette.submenu.queued-prompts".to_owned(),
+        count: 1,
+        outcome: "back".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.command-palette-submenu.back",
+        "navigation",
+        "simulated-scope-exit",
+        "back restored root query and selected queued-prompts row",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn palette_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "command-palette",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "root-action-recall",
+        "draft-cursor-30",
+        Some("palette.root"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    apply_flow2_identity(&mut before);
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "root-action-recall",
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    apply_flow2_identity(&mut after);
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.command-palette.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel from the root palette restores the original multiline draft and transcript position"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.command-palette.cancel.1".to_owned(),
+        owner_id: "palette.root".to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.command-palette.cancel",
+        "draft-edit",
+        "simulated-no-change",
+        "root cancel restored the origin composer without mutating the draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn palette_submenu_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "command-palette-submenu",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "submenu-action-add-buffer",
+        "draft-cursor-30",
+        Some("palette.submenu.queued-prompts"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    apply_flow2_identity(&mut before);
+    before.state_hash = state_hash(&before);
+
+    let mut after = state(
+        "composer-multiline",
+        vec![
+            "chat-turn",
+            "composer-multiline",
+            "command-palette",
+        ],
+        PALETTE_PRESERVED_DRAFT,
+        "turn-retry-review",
+        "submenu-action-add-buffer",
+        "draft-cursor-30",
+        None,
+        "return-to-multiline-draft",
+        1,
+    );
+    after.transcript = before.transcript.clone();
+    apply_flow2_identity(&mut after);
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.command-palette-submenu.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel from the submenu returns directly to the origin composer with the exact original multiline draft"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.command-palette-submenu.cancel.1".to_owned(),
+        owner_id: "palette.submenu.queued-prompts".to_owned(),
+        count: 1,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.command-palette-submenu.cancel",
+        "draft-edit",
+        "simulated-no-change",
+        "submenu cancel restored the origin composer without mutating the draft",
     );
     (before, after, action, transition, attempt, effect)
 }

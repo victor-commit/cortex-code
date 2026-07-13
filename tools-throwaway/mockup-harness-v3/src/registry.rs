@@ -288,7 +288,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Input,
         flow: FlowOwner::InputAndApproval,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "agent-picker",
@@ -302,14 +302,14 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Input,
         flow: FlowOwner::InputAndApproval,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "command-palette-submenu",
         category: Category::Input,
         flow: FlowOwner::InputAndApproval,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "model-picker",

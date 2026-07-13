@@ -56,6 +56,9 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "compact",
     "file-mention",
     "composer-multiline",
+    "slash-menu",
+    "command-palette",
+    "command-palette-submenu",
     "permission-shell",
     "permission-deny-reason",
     "diff-edit",
@@ -1381,7 +1384,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 45);
+        assert_eq!(implemented.canonical_ids().count(), 48);
         assert!(
             preflight_render(&PublicSelector::All)
                 .expect_err("full render must reject missing renderers")

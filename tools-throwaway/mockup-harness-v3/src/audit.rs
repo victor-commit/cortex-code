@@ -462,6 +462,9 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         screen_id,
         "composer-multiline"
             | "file-mention"
+            | "slash-menu"
+            | "command-palette"
+            | "command-palette-submenu"
             | "permission-shell"
             | "permission-deny-reason"
             | "diff-edit"
