@@ -192,6 +192,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "error-network",
             "rate-limit",
             "checkpoint-undo",
+            "tool-failed",
+            "blocked-command",
             "workflow-launch",
             "workflow-launch-blocked",
             "workflow-monitor",

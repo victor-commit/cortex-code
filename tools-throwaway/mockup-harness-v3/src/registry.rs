@@ -225,7 +225,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::Recovery,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "tool-task",
@@ -260,7 +260,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::Recovery,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "turn-error",

@@ -896,7 +896,29 @@ impl CaseReplay {
                         || self.attempts[0].outcome == "launch-ready"
                         || self.attempts[0].outcome == "still-blocked"
                         || self.attempts[0].outcome == "started"
-                        || self.attempts[0].outcome == "progress-open")))
+                        || self.attempts[0].outcome == "progress-open"))
+                && !(self.case_id.starts_with("tool-failed-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "cancelled"
+                        || self.attempts[0].outcome == "inspection-required"
+                        || self.attempts[0].outcome == "unknown"
+                        || self.attempts[0].outcome == "opened-connection"
+                        || self.attempts[0].outcome == "confirmation-required"
+                        || self.attempts[0].outcome == "policy-blocked"
+                        || self.attempts[0].outcome == "resumed-once"
+                        || self.attempts[0].outcome == "retrying"))
+                && !(self.case_id.starts_with("blocked-command-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "awaiting-approval"
+                        || self.attempts[0].outcome == "awaiting-explicit-run"
+                        || self.attempts[0].outcome == "awaiting-work-style"))
+                && !(self.case_id.starts_with("turn-error-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "cancelled"
+                        || self.attempts[0].outcome == "restored")))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -1211,6 +1233,20 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "turn-error-retry" => turn_error_retry(),
         "turn-error-cancel" => turn_error_cancel(),
         "turn-error-inspect-connection" => turn_error_inspect_connection(),
+        "tool-failed-retry-safe" => tool_failed_retry_safe(),
+        "tool-failed-retry-completed-effect" => tool_failed_retry_completed_effect(),
+        "tool-failed-unknown-outcome" => tool_failed_unknown_outcome(),
+        "tool-failed-connect-capability" => tool_failed_connect_capability(),
+        "tool-failed-capability-return-automatic-once" => {
+            tool_failed_capability_return_automatic_once()
+        }
+        "tool-failed-capability-return-confirm" => tool_failed_capability_return_confirm(),
+        "tool-failed-capability-return-cancel" => tool_failed_capability_return_cancel(),
+        "tool-failed-capability-policy-blocked" => tool_failed_capability_policy_blocked(),
+        "blocked-command-request-approval" => blocked_command_request_approval(),
+        "blocked-command-approval-return" => blocked_command_approval_return(),
+        "blocked-command-change-work-style" => blocked_command_change_work_style(),
+        "blocked-command-work-style-return" => blocked_command_work_style_return(),
         "network-offline-review-setting" => network_offline_review_setting(),
         "network-offline-resume" => network_offline_resume(),
         "network-backoff-cancel" => network_backoff_cancel(),
@@ -1816,6 +1852,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "turn-error-retry"
             | "turn-error-cancel"
             | "turn-error-inspect-connection"
+            | "tool-failed-retry-safe"
+            | "tool-failed-retry-completed-effect"
+            | "tool-failed-unknown-outcome"
+            | "tool-failed-connect-capability"
+            | "tool-failed-capability-return-automatic-once"
+            | "tool-failed-capability-return-confirm"
+            | "tool-failed-capability-return-cancel"
+            | "tool-failed-capability-policy-blocked"
+            | "blocked-command-request-approval"
+            | "blocked-command-approval-return"
+            | "blocked-command-change-work-style"
+            | "blocked-command-work-style-return"
             | "error-network-to-rate-limit-bridge"
             | "network-offline-review-setting"
             | "network-offline-resume"
@@ -1844,6 +1892,34 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("turn-error-cancel", "turn-error") => "gate.recovery.turn-error".to_owned(),
             ("turn-error-inspect-connection", "error-network") => {
                 "gate.recovery.error-network".to_owned()
+            }
+            ("tool-failed-retry-safe", "tool-running") => "canonical.tool-running".to_owned(),
+            ("tool-failed-retry-completed-effect", "tool-failed") => {
+                "tool-failed.completed".to_owned()
+            }
+            ("tool-failed-unknown-outcome", "tool-failed") => "tool-failed.unknown".to_owned(),
+            ("tool-failed-connect-capability", "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
+            ("tool-failed-capability-return-automatic-once", "tool-running") => {
+                "canonical.tool-running".to_owned()
+            }
+            ("tool-failed-capability-return-confirm", "tool-failed")
+            | ("tool-failed-capability-return-cancel", "tool-failed") => {
+                "tool-failed.capability".to_owned()
+            }
+            ("tool-failed-capability-policy-blocked", "tool-failed") => {
+                "tool-failed.policy".to_owned()
+            }
+            ("blocked-command-request-approval", "permission-shell") => {
+                "gate.input-and-approval.permission-shell".to_owned()
+            }
+            ("blocked-command-approval-return", "blocked-command") => {
+                "blocked-command.after-approval".to_owned()
+            }
+            ("blocked-command-change-work-style", "agent-picker") => {
+                "gate.work-configuration.agent-picker".to_owned()
+            }
+            ("blocked-command-work-style-return", "blocked-command") => {
+                "blocked-command.after-work-style".to_owned()
             }
             ("chat-turn-open-checkpoint-undo", "checkpoint-undo") => {
                 "gate.recovery.checkpoint-undo".to_owned()
@@ -4150,6 +4226,806 @@ fn turn_error_inspect_connection() -> (
         "network-diagnosis",
         "opened",
         "connection diagnosis opens without rewriting transcript, draft, or partial reply",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+const TOOL_PENDING: &str = "tool.write-release-notes.22";
+const TOOL_COMMAND: &str =
+    "rm -rf notes/archive && printf 'cleared\\n' >> notes/release.md";
+
+fn apply_tool_failed_identity(state: &mut ScenarioState) {
+    apply_flow5_identity(state);
+    state.paused_activity_id = TOOL_PENDING.to_owned();
+    state.scroll_anchor = "tool-failed".to_owned();
+    state.transcript =
+        "You · Summarize the remaining release notes and the still-open risks.\n✓ Read session rules · Complete\n✗ Write release notes patch · Needs attention\nPartial output · Prepared the first two bullet lines"
+            .to_owned();
+    state.partial_response = "Prepared the first two bullet lines".to_owned();
+    state.state_hash = state_hash(state);
+}
+
+fn apply_blocked_command_identity(state: &mut ScenarioState) {
+    apply_flow5_identity(state);
+    state.paused_activity_id = "command.blocked.write.22".to_owned();
+    state.requested_command = TOOL_COMMAND.to_owned();
+    state.requested_working_directory = "~/project".to_owned();
+    state.permission_request_status = "blocked".to_owned();
+    state.scroll_anchor = "blocked-command".to_owned();
+    state.transcript = format!(
+        "You · Summarize the remaining release notes and the still-open risks.\nCompleted earlier · retry window copy accepted for the release branch.\n✗ Blocked command · did not run\n{TOOL_COMMAND}"
+    );
+    state.partial_response = String::new();
+    state.state_hash = state_hash(state);
+}
+
+fn tool_failed_retry_safe() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-failed",
+        vec!["chat-turn", "tool-failed"],
+        FLOW5_DRAFT,
+        "tool-failed",
+        "retry-tool",
+        "tool-recovery",
+        Some(TOOL_PENDING),
+        "return-to-paused-tool",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    let mut after = state(
+        "tool-running",
+        vec!["chat-turn", "tool-failed"],
+        FLOW5_DRAFT,
+        "tool-failed",
+        "running-tool",
+        "tool-running",
+        Some(TOOL_PENDING),
+        "return-to-paused-tool",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = TOOL_PENDING.to_owned();
+    after.focus = "tool-running".to_owned();
+    after.selection = "running-tool".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.retry".to_owned(),
+        label: "Retry tool".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "safe retry reuses the paused invocation without duplicating completed siblings"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.retry.1".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 1,
+        outcome: "retrying".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.retry-safe",
+        "tool-retry",
+        "retry-no-duplicate",
+        "idempotent retry reuses tool.write-release-notes.22 once and leaves sibling tools untouched",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_failed_retry_completed_effect() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-failed",
+        vec!["chat-turn", "tool-failed"],
+        FLOW5_DRAFT,
+        "tool-failed",
+        "inspect-result",
+        "tool-recovery",
+        Some(TOOL_PENDING),
+        "return-to-paused-tool",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "inspect-result".to_owned();
+    after.selection = "inspect-result".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.inspect-result".to_owned(),
+        label: "Inspect result".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "completed side effects block retry and require inspection".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.inspect.completed.0".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 0,
+        outcome: "inspection-required".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.completed-effect",
+        "tool-side-effect",
+        "no-retry-completed-effect",
+        "completed writes stay unique; no second invocation is allowed",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_failed_unknown_outcome() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-failed",
+        vec!["chat-turn", "tool-failed"],
+        FLOW5_DRAFT,
+        "tool-failed",
+        "inspect-result",
+        "tool-recovery",
+        Some(TOOL_PENDING),
+        "return-to-paused-tool",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "inspect-result".to_owned();
+    after.selection = "inspect-result".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.inspect-result".to_owned(),
+        label: "Inspect result".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "unknown outcomes require inspection and disable retry".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.inspect.unknown.0".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 0,
+        outcome: "unknown".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.unknown-outcome",
+        "tool-side-effect",
+        "inspection-required",
+        "unknown result blocks retry, continue, and automatic resume until inspection",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_failed_connect_capability() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "tool-failed",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "tool-failed",
+        "connect-capability",
+        "tool-recovery",
+        Some(TOOL_PENDING),
+        "return-to-paused-tool",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    let mut after = state(
+        "mcp",
+        origin,
+        FLOW5_DRAFT,
+        "tool-failed",
+        "docs-search",
+        "mcp-capabilities",
+        Some(TOOL_PENDING),
+        "return-to-paused-tool",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = TOOL_PENDING.to_owned();
+    after.focus = "mcp-capabilities".to_owned();
+    after.selection = "docs-search".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.connect-capability".to_owned(),
+        label: "Connect Docs search".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "capability connection opens without exposing transport details".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.connect.0".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 0,
+        outcome: "opened-connection".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.connect-capability",
+        "capability-route",
+        "connection-open",
+        "connect Docs search opens mcp with zero tool invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_failed_capability_return_automatic_once() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "tool-failed",
+        "docs-search-ready",
+        "mcp-capabilities",
+        Some(TOOL_PENDING),
+        "automatic_once",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    before.screen_id = "mcp".to_owned();
+    before.return_policy = "automatic_once".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "tool-running",
+        origin,
+        FLOW5_DRAFT,
+        "tool-failed",
+        "running-tool",
+        "tool-running",
+        Some(TOOL_PENDING),
+        "automatic_once",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = TOOL_PENDING.to_owned();
+    after.focus = "tool-running".to_owned();
+    after.selection = "running-tool".to_owned();
+    after.return_policy = "automatic_once".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.resume-automatic-once".to_owned(),
+        label: "Resume safe read once".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "safe read-only capability resume runs exactly once".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.resume.automatic.1".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 1,
+        outcome: "resumed-once".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.resume-automatic-once",
+        "capability-resume",
+        "automatic-once-resume",
+        "read-only resume after Docs search connect runs one time",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_failed_capability_return_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "tool-failed",
+        "docs-search-ready",
+        "mcp-capabilities",
+        Some(TOOL_PENDING),
+        "confirmation",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    before.screen_id = "mcp".to_owned();
+    before.return_policy = "confirmation".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "tool-failed",
+        origin,
+        FLOW5_DRAFT,
+        "tool-failed",
+        "confirm-resume",
+        "tool-recovery",
+        Some(TOOL_PENDING),
+        "confirmation",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = TOOL_PENDING.to_owned();
+    after.focus = "tool-recovery".to_owned();
+    after.selection = "confirm-resume".to_owned();
+    after.return_policy = "confirmation".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.confirm-resume".to_owned(),
+        label: "Confirm before resume".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "side-effecting resume returns for confirmation with zero invocation".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.resume.confirm.0".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 0,
+        outcome: "confirmation-required".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.resume-confirm",
+        "capability-resume",
+        "confirmation-required",
+        "side-effecting tool waits for explicit confirmation before any call",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_failed_capability_return_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "tool-failed", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "tool-failed",
+        "cancel-connection",
+        "mcp-capabilities",
+        Some(TOOL_PENDING),
+        "none",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    before.screen_id = "mcp".to_owned();
+    before.return_policy = "none".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "tool-failed",
+        origin,
+        FLOW5_DRAFT,
+        "tool-failed",
+        "connect-capability",
+        "tool-recovery",
+        Some(TOOL_PENDING),
+        "none",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = TOOL_PENDING.to_owned();
+    after.focus = "tool-recovery".to_owned();
+    after.selection = "connect-capability".to_owned();
+    after.return_policy = "none".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.connection-cancel".to_owned(),
+        label: "Cancel connection".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel returns to the failed tool with zero invocation".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.connect.cancel.0".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.connection-cancel",
+        "capability-resume",
+        "zero-invocation",
+        "cancel leaves the tool failed without a recovery invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn tool_failed_capability_policy_blocked() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-failed",
+        vec!["chat-turn", "tool-failed"],
+        FLOW5_DRAFT,
+        "tool-failed",
+        "review-policy",
+        "tool-recovery",
+        Some(TOOL_PENDING),
+        "none",
+        0,
+    );
+    apply_tool_failed_identity(&mut before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "review-policy".to_owned();
+    after.selection = "review-policy".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.tool-failed.review-policy".to_owned(),
+        label: "Review policy".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "policy-blocked recovery never becomes a connection bypass".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.tool-failed.policy.0".to_owned(),
+        owner_id: TOOL_PENDING.to_owned(),
+        count: 0,
+        outcome: "policy-blocked".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.tool-failed.policy-blocked",
+        "capability-resume",
+        "policy-blocked",
+        "policy-blocked recovery performs zero invocation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn blocked_command_request_approval() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "blocked-command", "permission-shell"];
+    let mut before = state(
+        "blocked-command",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "blocked-command",
+        "request-approval",
+        "blocked-recovery",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        0,
+    );
+    apply_blocked_command_identity(&mut before);
+    let mut after = state(
+        "permission-shell",
+        origin,
+        FLOW5_DRAFT,
+        "blocked-command",
+        "permission-choice",
+        "permission-dock",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "command.blocked.write.22".to_owned();
+    after.requested_command = TOOL_COMMAND.to_owned();
+    after.permission_request_status = "permission needed".to_owned();
+    after.focus = "permission-dock".to_owned();
+    after.selection = "permission-choice".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.blocked-command.request-approval".to_owned(),
+        label: "Request approval".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "request approval opens the permission surface without executing the command"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.blocked-command.approval.0".to_owned(),
+        owner_id: "command.blocked.write.22".to_owned(),
+        count: 0,
+        outcome: "awaiting-approval".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.blocked-command.request-approval",
+        "blocked-command",
+        "zero-execution",
+        "approval route records zero command execution",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn blocked_command_approval_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "blocked-command", "permission-shell"];
+    let mut before = state(
+        "permission-shell",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "blocked-command",
+        "allow-once",
+        "permission-dock",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        0,
+    );
+    apply_blocked_command_identity(&mut before);
+    before.screen_id = "permission-shell".to_owned();
+    before.permission_request_status = "approved-once".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "blocked-command",
+        origin,
+        FLOW5_DRAFT,
+        "blocked-command",
+        "run-once",
+        "blocked-recovery",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "command.blocked.write.22".to_owned();
+    after.requested_command = TOOL_COMMAND.to_owned();
+    after.permission_request_status = "approved-once".to_owned();
+    after.focus = "blocked-recovery".to_owned();
+    after.selection = "run-once".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.blocked-command.return-for-run".to_owned(),
+        label: "Return for explicit run".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "approval returns to the blocked command for one explicit run decision".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.blocked-command.return.1".to_owned(),
+        owner_id: "command.blocked.write.22".to_owned(),
+        count: 0,
+        outcome: "awaiting-explicit-run".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.blocked-command.approval-return",
+        "blocked-command",
+        "awaiting-explicit-run",
+        "approval success never auto-executes the blocked command",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn blocked_command_change_work_style() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "blocked-command", "agent-picker"];
+    let mut before = state(
+        "blocked-command",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "blocked-command",
+        "change-work-style",
+        "blocked-recovery",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        0,
+    );
+    apply_blocked_command_identity(&mut before);
+    let mut after = state(
+        "agent-picker",
+        origin,
+        FLOW5_DRAFT,
+        "blocked-command",
+        "autonomous-changes",
+        "work-style",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "command.blocked.write.22".to_owned();
+    after.requested_command = TOOL_COMMAND.to_owned();
+    after.focus = "work-style".to_owned();
+    after.selection = "autonomous-changes".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.blocked-command.change-work-style".to_owned(),
+        label: "Change how Code works".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "work-style change opens How Code should work without executing the command"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.blocked-command.work-style.0".to_owned(),
+        owner_id: "command.blocked.write.22".to_owned(),
+        count: 0,
+        outcome: "awaiting-work-style".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.blocked-command.change-work-style",
+        "blocked-command",
+        "zero-execution",
+        "work-style route keeps zero command execution",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn blocked_command_work_style_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "blocked-command", "agent-picker"];
+    let mut before = state(
+        "agent-picker",
+        origin.clone(),
+        FLOW5_DRAFT,
+        "blocked-command",
+        "autonomous-changes",
+        "work-style",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        0,
+    );
+    apply_blocked_command_identity(&mut before);
+    before.screen_id = "agent-picker".to_owned();
+    before.work_style = "Autonomous changes".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "blocked-command",
+        origin,
+        FLOW5_DRAFT,
+        "blocked-command",
+        "run-once",
+        "blocked-recovery",
+        Some("command.blocked.write.22"),
+        "return-to-blocked-command",
+        1,
+    );
+    copy_flow5_identity(&before, &mut after);
+    after.paused_activity_id = "command.blocked.write.22".to_owned();
+    after.requested_command = TOOL_COMMAND.to_owned();
+    after.work_style = "Autonomous changes".to_owned();
+    after.focus = "blocked-recovery".to_owned();
+    after.selection = "run-once".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.blocked-command.return-for-run".to_owned(),
+        label: "Return for explicit run".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "work-style return keeps the command for one explicit run decision".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.blocked-command.work-style-return.0".to_owned(),
+        owner_id: "command.blocked.write.22".to_owned(),
+        count: 0,
+        outcome: "awaiting-explicit-run".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.blocked-command.work-style-return",
+        "blocked-command",
+        "awaiting-explicit-run",
+        "work-style success never auto-executes the blocked command",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -13723,7 +14599,13 @@ fn simulated_effect(effect_id: &str, kind: &str, status: &str, detail: &str) -> 
 }
 
 fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
-    if case_id.starts_with("session-") {
+    // Only new recovery cases suppress permission envelope evidence. Existing
+    // Flow 5 bridge cases keep their historical permission payload so frozen
+    // digests stay byte-stable.
+    if case_id.starts_with("session-")
+        || case_id.starts_with("tool-failed-")
+        || case_id.starts_with("blocked-command-")
+    {
         return None;
     }
     let byte_offset = if case_id.contains("page-88")
@@ -13748,6 +14630,8 @@ fn permission_evidence_at_offset(case_id: &str, byte_offset: usize) -> Option<Pe
         || case_id.starts_with("shell-")
         || case_id.starts_with("todo-")
         || case_id.starts_with("chat-long-scroll-")
+        || case_id.starts_with("tool-failed-")
+        || case_id.starts_with("blocked-command-")
     {
         return None;
     }

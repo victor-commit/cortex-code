@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Recovery · paused conversation                                                                                      
+    Finish the release notes without losing the current work.                                                           
+                                                                                                                        
+    You · Summarize the remaining release notes and the still-open risks.                                               
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    Completed earlier · retry window copy accepted for the release branch.                                              
+                                                                                                                        
+    ✗ Blocked command · did not run                                                                                     
+      rm -rf notes/archive && printf 'cleared\n' >> notes/release.md                                                    
+      Composer draft kept · Keep the risk note short before we publish.                                                 
+                                                                                                                        
+    ────────────────────────────────────────────────────────                                                            
+                                                                                                                        
+    ✗ The current work style does not allow write commands                                                              
+    Earlier completed work stays readable and is not marked blocked.                                                    
+    Change the work style, then return for one explicit run decision.                                                   
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Recover the blocked command                                                                                      │  
+  │ Keep the exact command available without running it yet.                                                         │  
+  │ › [enter] Change how Code works                                                                                  │  
+  │   [d] Show evidence                                                                                              │  
+  │   [esc] Keep command blocked                                                                                     │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

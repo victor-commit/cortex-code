@@ -1,6 +1,11 @@
-//! Flow 5 pilot states for turn, network, rate-limit, and checkpoint recovery.
+//! Flow 5 pilot states for turn, tool, blocked-command, network, rate-limit,
+//! and checkpoint recovery.
 //!
 //! Turn failures keep partial replies inline with one adjacent primary recovery.
+//! Tool failures keep the exact invocation, completed siblings, partial output,
+//! one plain cause, and a cause-specific next action with safe retry boundaries.
+//! Blocked commands keep the command and draft offline, explain one policy cause,
+//! and resume only through approval or work-style with an explicit run decision.
 //! Network failures preserve work, hide attempts behind evidence, distinguish
 //! automatic bounded backoff from manual retry, and route connection inspection
 //! without losing recovery origin or submitting more than once.
@@ -45,6 +50,24 @@ const AFFECTED_A: &str = "notes/release.md";
 const AFFECTED_B: &str = "notes/risks.md";
 const UNAFFECTED: &str = "drafts/later-note.md";
 const STALE_APPROVAL: &str = "Approval for the risks note · Stale · needs re-review";
+const TOOL_USER_PROMPT: &str =
+    "You · Summarize the remaining release notes and the still-open risks.";
+const TOOL_COMPLETED: &str = "Read session rules";
+const TOOL_FAILED_NAME: &str = "Write release notes patch";
+const TOOL_INTENDED_EFFECT: &str = "Update notes/release.md with the accepted retry wording";
+const TOOL_PARTIAL_OUTPUT: &str = "Prepared the first two bullet lines";
+const TOOL_CAUSE_MISSING_FILE: &str = "The repo map file is missing";
+const TOOL_CAUSE_CAPABILITY: &str = "Docs search is unavailable until you connect it";
+const TOOL_CAUSE_UNKNOWN: &str = "The outcome of this tool is unknown";
+const TOOL_CAUSE_COMPLETED: &str = "This tool already changed the file before it failed";
+const TOOL_CAUSE_POLICY: &str = "Docs search is blocked by the project policy";
+const TOOL_CAUSE_IDEMPOTENT: &str = "The lookup failed before any change was made";
+const BLOCKED_COMMAND: &str =
+    "rm -rf notes/archive && printf 'cleared\\n' >> notes/release.md";
+const BLOCKED_POLICY_CAUSE: &str = "The current work style does not allow write commands";
+const BLOCKED_PERMISSION_CAUSE: &str = "This command needs approval before it can run";
+const BLOCKED_COMPLETED_WORK: &str =
+    "Completed earlier · retry window copy accepted for the release branch.";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -77,10 +100,33 @@ enum CheckpointVariant {
     StaleRedo,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolFailedVariant {
+    MissingFile,
+    Capability,
+    Unknown,
+    CompletedEffect,
+    Idempotent,
+    Policy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BlockedCommandVariant {
+    WorkStyle,
+    Permission,
+    AfterApproval,
+    AfterWorkStyle,
+}
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let surface = match screen_id {
-        "turn-error" | "error-network" | "rate-limit" | "checkpoint-undo" => Surface::ActionDock,
+        "turn-error"
+        | "error-network"
+        | "rate-limit"
+        | "checkpoint-undo"
+        | "tool-failed"
+        | "blocked-command" => Surface::ActionDock,
         _ => return Err(format!("unknown Flow 5 recovery screen: {screen_id}")),
     };
     ScreenComposition::new(screen_id, surface, statusline.clone()).validate()?;
@@ -90,6 +136,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "error-network" => render_error_network(&mut canvas, screen_id, fixture_id)?,
         "rate-limit" => render_rate_limit(&mut canvas, screen_id, fixture_id)?,
         "checkpoint-undo" => render_checkpoint_undo(&mut canvas, screen_id, fixture_id)?,
+        "tool-failed" => render_tool_failed(&mut canvas, screen_id, fixture_id)?,
+        "blocked-command" => render_blocked_command(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -114,6 +162,618 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             later_draft: Some(DRAFT.to_owned()),
         }),
     })
+}
+
+fn tool_failed_variant(fixture_id: &str) -> ToolFailedVariant {
+    if fixture_id.contains("capability") {
+        ToolFailedVariant::Capability
+    } else if fixture_id.contains("unknown") {
+        ToolFailedVariant::Unknown
+    } else if fixture_id.contains("completed") {
+        ToolFailedVariant::CompletedEffect
+    } else if fixture_id.contains("policy") {
+        ToolFailedVariant::Policy
+    } else if fixture_id.contains("idempotent") || fixture_id.contains("safe") {
+        ToolFailedVariant::Idempotent
+    } else {
+        ToolFailedVariant::MissingFile
+    }
+}
+
+fn blocked_command_variant(fixture_id: &str) -> BlockedCommandVariant {
+    if fixture_id.contains("after-approval") || fixture_id.contains("approval-return") {
+        BlockedCommandVariant::AfterApproval
+    } else if fixture_id.contains("after-work-style") || fixture_id.contains("work-style-return")
+    {
+        BlockedCommandVariant::AfterWorkStyle
+    } else if fixture_id.contains("permission") || fixture_id.contains("approval") {
+        BlockedCommandVariant::Permission
+    } else {
+        BlockedCommandVariant::WorkStyle
+    }
+}
+
+fn render_tool_failed(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let variant = tool_failed_variant(fixture_id);
+    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, TOOL_USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        &format!("✓ {TOOL_COMPLETED} · Complete · shared guard found"),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        &format!("✗ {TOOL_FAILED_NAME} · Needs attention"),
+        TextStyle::bright(),
+    )?;
+    canvas.write(12, 6, TOOL_INTENDED_EFFECT, TextStyle::text())?;
+    canvas.write(
+        13,
+        6,
+        &format!("Partial output · {TOOL_PARTIAL_OUTPUT}"),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "────────────────────────────────────────────────────────",
+        TextStyle::muted(),
+    )?;
+
+    let (cause, primary_label, primary_action, primary_target) = match variant {
+        ToolFailedVariant::MissingFile => (
+            TOOL_CAUSE_MISSING_FILE,
+            "Choose a file",
+            "action.tool-failed.choose-file",
+            "tool-failed",
+        ),
+        ToolFailedVariant::Capability => (
+            TOOL_CAUSE_CAPABILITY,
+            "Connect Docs search",
+            "action.tool-failed.connect-capability",
+            "mcp",
+        ),
+        ToolFailedVariant::Unknown => (
+            TOOL_CAUSE_UNKNOWN,
+            "Inspect result",
+            "action.tool-failed.inspect-result",
+            "tool-failed",
+        ),
+        ToolFailedVariant::CompletedEffect => (
+            TOOL_CAUSE_COMPLETED,
+            "Inspect result",
+            "action.tool-failed.inspect-result",
+            "tool-failed",
+        ),
+        ToolFailedVariant::Idempotent => (
+            TOOL_CAUSE_IDEMPOTENT,
+            "Retry tool",
+            "action.tool-failed.retry",
+            "tool-running",
+        ),
+        ToolFailedVariant::Policy => (
+            TOOL_CAUSE_POLICY,
+            "Review policy",
+            "action.tool-failed.review-policy",
+            "tool-failed",
+        ),
+    };
+    let secondary_label = "Show evidence";
+    let secondary_action = "action.tool-failed.show-evidence";
+
+    canvas.write(17, 4, &format!("✗ {cause}"), TextStyle::bright())?;
+    canvas.write(
+        18,
+        4,
+        "Completed tools, draft, and partial output stay available.",
+        TextStyle::text(),
+    )?;
+    match variant {
+        ToolFailedVariant::Unknown | ToolFailedVariant::CompletedEffect => {
+            canvas.write(
+                19,
+                4,
+                "Retry stays off until inspection confirms a safe boundary.",
+                TextStyle::muted(),
+            )?;
+        }
+        ToolFailedVariant::Idempotent => {
+            canvas.write(
+                19,
+                4,
+                "Retry reuses this invocation and never re-runs completed tools.",
+                TextStyle::muted(),
+            )?;
+        }
+        ToolFailedVariant::Capability => {
+            canvas.write(
+                19,
+                4,
+                "Connect the human capability, then return to this paused tool.",
+                TextStyle::muted(),
+            )?;
+        }
+        ToolFailedVariant::Policy => {
+            canvas.write(
+                19,
+                4,
+                "Policy review stays separate from connection setup.",
+                TextStyle::muted(),
+            )?;
+        }
+        ToolFailedVariant::MissingFile => {
+            canvas.write(
+                19,
+                4,
+                "Choose the file this tool needs, then continue from the same turn.",
+                TextStyle::muted(),
+            )?;
+        }
+    }
+
+    write_dock_border(canvas)?;
+    dock_line(canvas, DOCK_TOP + 1, "Recover the failed tool", TextStyle::bright())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "One next step keeps completed sibling work intact.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        &format!("› [enter] {primary_label}"),
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        &format!("  [d] {secondary_label}"),
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "  [esc] Keep this failure in the transcript",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "paused-conversation",
+            reference(2, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-request",
+            "release-notes-prompt",
+            reference(5, 4, 70),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "activity",
+            "tool-read-rules",
+            reference(9, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "activity",
+            "tool-write-release-notes",
+            reference(11, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "tool-intent",
+            "write-release-notes",
+            reference(12, 6, 64),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "partial-output",
+            "write-release-notes-partial",
+            reference(13, 6, 50),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "recovery-cause",
+            match variant {
+                ToolFailedVariant::MissingFile => "missing-file",
+                ToolFailedVariant::Capability => "capability-unavailable",
+                ToolFailedVariant::Unknown => "unknown-outcome",
+                ToolFailedVariant::CompletedEffect => "completed-effect",
+                ToolFailedVariant::Idempotent => "idempotent-failure",
+                ToolFailedVariant::Policy => "policy-blocked",
+            },
+            reference(17, 4, 4 + 2 + cause.chars().count() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            primary_action,
+            reference(DOCK_TOP + 3, 4, 4 + 10 + primary_label.chars().count() as u16),
+            "focused",
+            Some(action(primary_action, primary_label, false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            secondary_action,
+            reference(
+                DOCK_TOP + 4,
+                4,
+                4 + 5 + secondary_label.chars().count() as u16,
+            ),
+            "summary",
+            Some(action(secondary_action, secondary_label, false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.tool-failed.cancel",
+            reference(DOCK_TOP + 5, 4, 48),
+            "summary",
+            Some(action(
+                "action.tool-failed.cancel",
+                "Keep this failure in the transcript",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+
+    let mut transitions = vec![
+        transition(
+            primary_action,
+            "tool-failed",
+            primary_target,
+            "direct",
+            match variant {
+                ToolFailedVariant::MissingFile => {
+                    "choose a file keeps the failed tool identity and completed sibling results"
+                }
+                ToolFailedVariant::Capability => {
+                    "connect capability opens the capability surface without losing the tool"
+                }
+                ToolFailedVariant::Unknown | ToolFailedVariant::CompletedEffect => {
+                    "inspection is required before any retry or resume"
+                }
+                ToolFailedVariant::Idempotent => {
+                    "safe retry reuses the paused tool and never duplicates completed siblings"
+                }
+                ToolFailedVariant::Policy => {
+                    "policy review stays on the failed tool without starting an invocation"
+                }
+            },
+        ),
+        transition(
+            "action.tool-failed.cancel",
+            "tool-failed",
+            "tool-failed",
+            "cancel",
+            "cancel keeps the failure, draft, and completed tool work in place",
+        ),
+    ];
+    if matches!(
+        variant,
+        ToolFailedVariant::Unknown | ToolFailedVariant::CompletedEffect
+    ) {
+        // Explicitly do not expose a retry transition for unknown/completed-effect outcomes.
+    } else if matches!(variant, ToolFailedVariant::Idempotent) {
+        transitions.push(transition(
+            "action.tool-failed.retry",
+            "tool-failed",
+            "tool-running",
+            "direct",
+            "safe retry resumes the same invocation once",
+        ));
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_blocked_command(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let variant = blocked_command_variant(fixture_id);
+    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, TOOL_USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, BLOCKED_COMPLETED_WORK, TextStyle::muted())?;
+    canvas.write(
+        11,
+        4,
+        "✗ Blocked command · did not run",
+        TextStyle::bright(),
+    )?;
+    canvas.write(12, 6, BLOCKED_COMMAND, TextStyle::text())?;
+    canvas.write(
+        13,
+        6,
+        "Composer draft kept · Keep the risk note short before we publish.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "────────────────────────────────────────────────────────",
+        TextStyle::muted(),
+    )?;
+
+    let (cause, primary_label, primary_action, primary_target, note) = match variant {
+        BlockedCommandVariant::WorkStyle => (
+            BLOCKED_POLICY_CAUSE,
+            "Change how Code works",
+            "action.blocked-command.change-work-style",
+            "agent-picker",
+            "Change the work style, then return for one explicit run decision.",
+        ),
+        BlockedCommandVariant::Permission => (
+            BLOCKED_PERMISSION_CAUSE,
+            "Request approval",
+            "action.blocked-command.request-approval",
+            "permission-shell",
+            "Approval stays separate; the command still needs an explicit run.",
+        ),
+        BlockedCommandVariant::AfterApproval => (
+            BLOCKED_PERMISSION_CAUSE,
+            "Run command once",
+            "action.blocked-command.run-once",
+            "shell",
+            "Approval returned. Run once only when you choose it here.",
+        ),
+        BlockedCommandVariant::AfterWorkStyle => (
+            BLOCKED_POLICY_CAUSE,
+            "Run command once",
+            "action.blocked-command.run-once",
+            "shell",
+            "Work style returned. Run once only when you choose it here.",
+        ),
+    };
+
+    canvas.write(17, 4, &format!("✗ {cause}"), TextStyle::bright())?;
+    canvas.write(
+        18,
+        4,
+        "Earlier completed work stays readable and is not marked blocked.",
+        TextStyle::text(),
+    )?;
+    canvas.write(19, 4, note, TextStyle::muted())?;
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Recover the blocked command",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Keep the exact command available without running it yet.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        &format!("› [enter] {primary_label}"),
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [d] Show evidence",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "  [esc] Keep command blocked",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "paused-conversation",
+            reference(2, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "user-request",
+            "release-notes-prompt",
+            reference(5, 4, 70),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "completed-work",
+            "retry-window-copy",
+            reference(9, 4, 68),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "blocked-command",
+            "command-not-run",
+            reference(11, 4, 36),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "command",
+            "blocked-shell-command",
+            reference(12, 6, 6 + BLOCKED_COMMAND.chars().count() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "draft",
+            "composer-draft",
+            reference(13, 6, 62),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "recovery-cause",
+            match variant {
+                BlockedCommandVariant::WorkStyle | BlockedCommandVariant::AfterWorkStyle => {
+                    "work-style-restriction"
+                }
+                BlockedCommandVariant::Permission | BlockedCommandVariant::AfterApproval => {
+                    "permission-required"
+                }
+            },
+            reference(17, 4, 4 + 2 + cause.chars().count() as u16),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            primary_action,
+            reference(DOCK_TOP + 3, 4, 4 + 10 + primary_label.chars().count() as u16),
+            "focused",
+            Some(action(primary_action, primary_label, false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.blocked-command.show-evidence",
+            reference(DOCK_TOP + 4, 4, 22),
+            "summary",
+            Some(action(
+                "action.blocked-command.show-evidence",
+                "Show evidence",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.blocked-command.cancel",
+            reference(DOCK_TOP + 5, 4, 34),
+            "summary",
+            Some(action(
+                "action.blocked-command.cancel",
+                "Keep command blocked",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                primary_action,
+                "blocked-command",
+                primary_target,
+                "direct",
+                match variant {
+                    BlockedCommandVariant::WorkStyle => {
+                        "change how Code works routes to the work-style surface and keeps the command"
+                    }
+                    BlockedCommandVariant::Permission => {
+                        "request approval routes to the permission surface without executing"
+                    }
+                    BlockedCommandVariant::AfterApproval | BlockedCommandVariant::AfterWorkStyle => {
+                        "an explicit run decision stays on the blocked command after return"
+                    }
+                },
+            ),
+            transition(
+                "action.blocked-command.cancel",
+                "blocked-command",
+                "blocked-command",
+                "cancel",
+                "cancel keeps the verbatim command and draft without execution",
+            ),
+        ],
+    ))
 }
 
 fn render_turn_error(

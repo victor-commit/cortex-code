@@ -69,6 +69,8 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("session", "shell"),
         ("session", "todo-list"),
         ("session", "compact"),
+        ("session", "tool-failed"),
+        ("session", "blocked-command"),
         ("input", "file-mention"),
         ("input", "composer-multiline"),
         ("input", "slash-menu"),
@@ -113,7 +115,7 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
 #[test]
 fn every_render_selector_preflights_missing_renderers_before_writing() {
     let _test_lock = renderer_test_lock();
-    assert_registry_failure(&["--all"], "tool-failed");
+    assert_registry_failure(&["--all"], "status");
     // `states` still has unimplemented screens; stream order surfaces the first
     // inventory gap for that category rather than writing partial artifacts.
     assert_registry_failure(&["states"], "empty");
@@ -146,6 +148,8 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("session", "shell"),
         ("session", "todo-list"),
         ("session", "compact"),
+        ("session", "tool-failed"),
+        ("session", "blocked-command"),
         ("input", "file-mention"),
         ("input", "composer-multiline"),
         ("input", "slash-menu"),
@@ -223,7 +227,7 @@ fn invalid_full_render_keeps_the_last_complete_canonical_publication() {
     assert_eq!(rejected.status.code(), Some(3));
     assert!(rejected.stdout.is_empty());
     assert!(String::from_utf8_lossy(&rejected.stderr)
-        .contains("canonical ID has no implemented renderer: tool-failed"));
+        .contains("canonical ID has no implemented renderer: status"));
     assert_eq!(
         fs::read(output_root.join(".renderer-manifest-v1"))
             .expect("a rejected selector must retain the complete gallery"),

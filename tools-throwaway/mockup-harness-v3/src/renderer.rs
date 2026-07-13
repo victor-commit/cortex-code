@@ -54,6 +54,8 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "shell",
     "todo-list",
     "compact",
+    "tool-failed",
+    "blocked-command",
     "file-mention",
     "composer-multiline",
     "slash-menu",
@@ -1394,11 +1396,11 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 58);
+        assert_eq!(implemented.canonical_ids().count(), 60);
         assert!(
             preflight_render(&PublicSelector::All)
                 .expect_err("full render must reject missing renderers")
-                .contains("tool-failed")
+                .contains("status")
         );
     }
 

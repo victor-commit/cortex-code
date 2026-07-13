@@ -530,7 +530,12 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
     }
     if matches!(
         screen_id,
-        "turn-error" | "error-network" | "rate-limit" | "checkpoint-undo"
+        "turn-error"
+            | "error-network"
+            | "rate-limit"
+            | "checkpoint-undo"
+            | "tool-failed"
+            | "blocked-command"
     ) {
         let document = crate::screens::recovery::render(screen_id, fixture_id)?;
         document.validate()?;
