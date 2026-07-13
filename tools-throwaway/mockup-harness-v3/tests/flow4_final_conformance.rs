@@ -153,38 +153,168 @@ const GALLERY_RELATIVE: &[(&str, &str)] = &[
     ("views", "sidebar-mcp"),
 ];
 
-/// Scenario inventory that must restore origin / never strand the user.
+/// Exhaustive public Flow 4 cancel/back/success origin-restore matrix
+/// (VAL-V3-F4-048). Derived from every named `replay_case` for login, the six
+/// connect-* screens, mcp, and sidebar-mcp. Protocol-only OAuth safeguards and
+/// static fixture snapshots are listed separately when they are not origin
+/// for navigation actions.
 const ORIGIN_SCENARIOS: &[(&str, &str, &str)] = &[
+    // login
     ("login-cancel", "login", "model-picker"),
     ("login-cancel-onboarding", "login", "onboarding"),
     ("login-cancel-conversation", "login", "chat-turn"),
     ("login-choose-provider", "login", "connect-provider"),
+    // connect-provider (all origins)
     ("connect-provider-select", "connect-provider", "connect-method"),
+    (
+        "connect-provider-back-onboarding",
+        "connect-provider",
+        "login",
+    ),
+    (
+        "connect-provider-back-conversation",
+        "connect-provider",
+        "login",
+    ),
     (
         "connect-provider-back-blocked-model",
         "connect-provider",
         "login",
     ),
+    // connect-method
     ("connect-method-back", "connect-method", "connect-provider"),
     ("connect-method-oauth", "connect-method", "connect-oauth"),
+    // connect-apikey
+    ("connect-apikey-cancel", "connect-apikey", "connect-method"),
+    // connect-oauth success / cancel
+    ("connect-oauth-cancel", "connect-oauth", "connect-method"),
     ("connect-oauth-finish", "connect-oauth", "connect-connected"),
+    (
+        "connect-oauth-state-match",
+        "connect-oauth",
+        "connect-connected",
+    ),
+    (
+        "connect-oauth-pkce-supported",
+        "connect-oauth",
+        "connect-connected",
+    ),
+    // connect-connected success return (incl. idempotent continue)
     (
         "connect-connected-return",
         "connect-connected",
         "model-picker",
     ),
     (
+        "connect-connected-return-idempotent",
+        "connect-connected",
+        "model-picker",
+    ),
+    // connect-disconnect cancel + confirm variants
+    (
         "connect-disconnect-cancel",
         "connect-disconnect",
         "connect-provider",
     ),
+    (
+        "connect-disconnect-confirm",
+        "connect-disconnect",
+        "connect-provider",
+    ),
+    (
+        "connect-disconnect-multi-source",
+        "connect-disconnect",
+        "connect-provider",
+    ),
+    (
+        "connect-disconnect-last-source",
+        "connect-disconnect",
+        "connect-provider",
+    ),
+    // mcp return / setup / sign-in / retry
     ("mcp-return", "mcp", "chat-turn"),
     ("mcp-setup-cancel", "mcp", "mcp"),
+    ("mcp-sign-in-success", "mcp", "mcp"),
+    ("mcp-retry-running", "mcp", "mcp"),
+    ("mcp-retry-ready", "mcp", "mcp"),
+    ("mcp-retry-failed", "mcp", "mcp"),
+    // mcp progress terminals + operation-scoped cancels
+    ("mcp-progress-success", "mcp", "mcp"),
+    ("mcp-progress-failed", "mcp", "mcp"),
+    ("mcp-progress-cancel-setup", "mcp", "mcp"),
+    ("mcp-progress-cancel-auth", "mcp", "mcp"),
+    ("mcp-progress-cancel-reconnect", "mcp", "mcp"),
+    ("mcp-progress-cancel-invocation", "mcp", "mcp"),
+    // mcp detail + diagnostics open/close (incl. failed diagnostics)
+    ("mcp-details-open", "mcp", "mcp"),
     ("mcp-details-back", "mcp", "mcp"),
+    ("mcp-diagnostics-open", "mcp", "mcp"),
     ("mcp-diagnostics-close", "mcp", "mcp"),
+    ("mcp-diagnostics-failed-open", "mcp", "mcp"),
+    ("mcp-diagnostics-failed-close", "mcp", "mcp"),
+    // mcp handshake outcomes
+    ("mcp-handshake-success", "mcp", "mcp"),
+    ("mcp-handshake-failed", "mcp", "mcp"),
+    ("mcp-handshake-zero-usable", "mcp", "mcp"),
+    // hostile label detail open/back
+    ("mcp-hostile-labels-open", "mcp", "mcp"),
+    ("mcp-hostile-labels-back", "mcp", "mcp"),
+    // sidebar-mcp bidirectional
     ("sidebar-mcp-open-mcp", "sidebar-mcp", "mcp"),
     ("sidebar-mcp-return", "mcp", "sidebar-mcp"),
+    // policy review / change confirm / cancel
+    ("mcp-policy-review-open", "mcp", "mcp"),
+    ("mcp-policy-change-confirm", "mcp", "mcp"),
     ("mcp-policy-change-cancel", "mcp", "mcp"),
+    // removal family (distinct disable / sign-out / remove)
+    ("mcp-disable", "mcp", "mcp"),
+    ("mcp-sign-out", "mcp", "mcp"),
+    ("mcp-remove-connection", "mcp", "mcp"),
+    ("mcp-remove-managed-refused", "mcp", "mcp"),
+    // resume policy outcomes
+    ("mcp-resume-automatic-once", "mcp", "tool-running"),
+    ("mcp-resume-confirmation", "mcp", "tool-failed"),
+    ("mcp-resume-none", "mcp", "tool-failed"),
+    ("mcp-resume-cancel", "mcp", "tool-failed"),
+    ("mcp-resume-failed", "mcp", "tool-failed"),
+    ("mcp-resume-policy-blocked", "mcp", "mcp"),
+];
+
+/// OAuth protocol safeguards that must stay non-dead-end and self-consistent
+/// without leaving the connection shell (not navigation identity changes).
+const OAUTH_PROTOCOL_SCENARIOS: &[(&str, &str, &str)] = &[
+    (
+        "connect-oauth-state-mismatch",
+        "connect-oauth",
+        "connect-oauth",
+    ),
+    (
+        "connect-oauth-late-callback",
+        "connect-method",
+        "connect-method",
+    ),
+];
+
+/// All nine Flow 4 decision surfaces that must expose non-dead transitions.
+const FLOW4_DECISION_SURFACES: &[(&str, &str)] = &[
+    ("login", "gate.provider-and-mcp.login"),
+    (
+        "connect-provider",
+        "gate.provider-and-mcp.connect-provider",
+    ),
+    ("connect-method", "gate.provider-and-mcp.connect-method"),
+    ("connect-apikey", "auth.connect-apikey.valid"),
+    ("connect-oauth", "gate.provider-and-mcp.connect-oauth"),
+    (
+        "connect-connected",
+        "gate.provider-and-mcp.connect-connected",
+    ),
+    (
+        "connect-disconnect",
+        "auth.connect-disconnect.anthropic.local",
+    ),
+    ("mcp", "gate.provider-and-mcp.mcp"),
+    ("sidebar-mcp", "views.sidebar-mcp.attention"),
 ];
 
 fn gallery_root() -> PathBuf {
@@ -483,7 +613,11 @@ fn every_actionable_flow4_state_has_exactly_one_primary() {
 
 #[test]
 fn exhaustive_transition_matrix_restores_documented_origins() {
-    for &(case_id, from, to) in ORIGIN_SCENARIOS {
+    // Cover both navigation origin restores and protocol-only OAuth isolates.
+    let all_cases = ORIGIN_SCENARIOS
+        .iter()
+        .chain(OAUTH_PROTOCOL_SCENARIOS.iter());
+    for &(case_id, from, to) in all_cases {
         let replay =
             replay_case(case_id, 1).unwrap_or_else(|e| panic!("scenario {case_id} replay: {e}"));
         assert_eq!(
@@ -499,15 +633,22 @@ fn exhaustive_transition_matrix_restores_documented_origins() {
             !replay.transitions.is_empty() || !replay.actions.is_empty(),
             "{case_id}: must not be a dead end"
         );
-        // Cancel/back/return preserve draft + scroll + conversation (except
-        // intentional open/advance that declares a new legal screen).
+        // No transition may declare a dead-end kind.
+        for transition in &replay.transitions {
+            assert_ne!(
+                transition.kind, "dead-end",
+                "{case_id}: transition must not be dead-end"
+            );
+        }
+        // Cancel/back/return/close preserve draft + scroll + conversation
+        // except when the action intentionally opens a different legal shell.
         let is_cancel_like = case_id.contains("cancel")
             || case_id.contains("back")
             || case_id.ends_with("-return")
-            || case_id.contains("close");
+            || case_id.contains("close")
+            || case_id.ends_with("-return-idempotent");
         if is_cancel_like {
             for field in ["draft", "scroll_anchor", "conversation_id"] {
-                // Not every CaseReplay field is exposed identically; use preserved hashes when present.
                 if let Some(hashes) = replay.preserved_field_hashes.get(field) {
                     assert_eq!(
                         hashes.before, hashes.after,
@@ -526,56 +667,86 @@ fn exhaustive_transition_matrix_restores_documented_origins() {
                 }
             }
         }
-        // Provider success never lands on MCP.
-        if case_id == "connect-connected-return" {
-            assert_ne!(replay.after.screen_id, "mcp");
+        // Provider success never lands on MCP (separate branches).
+        if case_id.starts_with("connect-connected-return")
+            || case_id == "connect-oauth-finish"
+            || case_id == "connect-oauth-state-match"
+            || case_id == "connect-oauth-pkce-supported"
+        {
+            assert_ne!(
+                replay.after.screen_id, "mcp",
+                "{case_id}: provider success must not jump to MCP"
+            );
         }
     }
 
-    // Storyboard frames expose bidirectional non-dead transitions.
-    for screen_id in [
+    // Matrix must enumerate every public cancel/back/success surface group.
+    let covered_from: std::collections::BTreeSet<&str> = ORIGIN_SCENARIOS
+        .iter()
+        .map(|(_, from, _)| *from)
+        .collect();
+    for required in [
         "login",
         "connect-provider",
         "connect-method",
+        "connect-apikey",
         "connect-oauth",
         "connect-connected",
+        "connect-disconnect",
         "mcp",
         "sidebar-mcp",
     ] {
-        let fixture = if screen_id == "sidebar-mcp" {
-            "views.sidebar-mcp.attention"
-        } else {
-            // stable gate or production default
-            match screen_id {
-                "connect-apikey" => "auth.connect-apikey.valid",
-                "connect-disconnect" => "auth.connect-disconnect.anthropic.local",
-                other => {
-                    // try gate first
-                    let gate = format!("gate.provider-and-mcp.{other}");
-                    // fall through by rendering gate for known steps
-                    let _ = other;
-                    // We'll rebind below
-                    let _ = gate;
-                    ""
-                }
-            }
-        };
-        let fixture = if fixture.is_empty() {
-            format!("gate.provider-and-mcp.{screen_id}")
-        } else {
-            fixture.to_owned()
-        };
-        let audit = render_pair(screen_id, &fixture);
+        assert!(
+            covered_from.contains(required),
+            "ORIGIN_SCENARIOS must include origin-restore cases from {required}"
+        );
+    }
+
+    // Required public cancel/back/success id subset named by scrutiny/AGENTS.
+    for required_case in [
+        "connect-apikey-cancel",
+        "connect-oauth-cancel",
+        "connect-provider-back-onboarding",
+        "connect-provider-back-conversation",
+        "connect-provider-back-blocked-model",
+        "connect-disconnect-confirm",
+        "connect-connected-return-idempotent",
+        "mcp-progress-cancel-setup",
+        "mcp-progress-cancel-auth",
+        "mcp-progress-cancel-reconnect",
+        "mcp-progress-cancel-invocation",
+        "mcp-diagnostics-close",
+        "mcp-diagnostics-failed-close",
+        "mcp-hostile-labels-back",
+        "mcp-policy-change-cancel",
+        "mcp-details-back",
+    ] {
+        assert!(
+            ORIGIN_SCENARIOS
+                .iter()
+                .any(|(case_id, _, _)| *case_id == required_case),
+            "ORIGIN_SCENARIOS missing required public case {required_case}"
+        );
+    }
+
+    // All nine decision surfaces expose non-dead transitions with from==self.
+    for &(screen_id, fixture) in FLOW4_DECISION_SURFACES {
+        let audit = render_pair(screen_id, fixture);
         assert!(
             !audit.transitions.is_empty(),
-            "{screen_id} must expose transitions"
+            "{screen_id}/{fixture} must expose transitions"
         );
         assert!(
             audit
                 .transitions
                 .iter()
                 .all(|t| t.from_screen_id == screen_id && t.kind != "dead-end"),
-            "{screen_id} transitions must preserve origin and avoid dead-ends"
+            "{screen_id}/{fixture} transitions must preserve origin and avoid dead-ends: {:?}",
+            audit
+                .transitions
+                .iter()
+                .map(|t| (t.from_screen_id.as_str(), t.kind.as_str(), t.to_screen_id.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 }
