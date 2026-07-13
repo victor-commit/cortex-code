@@ -716,10 +716,12 @@ impl CaseReplay {
         // provider-to-mcp-bridge is an ordered illustrative detour that openly
         // rebinds conversation/session/task from provider identity to MCP.
         // session-resume-latest rebinds to the selected timeline session.
+        // fork-confirm creates a distinct forked session identity.
         if ((self.before.session_id != self.after.session_id
             || self.before.paused_activity_id != self.after.paused_activity_id)
             && self.case_id != "session-resume-latest"
-            && self.case_id != "provider-to-mcp-bridge")
+            && self.case_id != "provider-to-mcp-bridge"
+            && self.case_id != "fork-confirm")
             || (self.case_id != "flow2-submit-bridge"
                 && self.before.submitted_prompt != self.after.submitted_prompt)
         {
@@ -860,6 +862,15 @@ impl CaseReplay {
                 && !((self.permission.is_some() || self.diff.is_some())
                     && self.attempts[0].count == 0)
                 && !(self.case_id.starts_with("session-") && self.attempts[0].count == 0)
+                && !(matches!(
+                    self.case_id.as_str(),
+                    "model-filter-apply"
+                        | "model-filter-no-match"
+                        | "model-filter-clear"
+                        | "model-filter-cancel"
+                        | "timeline-historical-fork"
+                        | "fork-cancel"
+                ) && self.attempts[0].count == 0)
                 && !(self.case_id.starts_with("network-")
                     && (self.attempts[0].count == 0
                         || self.attempts[0].outcome == "exhausted"
@@ -1151,6 +1162,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "model-picker-apply" => model_picker_apply(),
         "model-picker-cancel" => model_picker_cancel(),
         "model-picker-connect" => model_picker_connect(),
+        "model-filter-apply" => model_filter_apply(),
+        "model-filter-no-match" => model_filter_no_match(),
+        "model-filter-clear" => model_filter_clear(),
+        "model-filter-cancel" => model_filter_cancel(),
         "model-to-work-style-bridge" => model_to_work_style_bridge(),
         "work-style-unchanged" => work_style_unchanged(),
         "work-style-access-pending" => work_style_access_pending(),
@@ -1170,6 +1185,9 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "session-no-sessions" => session_no_sessions(),
         "session-no-matches-filter" => session_no_matches_filter(),
         "session-no-matches" => session_no_matches(),
+        "timeline-historical-fork" => timeline_historical_fork(),
+        "fork-confirm" => fork_confirm(),
+        "fork-cancel" => fork_cancel(),
         "login-cancel" => login_cancel(),
         "connect-provider-select" => connect_provider_select(),
         "connect-method-back" => connect_method_back(),
@@ -1591,12 +1609,41 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             },
         );
     }
-    if case_id.starts_with("session-") {
+    if case_id.starts_with("session-")
+        || matches!(
+            case_id,
+            "timeline-historical-fork" | "fork-confirm" | "fork-cancel"
+        )
+    {
         preserved_field_hashes.insert(
             "source_history".to_owned(),
             PreservedFieldHash {
                 before: sha256_hex(b"retry-policy-review-history-v1"),
                 after: sha256_hex(b"retry-policy-review-history-v1"),
+            },
+        );
+    }
+    if matches!(
+        case_id,
+        "model-filter-apply"
+            | "model-filter-no-match"
+            | "model-filter-clear"
+            | "model-filter-cancel"
+    ) {
+        preserved_field_hashes.insert(
+            "model_catalog".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(
+                    b"Claude Sonnet 4.5|Claude Opus 4.8|GPT-5.2 Codex",
+                ),
+                after: sha256_hex(b"Claude Sonnet 4.5|Claude Opus 4.8|GPT-5.2 Codex"),
+            },
+        );
+        preserved_field_hashes.insert(
+            "current_model".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(b"Claude Sonnet 4.5"),
+                after: sha256_hex(b"Claude Sonnet 4.5"),
             },
         );
     }
@@ -1635,13 +1682,44 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             _ => unreachable!(),
         }
         .to_owned()
+    } else if matches!(
+        case_id,
+        "timeline-historical-fork" | "fork-confirm" | "fork-cancel"
+    ) {
+        match after.screen_id.as_str() {
+            "chat-turn" => format!("case.fork-confirm.tick.{tick}"),
+            "fork-picker" | "timeline" | "session-picker" => format!(
+                "gate.work-configuration.{}.case.{case_id}.tick.{tick}",
+                after.screen_id
+            ),
+            other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
     } else if case_id.starts_with("session-")
-        && matches!(after.screen_id.as_str(), "session-picker" | "timeline")
+        && matches!(
+            after.screen_id.as_str(),
+            "session-picker" | "timeline" | "fork-picker"
+        )
     {
         format!(
             "gate.work-configuration.{}.case.{case_id}.tick.{tick}",
             after.screen_id
         )
+    } else if matches!(
+        case_id,
+        "model-filter-apply"
+            | "model-filter-no-match"
+            | "model-filter-clear"
+            | "model-filter-cancel"
+    ) {
+        match after.screen_id.as_str() {
+            "model-picker-filtered" if case_id == "model-filter-no-match" => {
+                "flow3-model-picker-no-match".to_owned()
+            }
+            "model-picker-filtered" => "flow3-model-picker-filtered".to_owned(),
+            "model-picker" => "flow3-model-picker".to_owned(),
+            "chat-turn" => "flow1.daily-work.stable".to_owned(),
+            other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
     } else if matches!(
         case_id,
         "login-cancel"
@@ -6641,6 +6719,400 @@ fn session_no_matches() -> (
         "session-filter",
         "no-session-change",
         "the local filter cleared without changing current or source session state",
+    )
+}
+
+fn model_filter_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // Public scenario opens the filtered canonical fixture while model-picker's
+    // local filter action remains confined to the unfiltered screen for gate
+    // bridge digests (VAL-V3-F3-015 uses the distinct filtered screen ID).
+    let mut before = state(
+        "model-picker",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "model-selection",
+        Some("pending.model.claude-opus-4-8"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "model-picker".to_owned(),
+        "model-picker-filtered".to_owned(),
+    ];
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "model-picker-filtered",
+        vec!["chat-turn", "model-picker", "model-picker-filtered"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "filter-query-claude",
+        Some("filter.claude"),
+        "return-to-chat-turn",
+        1,
+    );
+    after.queued_follow_up = "model-filter=claude".to_owned();
+    after.origin_stack = before.origin_stack.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.model-picker.open-filtered".to_owned(),
+        label: "Open filtered models".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "the filtered fixture shows the active query and matching rows while preserving the pending choice and origin draft"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.filter.1".to_owned(),
+        owner_id: "pending.model.claude-opus-4-8".to_owned(),
+        count: 0,
+        outcome: "filtered".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.filter",
+        "model-filter",
+        "filtered",
+        "the visible model set narrowed to Claude matches while catalog identity stayed intact",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn model_filter_no_match() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "model-picker",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "model-selection",
+        Some("pending.model.claude-opus-4-8"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "model-picker".to_owned(),
+        "model-picker-filtered".to_owned(),
+    ];
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "model-picker-filtered",
+        vec!["chat-turn", "model-picker", "model-picker-filtered"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "no-filter-matches",
+        "filter-query-zzq",
+        Some("filter.zzq"),
+        "return-to-chat-turn",
+        1,
+    );
+    after.queued_follow_up = "model-filter=zzq".to_owned();
+    after.origin_stack = before.origin_stack.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.model-picker.open-no-match".to_owned(),
+        label: "Open nonmatching filter".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "a nonmatching query keeps the query visible and shows a local no-match recovery"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.filter-empty.1".to_owned(),
+        owner_id: "pending.model.current".to_owned(),
+        count: 0,
+        outcome: "no-matches".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.filter-empty",
+        "model-filter",
+        "no-matches",
+        "zero model rows matched zzq while origin, current model, and catalog stayed intact",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn model_filter_clear() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "model-picker-filtered",
+        vec!["chat-turn", "model-picker", "model-picker-filtered"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "no-filter-matches",
+        "filter-query-zzq",
+        Some("filter.zzq"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.queued_follow_up = "model-filter=zzq".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "model-picker",
+        vec!["chat-turn", "model-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "model-selection",
+        Some("pending.model.claude-opus-4-8"),
+        "return-to-chat-turn",
+        1,
+    );
+    after.origin_stack = before.origin_stack.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.model-picker.clear-filter".to_owned(),
+        label: "Clear filter".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "clearing restores every model row in place without leaving the picker or changing the current model"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.clear-filter.1".to_owned(),
+        owner_id: "pending.model.claude-opus-4-8".to_owned(),
+        count: 0,
+        outcome: "filter-cleared".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.clear-filter",
+        "model-filter",
+        "filter-cleared",
+        "the complete catalog restored without leaving the picker",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn model_filter_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "model-picker-filtered",
+        vec!["chat-turn", "model-picker", "model-picker-filtered"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-opus-4-8",
+        "filter-query-claude",
+        Some("filter.claude"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.queued_follow_up = "model-filter=claude".to_owned();
+    before.state_hash = state_hash(&before);
+    let after = state(
+        "chat-turn",
+        vec!["chat-turn", "model-picker", "model-picker-filtered"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "claude-sonnet-4-5",
+        "composer",
+        None,
+        "return-to-chat-turn",
+        1,
+    );
+    let action = ActionEvidence {
+        action_id: "action.model-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel discards the filter and pending model and restores the exact conversation origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.model-picker.filter-cancel.1".to_owned(),
+        owner_id: "pending.model.claude-opus-4-8".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.model-picker.filter-cancel",
+        "model-filter",
+        "no-change",
+        "the filter cancelled without changing the current model or draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn timeline_historical_fork() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "timeline",
+        "all",
+        "retry-policy-review-checkpoint",
+        Some("timeline.retry-policy-checkpoint"),
+        "return-to-session-preview",
+        0,
+    );
+    let after = session_state(
+        "fork-picker",
+        "all",
+        "retry-policy-review-checkpoint",
+        Some("fork.retry-policy-checkpoint"),
+        "return-to-timeline",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.timeline.fork",
+        "Fork from selected point",
+        "direct",
+        "a historical timeline point opens a non-destructive fork confirmation and never rewinds the source session",
+        "attempt.timeline.fork.1",
+        0,
+        "fork-confirmation-opened",
+        "effect.timeline.fork",
+        "session-history",
+        "read-only",
+        "the historical point opened fork-picker without mutating source history",
+    )
+}
+
+fn fork_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "fork-picker",
+        "all",
+        "retry-policy-review-checkpoint",
+        Some("fork.retry-policy-checkpoint"),
+        "return-to-timeline",
+        0,
+    );
+    let mut after = session_state(
+        "chat-turn",
+        "all",
+        "forked-retry-policy",
+        None,
+        "return-to-session-picker",
+        1,
+    );
+    after.session_id = "session.retry-policy-review.fork.0937".to_owned();
+    after.paused_activity_id = "activity.retry-policy-review.fork.0937".to_owned();
+    after.transcript = "Retry policy review\nOpened the retry review\nUpdated the retry policy\nShared history through the selected checkpoint.".to_owned();
+    after.draft = "Continue from the forked checkpoint.".to_owned();
+    after.focus = "composer".to_owned();
+    after.scroll_anchor = "fork-checkpoint-0937".to_owned();
+    after.origin_stack = before.origin_stack.clone();
+    after.state_hash = state_hash(&after);
+    session_case(
+        before,
+        after,
+        "action.fork-picker.confirm",
+        "Fork",
+        "direct",
+        "confirm creates a distinct session from the checkpoint and returns to that new conversation while source history stays unchanged",
+        "attempt.fork-picker.confirm.1",
+        1,
+        "session-forked",
+        "effect.fork-picker.confirm",
+        "session-fork",
+        "session-forked",
+        "a distinct resumable session was created from the historical checkpoint; source history remained identical",
+    )
+}
+
+fn fork_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = session_state(
+        "fork-picker",
+        "all",
+        "retry-policy-review-checkpoint",
+        Some("fork.retry-policy-checkpoint"),
+        "return-to-timeline",
+        0,
+    );
+    let after = session_state(
+        "timeline",
+        "all",
+        "retry-policy-review-checkpoint",
+        Some("timeline.retry-policy-checkpoint"),
+        "return-to-session-preview",
+        1,
+    );
+    session_case(
+        before,
+        after,
+        "action.fork-picker.cancel",
+        "Cancel",
+        "cancel",
+        "cancel restores the exact timeline selection and source history without creating a session",
+        "attempt.fork-picker.cancel.1",
+        0,
+        "cancelled",
+        "effect.fork-picker.cancel",
+        "session-fork",
+        "no-change",
+        "fork cancelled without mutating source history or creating a destination session",
     )
 }
 

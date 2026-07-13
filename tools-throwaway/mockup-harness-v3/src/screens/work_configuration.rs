@@ -38,6 +38,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (candidates, events, transitions) = match screen_id {
         "onboarding" => render_onboarding(&mut canvas, screen_id, fixture_id)?,
         "model-picker" => render_model_picker(&mut canvas, screen_id, fixture_id)?,
+        "model-picker-filtered" => render_model_picker_filtered(&mut canvas, screen_id, fixture_id)?,
         "agent-picker" => render_agent_picker(&mut canvas, screen_id, fixture_id)?,
         "mode-switch" => render_mode_switch(&mut canvas, screen_id, fixture_id)?,
         "mode-switch-refused" => render_mode_switch_refused(&mut canvas, screen_id, fixture_id)?,
@@ -88,29 +89,41 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 }),
                 return_policy: "Return to onboarding".to_owned(),
             }),
-            "model-picker" => Some(ModelChoiceEvidence {
-                applied: "Claude Sonnet 4.5".to_owned(),
-                pending: Some(if fixture_id.contains("blocked") {
-                    "GPT-5.2 Codex".to_owned()
-                } else {
-                    "Claude Opus 4.8".to_owned()
-                }),
-                origin: if is_onboarding_origin(fixture_id) {
-                    "Onboarding".to_owned()
-                } else {
-                    "Current conversation".to_owned()
-                },
-                pending_action: Some(if fixture_id.contains("blocked") {
-                    "Connect provider".to_owned()
-                } else {
-                    "Apply model".to_owned()
-                }),
-                return_policy: if is_onboarding_origin(fixture_id) {
-                    "Return to onboarding".to_owned()
-                } else {
-                    "Return to conversation".to_owned()
-                },
-            }),
+            "model-picker" | "model-picker-filtered" => {
+                let no_match = screen_id == "model-picker-filtered"
+                    && (fixture_id.contains("no-match") || fixture_id.contains("zzq"));
+                Some(ModelChoiceEvidence {
+                    applied: "Claude Sonnet 4.5".to_owned(),
+                    pending: if no_match {
+                        None
+                    } else {
+                        Some(if fixture_id.contains("blocked") {
+                            "GPT-5.2 Codex".to_owned()
+                        } else {
+                            "Claude Opus 4.8".to_owned()
+                        })
+                    },
+                    origin: if is_onboarding_origin(fixture_id) {
+                        "Onboarding".to_owned()
+                    } else {
+                        "Current conversation".to_owned()
+                    },
+                    pending_action: if no_match {
+                        Some("Clear filter".to_owned())
+                    } else {
+                        Some(if fixture_id.contains("blocked") {
+                            "Connect provider".to_owned()
+                        } else {
+                            "Apply model".to_owned()
+                        })
+                    },
+                    return_policy: if is_onboarding_origin(fixture_id) {
+                        "Return to onboarding".to_owned()
+                    } else {
+                        "Return to conversation".to_owned()
+                    },
+                })
+            }
             _ => None,
         },
         conversation: (screen_id == "mode-switch" && is_gate_fixture(fixture_id)).then(|| {
@@ -643,6 +656,318 @@ fn render_model_picker(
                 "filtering changes only the visible model rows and leaves the pending choice intact",
             ),
         ],
+    ))
+}
+
+fn render_model_picker_filtered(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let no_match = fixture_id.contains("no-match") || fixture_id.contains("zzq");
+    let query = if no_match { "zzq" } else { "claude" };
+    let catalog = [
+        ("Claude Sonnet 4.5", "Current · Balanced speed and depth"),
+        ("Claude Opus 4.8", "More depth for complex changes · slower"),
+        (
+            "GPT-5.2 Codex",
+            "Fast implementation help · best for focused edits",
+        ),
+    ];
+    let matches: Vec<(usize, &str, &str)> = catalog
+        .iter()
+        .enumerate()
+        .filter(|(_, (label, consequence))| {
+            let haystack = format!("{label} {consequence}").to_ascii_lowercase();
+            haystack.contains(query)
+        })
+        .map(|(index, (label, consequence))| (index, *label, *consequence))
+        .collect();
+    let total = catalog.len();
+    let match_count = matches.len();
+
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Choose a model", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        &format!("Filter · {query} · {match_count} of {total} matching"),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Only models that match this query stay visible. Original order is kept.",
+        TextStyle::muted(),
+    )?;
+
+    let selected_label = if no_match {
+        None
+    } else {
+        Some("Claude Opus 4.8")
+    };
+    for (visible_index, (_original, label, consequence)) in matches.iter().enumerate() {
+        let row = 12 + visible_index as u16 * 3;
+        let selected = selected_label == Some(*label);
+        let marker = if selected { "›" } else { " " };
+        let style = if selected {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
+        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+    }
+    if no_match {
+        canvas.write(14, 4, "No models match zzq.", TextStyle::bright())?;
+        canvas.write(
+            16,
+            4,
+            "Edit the query or clear the filter to restore every model choice.",
+            TextStyle::muted(),
+        )?;
+    }
+
+    write_dock_border(canvas)?;
+    if no_match {
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Filter active · no matching models",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Clearing restores the full model list without leaving this picker.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [c] Clear filter · [esc] Cancel",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "Type to edit the query · applied model stays unchanged",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "Apply stays unavailable until a matching model remains.",
+            TextStyle::muted(),
+        )?;
+    } else {
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Selected · Claude Opus 4.8 · 2 of 3 matching",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Switching applies this choice: deeper reasoning for the next reply only.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Apply model · [c] Clear filter · [esc] Cancel",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "[↑↓] Choose · query stays visible · current choice stays until Apply",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "Nonmatching models stay hidden; relative order of matches is unchanged.",
+            TextStyle::muted(),
+        )?;
+    }
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "picker",
+            "model-selection",
+            reference(7, 4, 18),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "filter",
+            if no_match { "query-zzq" } else { "query-claude" },
+            reference(9, 4, 48),
+            "focused",
+            None,
+        ),
+    ];
+    for (visible_index, (_original, label, _)) in matches.iter().enumerate() {
+        let selected = selected_label == Some(*label);
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "model-row",
+            label,
+            reference(12 + visible_index as u16 * 3, 4, 22),
+            if selected { "focused" } else { "summary" },
+            None,
+        ));
+    }
+    if no_match {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "empty-result",
+            "no-models-match-zzq",
+            reference(14, 4, 28),
+            "focused",
+            None,
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.model-picker.clear-filter",
+            reference(DOCK_TOP + 3, 4, 24),
+            "focused",
+            Some(action(
+                "action.model-picker.clear-filter",
+                "Clear filter",
+                false,
+            )),
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.model-picker.cancel",
+            reference(DOCK_TOP + 3, 25, 42),
+            "summary",
+            Some(action("action.model-picker.cancel", "Cancel", false)),
+        ));
+    } else {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "selected-detail",
+            "Claude Opus 4.8",
+            reference(DOCK_TOP + 1, 4, 51),
+            "focused",
+            None,
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "pending-consequence",
+            "deeper-reasoning-next-reply",
+            reference(DOCK_TOP + 2, 4, 84),
+            "focused",
+            None,
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.model-picker.apply",
+            reference(DOCK_TOP + 3, 4, 28),
+            "focused",
+            Some(action("action.model-picker.apply", "Apply model", false)),
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "action.model-picker.clear-filter",
+            reference(DOCK_TOP + 3, 29, 50),
+            "summary",
+            Some(action(
+                "action.model-picker.clear-filter",
+                "Clear filter",
+                false,
+            )),
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.model-picker.cancel",
+            reference(DOCK_TOP + 3, 51, 70),
+            "summary",
+            Some(action("action.model-picker.cancel", "Cancel", false)),
+        ));
+    }
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+
+    let mut transitions = vec![
+        transition(
+            "action.model-picker.clear-filter",
+            "model-picker-filtered",
+            "model-picker",
+            "direct",
+            "clearing restores the complete model list in place without leaving the picker",
+        ),
+        transition(
+            "action.model-picker.cancel",
+            "model-picker-filtered",
+            "chat-turn",
+            "cancel",
+            "cancel discards the filter and pending model and restores the exact conversation origin",
+        ),
+    ];
+    if !no_match {
+        transitions.insert(
+            0,
+            transition(
+                "action.model-picker.apply",
+                "model-picker-filtered",
+                "chat-turn",
+                "direct",
+                "the selected matching model applies once and restores the exact conversation origin",
+            ),
+        );
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
     ))
 }
 

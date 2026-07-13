@@ -32,7 +32,7 @@ type ScreenEvidence = (
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     let surface = match screen_id {
-        "session-picker" => Surface::ActionDock,
+        "session-picker" | "fork-picker" => Surface::ActionDock,
         "timeline" => Surface::TemporaryDetailView,
         _ => return Err(format!("unknown Flow 3 session screen: {screen_id}")),
     };
@@ -41,6 +41,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let (candidates, events, transitions) = match screen_id {
         "session-picker" => render_session_picker(&mut canvas, screen_id, fixture_id)?,
         "timeline" => render_timeline(&mut canvas, screen_id, fixture_id)?,
+        "fork-picker" => render_fork_picker(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -865,6 +866,221 @@ fn render_timeline(
                 "timeline",
                 "direct",
                 "choosing a point changes only the temporary read-only selection",
+            ),
+        ],
+    ))
+}
+
+fn render_fork_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let gate_origin = is_gate_fixture(fixture_id);
+    if gate_origin {
+        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        canvas.write(4, 4, FLOW3_RESUME_TASK, TextStyle::bright())?;
+    } else {
+        canvas.write(
+            3,
+            4,
+            "You · Continue after inspecting session history.",
+            TextStyle::bright(),
+        )?;
+    }
+    canvas.write(7, 4, "Fork conversation", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Start a new session from a selected point while the source stays unchanged.",
+        TextStyle::text(),
+    )?;
+    canvas.write(12, 4, "Source", TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        "Retry policy review · Current session remains intact",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "Later turns after the checkpoint stay only in the source.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(16, 4, "Checkpoint", TextStyle::muted())?;
+    canvas.write(
+        17,
+        4,
+        "Today, 09:37 · Updated the retry policy",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        "Shared history includes only work through this point.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(20, 4, "Destination", TextStyle::muted())?;
+    canvas.write(
+        21,
+        4,
+        "New conversation · begins at the selected checkpoint",
+        TextStyle::bright(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        "Creates a distinct resumable session copy; the source stays unchanged.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        24,
+        4,
+        "Fork never overwrites the original timeline or replaces its latest state.",
+        TextStyle::text(),
+    )?;
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Fork · new session from Today, 09:37",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Source history stays unchanged after confirmation.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Fork · [esc] Cancel",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "Cancel returns to the exact timeline selection and source preview.",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Historical points always fork; only the latest state resumes directly.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(3, 4, 54),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "decision",
+            "fork-conversation",
+            reference(7, 4, 24),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "source",
+            "retry-policy-review",
+            reference(13, 4, 58),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "checkpoint",
+            "retry-policy-checkpoint",
+            reference(17, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "destination",
+            "new-conversation-from-checkpoint",
+            reference(21, 4, 58),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "consequence",
+            "source-unchanged",
+            reference(24, 4, 74),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "work-style",
+            "work_style",
+            reference(3, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.fork-picker.confirm",
+            reference(DOCK_TOP + 3, 4, 22),
+            "focused",
+            Some(action("action.fork-picker.confirm", "Fork", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.fork-picker.cancel",
+            reference(DOCK_TOP + 3, 23, 42),
+            "summary",
+            Some(action("action.fork-picker.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok(evidence(
+        pairs,
+        vec![
+            transition(
+                "action.fork-picker.confirm",
+                "fork-picker",
+                "chat-turn",
+                "direct",
+                "confirm creates a distinct session from the checkpoint and returns to that new conversation while the source stays unchanged",
+            ),
+            transition(
+                "action.fork-picker.cancel",
+                "fork-picker",
+                "timeline",
+                "cancel",
+                "cancel restores the exact timeline selection, source history, draft, and origin without creating a session",
             ),
         ],
     ))

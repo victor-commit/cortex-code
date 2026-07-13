@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Choose a model                                                                                                      
+                                                                                                                        
+    Filter · claude · 2 of 3 matching                                                                                   
+    Only models that match this query stay visible. Original order is kept.                                             
+                                                                                                                        
+      Claude Sonnet 4.5                                                                                                 
+      Current · Balanced speed and depth                                                                                
+                                                                                                                        
+    › Claude Opus 4.8                                                                                                   
+      More depth for complex changes · slower                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Claude Opus 4.8 · 2 of 3 matching                                                                     │  
+  │ Switching applies this choice: deeper reasoning for the next reply only.                                         │  
+  │ › [enter] Apply model · [c] Clear filter · [esc] Cancel                                                          │  
+  │ [↑↓] Choose · query stays visible · current choice stays until Apply                                             │  
+  │ Nonmatching models stay hidden; relative order of matches is unchanged.                                          │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

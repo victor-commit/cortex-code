@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue after inspecting session history.                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Fork conversation                                                                                                   
+                                                                                                                        
+    Start a new session from a selected point while the source stays unchanged.                                         
+                                                                                                                        
+                                                                                                                        
+    Source                                                                                                              
+    Retry policy review · Current session remains intact                                                                
+    Later turns after the checkpoint stay only in the source.                                                           
+                                                                                                                        
+    Checkpoint                                                                                                          
+    Today, 09:37 · Updated the retry policy                                                                             
+    Shared history includes only work through this point.                                                               
+                                                                                                                        
+    Destination                                                                                                         
+    New conversation · begins at the selected checkpoint                                                                
+    Creates a distinct resumable session copy; the source stays unchanged.                                              
+                                                                                                                        
+    Fork never overwrites the original timeline or replaces its latest state.                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Fork · new session from Today, 09:37                                                                             │  
+  │ Source history stays unchanged after confirmation.                                                               │  
+  │ › [enter] Fork · [esc] Cancel                                                                                    │  
+  │ Cancel returns to the exact timeline selection and source preview.                                               │  
+  │ Historical points always fork; only the latest state resumes directly.                                           │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

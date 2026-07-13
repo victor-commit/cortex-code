@@ -480,7 +480,10 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         validate_vision_hash(&render_hash, &render_hash)?;
         return Ok(document);
     }
-    if matches!(screen_id, "onboarding" | "model-picker") {
+    if matches!(
+        screen_id,
+        "onboarding" | "model-picker" | "model-picker-filtered"
+    ) {
         let document = crate::screens::work_configuration::render(screen_id, fixture_id)?;
         document.validate()?;
         let render_hash = sha256_hex(document.render_txt().as_bytes());
@@ -497,7 +500,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         validate_vision_hash(&render_hash, &render_hash)?;
         return Ok(document);
     }
-    if matches!(screen_id, "session-picker" | "timeline") {
+    if matches!(screen_id, "session-picker" | "timeline" | "fork-picker") {
         let document = crate::screens::session_history::render(screen_id, fixture_id)?;
         document.validate()?;
         let render_hash = sha256_hex(document.render_txt().as_bytes());

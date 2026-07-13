@@ -107,6 +107,8 @@ fn classify_chat_turn_fixture(fixture_id: &str) -> Result<ChatTurnJourney, Strin
     if fixture_id.starts_with("case.session-resume-latest")
         || fixture_id.starts_with("case.session-no-sessions-open")
         || fixture_id.starts_with("case.session-") && fixture_id.contains("after.chat-turn")
+        || fixture_id.starts_with("case.fork-confirm")
+        || fixture_id.contains("fork-confirm") && fixture_id.contains("chat-turn")
     {
         return Ok(ChatTurnJourney::Flow3SessionReturn);
     }

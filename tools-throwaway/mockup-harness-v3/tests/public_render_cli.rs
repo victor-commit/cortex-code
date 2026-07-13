@@ -77,9 +77,11 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("input", "attachment-picker"),
         ("input", "export-picker"),
         ("input", "model-picker"),
+        ("input", "model-picker-filtered"),
         ("input", "permission-shell"),
         ("input", "permission-deny-reason"),
         ("input", "session-picker"),
+        ("input", "fork-picker"),
         ("views", "timeline"),
     ] {
         assert!(
@@ -108,11 +110,11 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
 fn every_render_selector_preflights_missing_renderers_before_writing() {
     let _test_lock = renderer_test_lock();
     assert_registry_failure(&["--all"], "tool-failed");
-    // `input` still has unimplemented screens beyond attachment-picker; stream order
-    // surfaces the first inventory gap for that category.
-    assert_registry_failure(&["input"], "model-picker-filtered");
+    // `input` still has unimplemented screens beyond the finished pickers; stream
+    // order surfaces the first inventory gap for that category.
+    assert_registry_failure(&["input"], "skills-picker");
 
-    let path = "/projects/cortex-code/plans/assets/mockups-v3/input/model-picker-filtered.txt";
+    let path = "/projects/cortex-code/plans/assets/mockups-v3/input/skills-picker.txt";
     assert!(
         !Path::new(path).exists(),
         "preflight must finish before any artifact is written: {path}"
@@ -147,9 +149,11 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("input", "command-palette-submenu"),
         ("input", "attachment-picker"),
         ("input", "model-picker"),
+        ("input", "model-picker-filtered"),
         ("input", "permission-shell"),
         ("input", "permission-deny-reason"),
         ("input", "session-picker"),
+        ("input", "fork-picker"),
         ("views", "timeline"),
     ] {
         let output = run(&[screen]);
