@@ -25,7 +25,7 @@
                                                                                                                         
                                                                                                                         
     Connection details and raw tools stay under diagnostics.                                                            
-    Return closes this branch to the conversation, not provider OAuth.                                                  
+    Return closes this branch to the conversation, not provider sign-in.                                                
                                                                                                                         
                                                                                                                         
     › [enter] Fix setup                                                                                                 

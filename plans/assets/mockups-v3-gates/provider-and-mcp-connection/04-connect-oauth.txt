@@ -4,14 +4,14 @@
     Provider connection · blocked model action                                                                          
     Authorize OpenAI                                                                                                    
                                                                                                                         
-    Device authorization · one-time browser code                                                                        
+    Browser one-time code · approve on the sign-in page                                                                 
                                                                                                                         
     1  Open this sign-in page in your browser                                                                           
        https://auth.openai.com/device                                                                                   
                                                                                                                         
     2  Enter this one-time code                                                                                         
        WDJB-MJHT                                                                                                        
-       Copy this code · it is not a secret access token                                                                 
+       Copy this code · it is not a password or API key                                                                 
                                                                                                                         
     ● Waiting for authorization                                                                                         
       Elapsed 0m 40s · code expires in 14m                                                                              

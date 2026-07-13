@@ -1507,7 +1507,7 @@ fn render_connect_oauth(
     canvas.write(4, 4, &title, TextStyle::bright())?;
 
     let flow_label = match flow {
-        OAuthFlowKind::Device => "Device authorization · one-time browser code",
+        OAuthFlowKind::Device => "Browser one-time code · approve on the sign-in page",
         OAuthFlowKind::Loopback => "Local browser return · no code to type",
     };
     canvas.write(6, 4, flow_label, TextStyle::muted())?;
@@ -1596,7 +1596,7 @@ fn render_connect_oauth(
             canvas.write(
                 16,
                 4,
-                "The provider keeps the secret device exchange. Code never shows it.",
+                "The provider keeps the private browser exchange. Code never shows it.",
                 TextStyle::muted(),
             )?;
         }
@@ -1613,7 +1613,7 @@ fn render_connect_oauth(
             canvas.write(
                 13,
                 7,
-                "Copy this code · it is not a secret access token",
+                "Copy this code · it is not a password or API key",
                 TextStyle::muted(),
             )?;
             canvas.write(15, 4, status_line, status_style)?;
@@ -5138,7 +5138,7 @@ fn render_mcp(
     canvas.write(
         30,
         4,
-        "Return closes this branch to the conversation, not provider OAuth.",
+        "Return closes this branch to the conversation, not provider sign-in.",
         TextStyle::muted(),
     )?;
 
@@ -5735,7 +5735,7 @@ fn render_mcp_gate_pilot(
     canvas.write(
         27,
         4,
-        "Return closes this branch to the conversation, not provider OAuth.",
+        "Return closes this branch to the conversation, not provider sign-in.",
         TextStyle::muted(),
     )?;
     canvas.write(30, 4, "› [enter] Fix setup", TextStyle::accent())?;
