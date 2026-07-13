@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                               │ Inspector                              
+    Input and approval · paused conversation                                   │ › Queue                                
+    Check the retry path before we merge.                                      │ [esc] Return to conversation           
+                                                                               │                                        
+    You · Check the retry path before we merge.                                │                                        
+                                                                               │                                        
+                                                                               │                                        
+    Code                                                                       │                                        
+                                                                               │ Queued prompts · next first            
+    The retry path is still open. Queued prompts wait after this turn.         │ Same IDs as queue manager              
+    → Keep the paused reply and draft intact while you inspect the queue.      │                                        
+                                                                               │ › 1 · queue-item-1 rev=1 · [next]      
+                                                                               │   Also list unit tests.                
+    ● Queue waiting · runs after the current turn                              │   [attachment: queue-notes-a.md]       
+                                                                               │                                        
+                                                                               │   2 · queue-item-2 rev=2               
+                                                                               │   Then summarize risks.                
+                                                                               │   [attachment: queue-notes-b.md]       
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │ [m] Manage queue                       
+                                                                               │ opens shared IDs · apply/cancel        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                               │                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Check the retry path in @retry                                                                                    
+  │   Then explain the failure path that still needs coverage before the merge; include a concise test plan with the    
+  │   Keep the summary short before we merge.                                                                           
+                                                                                                                        
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

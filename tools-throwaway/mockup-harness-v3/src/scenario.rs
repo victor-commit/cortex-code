@@ -1318,6 +1318,12 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "share-confirm-revoke" => share_confirm_revoke(),
         "share-confirm-revoke-idempotent" => share_confirm_revoke_idempotent(),
         "share-return" => share_return(),
+        "sidebar-queue-manage-apply" => sidebar_queue_manage_apply(),
+        "sidebar-queue-manage-cancel" => sidebar_queue_manage_cancel(),
+        "help-return" => help_return(),
+        "help-cancel" => help_cancel(),
+        "help-return-to-sidebar-queue" => help_return_to_sidebar_queue(),
+        "help-filter-no-results" => help_filter_no_results(),
         _ => return Err(format!("unknown named case: {case_id}")),
     };
     let mut preserved_field_hashes = preserved_hashes(&before, &after);
@@ -11662,6 +11668,362 @@ fn inspector_close(
         "inspector-navigation",
         "closed",
         "inspector closed without diverting to home or another destination",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn sidebar_queue_shared_origin(screen_id: &str) -> ScenarioState {
+    let mut before = state(
+        screen_id,
+        vec!["chat-turn", "composer-multiline", "sidebar-queue"],
+        QUEUE_OPEN_DRAFT,
+        "queue-sidebar-scroll",
+        "queue-item-1",
+        "inspector-panel-queue",
+        Some("queue.sidebar"),
+        "return-to-multiline-draft",
+        0,
+    );
+    before.transcript =
+        "Check the retry path before we merge. Code is paused beside the draft.".to_owned();
+    before.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    before.attachment = String::new();
+    apply_flow2_identity(&mut before);
+    before.draft = QUEUE_OPEN_DRAFT.to_owned();
+    before.attachment = String::new();
+    before.state_hash = state_hash(&before);
+    before
+}
+
+fn sidebar_queue_manage_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // One waitless scenario hop representing manager apply returning into the
+    // same sidebar queue identities after a reconcile.
+    let mut before = sidebar_queue_shared_origin("sidebar-queue");
+    before.pending_action = Some("queue.manager.open".to_owned());
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.queue = QUEUE_APPLIED_ORDER.to_owned();
+    after.queued_follow_up = QUEUE_APPLIED_ORDER.to_owned();
+    after.selection = "queue-item-2".to_owned();
+    after.focus = "inspector-panel-queue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.transcript = format!(
+        "{} {}",
+        before.transcript, QUEUE_APPLY_SUMMARY
+    );
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.queue-manager.apply".to_owned(),
+        label: "Apply".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "apply from queue-manager persists only the shown reorder against opened revisions and returns to sidebar-queue with the same draft and scroll"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.sidebar-queue.manage-apply.1".to_owned(),
+        owner_id: "queue.opened.revisions".to_owned(),
+        count: 1,
+        outcome: "applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.sidebar-queue.manage-apply",
+        "queue-mutation",
+        "simulated-queue-apply",
+        "sidebar reloaded the applied order using the same item identities and revisions",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn sidebar_queue_manage_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = sidebar_queue_shared_origin("sidebar-queue");
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.pending_action = None;
+    after.selection = "queue-item-1".to_owned();
+    after.focus = "inspector-panel-queue".to_owned();
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    after.queued_follow_up = QUEUE_OPENED_AUTHORITY.to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.queue-manager.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel from queue-manager restores the sidebar queue byte for byte, including selected item, draft, scroll, and active Queue context"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.sidebar-queue.manage-cancel.1".to_owned(),
+        owner_id: "queue.opened.revisions".to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.sidebar-queue.manage-cancel",
+        "queue-navigation",
+        "restored",
+        "no queue mutation; sidebar selection and draft restored exactly",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn help_from_composer() -> ScenarioState {
+    let mut state = state(
+        "help",
+        vec!["chat-turn", "composer-multiline", "help"],
+        QUEUE_OPEN_DRAFT,
+        "composer-scroll-latest",
+        "help-filter",
+        "help-filter-field",
+        Some("help.open"),
+        "return-to-multiline-draft",
+        0,
+    );
+    state.transcript =
+        "Check the retry path before we merge. Help is a temporary reference only.".to_owned();
+    state.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    apply_flow2_identity(&mut state);
+    state.draft = QUEUE_OPEN_DRAFT.to_owned();
+    state.composer_height = "5-visual-rows".to_owned();
+    state.state_hash = state_hash(&state);
+    state
+}
+
+fn help_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = help_from_composer();
+    let mut after = before.clone();
+    after.screen_id = "composer-multiline".to_owned();
+    after.selection = "restored-composer-cursor".to_owned();
+    after.focus = "draft-cursor-30".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.scroll_anchor = "composer-scroll-latest".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.help.return".to_owned(),
+        label: "Return".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return closes the temporary help view and restores the exact multiline draft, cursor, selection, and transcript scroll"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.help.return.1".to_owned(),
+        owner_id: "help.temporary-detail".to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.help.return",
+        "help-navigation",
+        "closed",
+        "temporary help reference disappeared without submitting or clearing input",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn help_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = help_from_composer();
+    let mut after = before.clone();
+    after.screen_id = "composer-multiline".to_owned();
+    after.selection = "restored-composer-cursor".to_owned();
+    after.focus = "draft-cursor-30".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.help.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel closes help without submitting input and restores the origin draft and scroll"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.help.cancel.1".to_owned(),
+        owner_id: "help.temporary-detail".to_owned(),
+        count: 1,
+        outcome: "restored".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.help.cancel",
+        "help-navigation",
+        "cancelled",
+        "cancel restored the composer origin without clearing or submitting the draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn help_return_to_sidebar_queue() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = sidebar_queue_shared_origin("help");
+    before.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "composer-multiline".to_owned(),
+        "sidebar-queue".to_owned(),
+        "help".to_owned(),
+    ];
+    before.selection = "help-filter".to_owned();
+    before.focus = "help-filter-field".to_owned();
+    before.pending_action = Some("help.open-from-queue".to_owned());
+    before.return_policy = "return-to-sidebar-queue".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.screen_id = "sidebar-queue".to_owned();
+    after.selection = "queue-item-1".to_owned();
+    after.focus = "inspector-panel-queue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.draft = QUEUE_OPEN_DRAFT.to_owned();
+    after.queue = QUEUE_OPENED_AUTHORITY.to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.help.return".to_owned(),
+        label: "Return".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return from help restores the open Queue inspector context, draft, selection, and scroll without submitting"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.help.return-to-sidebar-queue.1".to_owned(),
+        owner_id: "help.temporary-detail".to_owned(),
+        count: 1,
+        outcome: "restored-inspector".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.help.return-to-sidebar-queue",
+        "help-navigation",
+        "restored-inspector",
+        "temporary help closed and Queue inspector origin resumed with preserved draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn help_filter_no_results() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = help_from_composer();
+    before.selection = "help-filter".to_owned();
+    before.focus = "help-filter-field".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.selection = "help-filter-no-results".to_owned();
+    after.focus = "help-filter-field".to_owned();
+    after.pending_action = Some("help.filter".to_owned());
+    after.virtual_tick = 1;
+    after.attachment = "zzz-no-match".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.help.filter".to_owned(),
+        label: "Filter help".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "local filter keeps help open, retains the query, and shows a recoverable no-results state without clearing the draft"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.help.filter-no-results.1".to_owned(),
+        owner_id: "help.filter".to_owned(),
+        count: 1,
+        outcome: "no-results".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.help.filter-no-results",
+        "help-filter",
+        "no-results",
+        "no-results remained recoverable; draft and origin retention unchanged",
     );
     (before, after, action, transition, attempt, effect)
 }

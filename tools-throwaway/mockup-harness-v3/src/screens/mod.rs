@@ -8,4 +8,5 @@ pub mod recovery;
 pub mod review_diff_share;
 pub mod session_history;
 pub mod views_inspectors;
+pub mod views_queue_help;
 pub mod work_configuration;

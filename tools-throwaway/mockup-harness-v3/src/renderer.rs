@@ -103,6 +103,8 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "sidebar-lsp",
     "sidebar-todo",
     "sidebar-subagents",
+    "sidebar-queue",
+    "help",
     "review",
     "diff-viewer",
     "share",
@@ -1404,7 +1406,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 68);
+        assert_eq!(implemented.canonical_ids().count(), 70);
         assert!(
             preflight_render(&PublicSelector::All)
                 .expect_err("full render must reject missing renderers")

@@ -572,6 +572,13 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         validate_vision_hash(&render_hash, &render_hash)?;
         return Ok(document);
     }
+    if matches!(screen_id, "sidebar-queue" | "help") {
+        let document = crate::screens::views_queue_help::render(screen_id, fixture_id)?;
+        document.validate()?;
+        let render_hash = sha256_hex(document.render_txt().as_bytes());
+        validate_vision_hash(&render_hash, &render_hash)?;
+        return Ok(document);
+    }
     if matches!(screen_id, "review" | "diff-viewer" | "share") {
         let document = crate::screens::review_diff_share::render(screen_id, fixture_id)?;
         document.validate()?;

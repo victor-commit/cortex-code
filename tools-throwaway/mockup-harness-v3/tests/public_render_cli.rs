@@ -94,6 +94,8 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
         ("views", "sidebar-lsp"),
         ("views", "sidebar-todo"),
         ("views", "sidebar-subagents"),
+        ("views", "sidebar-queue"),
+        ("views", "help"),
     ] {
         assert!(
             Path::new(&format!(
@@ -177,6 +179,8 @@ fn implemented_screen_selectors_publish_atomic_canonical_pairs() {
         ("views", "sidebar-lsp"),
         ("views", "sidebar-todo"),
         ("views", "sidebar-subagents"),
+        ("views", "sidebar-queue"),
+        ("views", "help"),
     ] {
         let output = run(&[screen]);
         assert!(output.status.success(), "{screen}: {:?}", output);
