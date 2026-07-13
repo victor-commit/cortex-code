@@ -88,6 +88,7 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "connect-apikey",
     "connect-oauth",
     "connect-connected",
+    "connect-disconnect",
     "mcp",
     "turn-error",
     "error-network",

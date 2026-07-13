@@ -525,6 +525,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "connect-apikey"
             | "connect-oauth"
             | "connect-connected"
+            | "connect-disconnect"
             | "mcp"
     ) {
         let document = crate::screens::provider_mcp::render(screen_id, fixture_id)?;

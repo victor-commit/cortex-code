@@ -8,16 +8,16 @@
                                                                                                                         
     ✓ Connected                                                                                                         
                                                                                                                         
+    Method · Browser sign-in · ready on this device                                                                     
+                                                                                                                        
     GPT-5.2 Codex can use this provider now.                                                                            
                                                                                                                         
     Return to the blocked model action to finish applying GPT-5.2 Codex.                                                
                                                                                                                         
-                                                                                                                        
     Capability setup stays on its own ordered path, not this return.                                                    
     The ordered storyboard later opens that separate capability branch.                                                 
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
+    Continue is safe to repeat · it cannot create another connection.                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +31,10 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Provider ready                                                                                                   │  
-  │ Your conversation draft and pending GPT-5.2 Codex remain exactly as left.                                        │  
-  │ › [enter] Return to model choices                                                                                │  
-  │   [esc] Close                                                                                                    │  
-  │ Success returns to the blocked model origin, never into MCP.                                                     │  
+  │ Draft and pending GPT-5.2 Codex stay exactly as left. · never into MCP.                                          │  
+  │ › [enter] Continue                                                                                               │  
+  │   [esc] Close · Return to model choices                                                                          │  
+  │ Continue resumes the blocked model action exactly once.                                                          │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

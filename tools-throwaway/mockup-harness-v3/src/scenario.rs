@@ -922,7 +922,25 @@ impl CaseReplay {
                     && (self.attempts[0].count == 0
                         || self.attempts[0].outcome == "none"
                         || self.attempts[0].outcome == "cancelled"
-                        || self.attempts[0].outcome == "restored")))
+                        || self.attempts[0].outcome == "restored"))
+                && !(self.case_id.starts_with("connect-")
+                    && (self.attempts[0].count == 0
+                        || self.attempts[0].outcome == "none"
+                        || self.attempts[0].outcome == "cancelled"
+                        || self.attempts[0].outcome.contains("cancelled")
+                        || self.attempts[0].outcome.contains("unchanged")
+                        || self.attempts[0].outcome.contains("already-connected")
+                        || self.attempts[0].outcome.contains("returned")
+                        || self.attempts[0].outcome.contains("removed")
+                        || self.attempts[0].outcome.contains("disconnected")
+                        || self.attempts[0].outcome.contains("still-available")
+                        || self.attempts[0].outcome.contains("unavailable")
+                        || self.attempts[0].outcome.contains("not-connected")
+                        || self.attempts[0].outcome.contains("late-rejected")
+                        || self.attempts[0].outcome.contains("provider-connected")
+                        || self.attempts[0].outcome.contains("state-")
+                        || self.attempts[0].outcome.contains("pkce")
+                        || self.attempts[0].outcome.contains("mismatch"))))
             || self.attempts[0].attempt_id.trim().is_empty()
             || self.attempts[0].owner_id.trim().is_empty()
         {
@@ -1257,6 +1275,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "connect-oauth-pkce-supported" => connect_oauth_pkce_supported(),
         "connect-oauth-late-callback" => connect_oauth_late_callback(),
         "connect-connected-return" => connect_connected_return(),
+        "connect-connected-return-idempotent" => connect_connected_return_idempotent(),
+        "connect-disconnect-cancel" => connect_disconnect_cancel(),
+        "connect-disconnect-confirm" => connect_disconnect_confirm(),
+        "connect-disconnect-multi-source" => connect_disconnect_multi_source(),
+        "connect-disconnect-last-source" => connect_disconnect_last_source(),
         "mcp-return" => mcp_return(),
         "turn-error-retry" => turn_error_retry(),
         "turn-error-cancel" => turn_error_cancel(),
@@ -2005,6 +2028,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "connect-oauth-pkce-supported"
             | "connect-oauth-late-callback"
             | "connect-connected-return"
+            | "connect-connected-return-idempotent"
+            | "connect-disconnect-cancel"
+            | "connect-disconnect-confirm"
+            | "connect-disconnect-multi-source"
+            | "connect-disconnect-last-source"
             | "mcp-return"
             | "login-choose-provider"
             | "connect-method-oauth"
@@ -2069,12 +2097,45 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("connect-method-oauth", "connect-oauth") => {
                 "auth.connect-oauth.device.waiting".to_owned()
             }
+            ("connect-connected-return-idempotent", "connect-connected") => {
+                "gate.provider-and-mcp.connect-connected".to_owned()
+            }
+            ("connect-connected-return-idempotent", "model-picker") => {
+                "gate.work-configuration.model-picker".to_owned()
+            }
+            ("connect-disconnect-cancel", "connect-disconnect") => {
+                "auth.connect-disconnect.anthropic.local".to_owned()
+            }
+            ("connect-disconnect-cancel", "connect-provider") => {
+                "auth.connect-provider.selected-anthropic".to_owned()
+            }
+            ("connect-disconnect-confirm", "connect-disconnect") => {
+                "auth.connect-disconnect.anthropic.local".to_owned()
+            }
+            ("connect-disconnect-confirm", "connect-provider") => {
+                "auth.connect-provider.selected-anthropic".to_owned()
+            }
+            ("connect-disconnect-multi-source", "connect-disconnect") => {
+                "auth.connect-disconnect.anthropic.multi-source".to_owned()
+            }
+            ("connect-disconnect-multi-source", "connect-provider") => {
+                "auth.connect-provider.selected-anthropic".to_owned()
+            }
+            ("connect-disconnect-last-source", "connect-disconnect") => {
+                "auth.connect-disconnect.anthropic.last-source".to_owned()
+            }
+            ("connect-disconnect-last-source", "connect-provider") => {
+                "auth.connect-provider.selected-anthropic".to_owned()
+            }
             (_, "login") => "gate.provider-and-mcp.login".to_owned(),
             (_, "connect-provider") => "gate.provider-and-mcp.connect-provider".to_owned(),
             (_, "connect-method") => "gate.provider-and-mcp.connect-method".to_owned(),
             (_, "connect-apikey") => "canonical.connect-apikey".to_owned(),
             (_, "connect-oauth") => "auth.connect-oauth.device.waiting".to_owned(),
             (_, "connect-connected") => "gate.provider-and-mcp.connect-connected".to_owned(),
+            (_, "connect-disconnect") => {
+                "auth.connect-disconnect.anthropic.local".to_owned()
+            }
             (_, "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
             (_, "model-picker") => "gate.work-configuration.model-picker".to_owned(),
             (_, "onboarding") => "auth.onboarding.return".to_owned(),
@@ -7619,6 +7680,9 @@ fn connect_connected_return() -> (
         0,
     );
     apply_flow4_provider_identity(&mut before);
+    // Single effective connection record owned by the success path.
+    before.attachment = "connections=1|provider=openai|method=browser-sign-in".to_owned();
+    before.state_hash = state_hash(&before);
     let mut after = state(
         "model-picker",
         origin,
@@ -7640,10 +7704,11 @@ fn connect_connected_return() -> (
     after.transcript = before.transcript.clone();
     after.paused_activity_id = before.paused_activity_id.clone();
     after.submitted_prompt = before.submitted_prompt.clone();
+    after.attachment = before.attachment.clone();
     after.state_hash = state_hash(&after);
     let action = ActionEvidence {
         action_id: "action.connect-connected.return".to_owned(),
-        label: "Return to model choices".to_owned(),
+        label: "Continue".to_owned(),
         enabled: true,
         automatic: false,
     };
@@ -7665,7 +7730,383 @@ fn connect_connected_return() -> (
         "effect.connect-connected.return",
         "provider-connection",
         "provider-connected",
-        "success restored the blocked model action without opening MCP",
+        "success restored the blocked model action without opening MCP; connections remain 1",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_connected_return_idempotent() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    // Second Continue from success: same destination, no new credential.
+    let origin = vec![
+        "model-picker",
+        "login",
+        "connect-provider",
+        "connect-method",
+        "connect-oauth",
+        "connect-connected",
+    ];
+    let mut before = state(
+        "connect-connected",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "blocked-model",
+        "openai-connected",
+        "connection-success",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-model-picker",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment = "connections=1|provider=openai|method=browser-sign-in|already-connected"
+        .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "model-picker",
+        origin,
+        "Continue the paused conversation.",
+        "blocked-model",
+        "gpt-5-2-codex",
+        "model-selection",
+        Some("pending.model.gpt-5-2-codex"),
+        "return-to-chat-turn",
+        1,
+    );
+    after.conversation_id = before.conversation_id.clone();
+    after.transcript_id = before.transcript_id.clone();
+    after.session_id = before.session_id.clone();
+    after.turn_id = before.turn_id.clone();
+    after.user_task = before.user_task.clone();
+    after.visible_origin = before.visible_origin.clone();
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.paused_activity_id = before.paused_activity_id.clone();
+    after.attachment = before.attachment.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-connected.return".to_owned(),
+        label: "Continue".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "repeated Continue is idempotent and cannot create another connection"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-connected.return.idempotent.1".to_owned(),
+        owner_id: "pending.model.gpt-5-2-codex".to_owned(),
+        count: 1,
+        outcome: "already-connected".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-connected.return.idempotent",
+        "provider-connection",
+        "idempotent|already-connected|connections=1",
+        "second Continue wrote no credential and left exactly one OpenAI connection",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_disconnect_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["connect-provider", "connect-disconnect"];
+    let mut before = state(
+        "connect-disconnect",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "disconnect-confirm",
+        Some("pending.provider.anthropic"),
+        "return-to-connect-provider",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment =
+        "credentials.anthropic.local=1|credentials.anthropic.environment=0|connected=1"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "connect-provider",
+        origin,
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "provider-choice",
+        Some("pending.provider.anthropic"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.selection = "anthropic".to_owned();
+    after.attachment = before.attachment.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-disconnect.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel keeps the selected provider connected and restores the catalogue"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-disconnect.cancel.1".to_owned(),
+        owner_id: "provider.anthropic".to_owned(),
+        count: 0,
+        outcome: "cancelled-unchanged".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-disconnect.cancel",
+        "provider-connection",
+        "preserved|unchanged|connected=1",
+        "cancel left Anthropic local credential intact and returned to connect-provider",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_disconnect_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["connect-provider", "connect-disconnect"];
+    let mut before = state(
+        "connect-disconnect",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "disconnect-confirm",
+        Some("pending.provider.anthropic"),
+        "return-to-connect-provider",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment =
+        "credentials.anthropic.local=1|credentials.openai.local=1|mcp.ready=1|connected=1"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "connect-provider",
+        origin,
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "not-connected",
+        Some("pending.provider.anthropic"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.selection = "anthropic".to_owned();
+    after.attachment =
+        "credentials.anthropic.local=0|credentials.openai.local=1|mcp.ready=1|connected=0|not-connected"
+            .to_owned();
+    after.focus = "not-connected".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-disconnect.confirm".to_owned(),
+        label: "Disconnect Anthropic".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirm removes only the selected removable credential and recomputes availability"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-disconnect.confirm.1".to_owned(),
+        owner_id: "provider.anthropic".to_owned(),
+        count: 1,
+        outcome: "removed-local|disconnected|siblings-unchanged".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-disconnect.confirm",
+        "provider-connection",
+        "removed-local|disconnected|openai-unchanged|mcp-unchanged",
+        "only Anthropic removable local credential removed; OpenAI credential and MCP stays unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_disconnect_multi_source() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["connect-provider", "connect-disconnect"];
+    let mut before = state(
+        "connect-disconnect",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "disconnect-confirm",
+        Some("pending.provider.anthropic"),
+        "return-to-connect-provider",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment =
+        "credentials.anthropic.local=1|credentials.anthropic.environment=1|connected=1"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "connect-provider",
+        origin,
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "still-available",
+        Some("pending.provider.anthropic"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.selection = "anthropic".to_owned();
+    after.attachment =
+        "credentials.anthropic.local=0|credentials.anthropic.environment=1|still-available|source-remaining"
+            .to_owned();
+    after.focus = "still-available".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-disconnect.confirm".to_owned(),
+        label: "Disconnect Anthropic".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirm removes local only; environment source recomputes provider still available"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-disconnect.multi-source.1".to_owned(),
+        owner_id: "provider.anthropic".to_owned(),
+        count: 1,
+        outcome: "removed-local|still-available|source-remaining".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-disconnect.multi-source",
+        "provider-connection",
+        "removed-local|still-available|source-remaining",
+        "local Anthropic credential removed; environment source kept provider available without model switch",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn connect_disconnect_last_source() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["connect-provider", "connect-disconnect"];
+    let mut before = state(
+        "connect-disconnect",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "disconnect-confirm",
+        Some("pending.provider.anthropic"),
+        "return-to-connect-provider",
+        0,
+    );
+    apply_flow4_provider_identity(&mut before);
+    before.attachment =
+        "credentials.anthropic.local=1|credentials.anthropic.environment=0|active-model=claude|connected=1"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "connect-provider",
+        origin,
+        "Continue the paused conversation.",
+        "provider-disconnect",
+        "anthropic",
+        "not-connected",
+        Some("pending.provider.anthropic"),
+        "return-to-model-picker",
+        1,
+    );
+    apply_flow4_provider_identity(&mut after);
+    after.draft = before.draft.clone();
+    after.transcript = before.transcript.clone();
+    after.selection = "anthropic".to_owned();
+    after.attachment =
+        "credentials.anthropic.local=0|not-connected|unavailable|active-model-impacted|no-auto-switch"
+            .to_owned();
+    after.focus = "not-connected".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.connect-disconnect.confirm".to_owned(),
+        label: "Disconnect Anthropic".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "last effective source confirm recomputes unavailable without silent model switch"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.connect-disconnect.last-source.1".to_owned(),
+        owner_id: "provider.anthropic".to_owned(),
+        count: 1,
+        outcome: "removed-local|unavailable|not-connected".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.connect-disconnect.last-source",
+        "provider-connection",
+        "removed-local|unavailable|not-connected",
+        "last Anthropic source removed; provider unavailable; active model not switched by the product",
     );
     (before, after, action, transition, attempt, effect)
 }

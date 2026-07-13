@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Provider connection · blocked model action                                                                          
+    Confirm disconnect                                                                                                  
+                                                                                                                        
+    Disconnect Anthropic?                                                                                               
+                                                                                                                        
+    Anthropic is still connected until you confirm.                                                                     
+                                                                                                                        
+    This will remove the removable local key for Anthropic.                                                             
+                                                                                                                        
+    No other effective credential source for this provider remains.                                                     
+                                                                                                                        
+    After disconnect, Anthropic will show as not connected.                                                             
+                                                                                                                        
+    Other providers and MCP connections stay unchanged.                                                                 
+                                                                                                                        
+    Cancel keeps the credential and returns to the provider list.                                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Anthropic · Connected                                                                                 │  
+  │ Disconnect removes only this named target and source.                                                            │  
+  │ › [enter] Disconnect Anthropic                                                                                   │  
+  │   [esc] Cancel · keep connected                                                                                  │  
+  │ Credential remains until you confirm disconnect.                                                                 │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

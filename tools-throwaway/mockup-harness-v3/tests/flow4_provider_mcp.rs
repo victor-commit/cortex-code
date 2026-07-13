@@ -176,7 +176,14 @@ fn connect_connected_returns_to_blocked_model_origin_not_mcp() {
     assert!(text.contains("✓ Connected"));
     assert!(text.contains("GPT-5.2 Codex can use this provider now."));
     assert!(text.contains("GPT-5.2 Codex"));
-    assert!(text.contains("› [enter] Return to model choices"));
+    assert!(
+        text.contains("› [enter] Continue") || text.contains("› [enter] Return to model choices"),
+        "primary must be Continue or the historic return label"
+    );
+    assert!(
+        text.contains("Return to model choices") || text.contains("blocked model action"),
+        "blocked-model destination must remain explicit"
+    );
     assert!(
         text.contains("ordered capability branch")
             || text.contains("separate ordered branch")

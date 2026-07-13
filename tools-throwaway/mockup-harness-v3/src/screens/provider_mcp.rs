@@ -270,7 +270,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         | "connect-method"
         | "connect-apikey"
         | "connect-oauth"
-        | "connect-connected" => Surface::ActionDock,
+        | "connect-connected"
+        | "connect-disconnect" => Surface::ActionDock,
         "mcp" => Surface::TemporaryDetailView,
         _ => return Err(format!("unknown Flow 4 screen: {screen_id}")),
     };
@@ -285,7 +286,12 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "connect-oauth" => {
             render_connect_oauth(&mut canvas, screen_id, fixture_id, origin)?
         }
-        "connect-connected" => render_connect_connected(&mut canvas, screen_id, fixture_id)?,
+        "connect-connected" => {
+            render_connect_connected(&mut canvas, screen_id, fixture_id, origin)?
+        }
+        "connect-disconnect" => {
+            render_connect_disconnect(&mut canvas, screen_id, fixture_id, origin)?
+        }
         "mcp" => render_mcp(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
     };
@@ -332,10 +338,14 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             OAuthPhase::BrowserFailed => "Open browser".to_owned(),
         },
         "connect-connected" => match origin {
-            ProviderOrigin::BlockedModel => "Return to model choices".to_owned(),
-            ProviderOrigin::Onboarding => "Return to onboarding".to_owned(),
-            ProviderOrigin::Conversation => "Return to conversation".to_owned(),
+            ProviderOrigin::BlockedModel => "Continue".to_owned(),
+            ProviderOrigin::Onboarding => "Continue".to_owned(),
+            ProviderOrigin::Conversation => "Continue".to_owned(),
         },
+        "connect-disconnect" => {
+            let target = disconnect_target(fixture_id);
+            format!("Disconnect {}", target.name)
+        }
         _ => "Continue".to_owned(),
     };
 
@@ -1957,14 +1967,203 @@ fn render_connect_oauth(
     ))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthMethod {
+    BrowserSignIn,
+    ApiKey,
+}
+
+impl AuthMethod {
+    fn label(self) -> &'static str {
+        match self {
+            Self::BrowserSignIn => "Browser sign-in",
+            Self::ApiKey => "API key",
+        }
+    }
+
+    fn lower(self) -> &'static str {
+        match self {
+            Self::BrowserSignIn => "browser sign-in",
+            Self::ApiKey => "API key",
+        }
+    }
+}
+
+fn connected_auth_method(fixture_id: &str) -> AuthMethod {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("api-key")
+        || lower.contains("apikey")
+        || lower.contains("api_key")
+        || (lower.contains("key") && !lower.contains("oauth") && !lower.contains("browser"))
+    {
+        AuthMethod::ApiKey
+    } else {
+        // Gate and default production connected fixtures follow OAuth finish.
+        AuthMethod::BrowserSignIn
+    }
+}
+
+fn connected_provider_id(fixture_id: &str) -> &'static str {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("anthropic") {
+        "anthropic"
+    } else if lower.contains("google") {
+        "google"
+    } else if lower.contains("openrouter") {
+        "openrouter"
+    } else {
+        "openai"
+    }
+}
+
+fn connected_benefit_line(provider_id: &str, origin: ProviderOrigin) -> &'static str {
+    match (provider_id, origin) {
+        ("openai", _) => "GPT-5.2 Codex can use this provider now.",
+        ("anthropic", _) => "Claude models can use this provider now.",
+        ("google", _) => "Gemini models can use this provider now.",
+        ("openrouter", _) => "OpenRouter models can use this provider now.",
+        _ => "Models from this provider are ready now.",
+    }
+}
+
+fn connected_return_target(origin: ProviderOrigin) -> &'static str {
+    match origin {
+        ProviderOrigin::BlockedModel => "model-picker",
+        ProviderOrigin::Onboarding => "onboarding",
+        ProviderOrigin::Conversation => "chat-turn",
+    }
+}
+
+fn connected_primary_label(origin: ProviderOrigin) -> &'static str {
+    // VAL-V3-F4-020 wants one Done/Continue. Destination is still origin-exact.
+    match origin {
+        ProviderOrigin::BlockedModel => "Continue",
+        ProviderOrigin::Onboarding => "Continue",
+        ProviderOrigin::Conversation => "Continue",
+    }
+}
+
+fn connected_return_hint(origin: ProviderOrigin) -> &'static str {
+    match origin {
+        ProviderOrigin::BlockedModel => {
+            "Continue resumes the blocked model action exactly once."
+        }
+        ProviderOrigin::Onboarding => "Continue resumes first-run setup exactly once.",
+        ProviderOrigin::Conversation => {
+            "Continue resumes the paused conversation exactly once."
+        }
+    }
+}
+
+fn connected_dock_preserve(origin: ProviderOrigin) -> &'static str {
+    match origin {
+        ProviderOrigin::BlockedModel => {
+            "Draft and pending GPT-5.2 Codex stay exactly as left."
+        }
+        ProviderOrigin::Onboarding => "First-run draft and setup steps stay exactly as left.",
+        ProviderOrigin::Conversation => {
+            "Conversation draft and transcript stay exactly as left."
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DisconnectSourcePlan {
+    /// Only the named local removable credential exists.
+    OnlyRemovableLocal,
+    /// Local removable + environment remaining after confirm.
+    RemovablePlusEnvironment,
+    /// Local removable is the last effective source and active model is impacted.
+    LastSourceActiveModel,
+}
+
+fn disconnect_source_plan(fixture_id: &str) -> DisconnectSourcePlan {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("last-source") || lower.contains("last_source") || lower.contains("only-source")
+    {
+        DisconnectSourcePlan::LastSourceActiveModel
+    } else if lower.contains("multi-source")
+        || lower.contains("multi_source")
+        || lower.contains("environment")
+        || lower.contains("env-remaining")
+    {
+        DisconnectSourcePlan::RemovablePlusEnvironment
+    } else {
+        DisconnectSourcePlan::OnlyRemovableLocal
+    }
+}
+
+fn disconnect_target(fixture_id: &str) -> &'static ProviderCatalogueRow {
+    let lower = fixture_id.to_ascii_lowercase();
+    let id = if lower.contains("openai") {
+        "openai"
+    } else if lower.contains("google") {
+        "google"
+    } else if lower.contains("openrouter") {
+        "openrouter"
+    } else {
+        // Default disconnect target is the catalogue Connected provider (Anthropic).
+        "anthropic"
+    };
+    provider_row(id)
+}
+
 fn render_connect_connected(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
+    origin: ProviderOrigin,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(3, 4, FLOW4_PROVIDER_ORIGIN, TextStyle::muted())?;
-    canvas.write(4, 4, FLOW4_PROVIDER_TASK, TextStyle::muted())?;
-    canvas.write(6, 4, "OpenAI is connected", TextStyle::bright())?;
+    let origin_label = origin.visible_label();
+    let task = origin.user_task();
+    let provider = provider_row(connected_provider_id(fixture_id));
+    let method = connected_auth_method(fixture_id);
+    let benefit = connected_benefit_line(provider.id, origin);
+    let primary_label = connected_primary_label(origin);
+    let return_target = connected_return_target(origin);
+    let return_hint = connected_return_hint(origin);
+    let dock_preserve = connected_dock_preserve(origin);
+
+    let success_line = format!("{} is connected", provider.name);
+    let method_line = format!(
+        "Method · {} · ready on this device",
+        method.label()
+    );
+    let success_subject = format!("{}-connected", provider.id);
+    let outcome_subject = match provider.id {
+        "openai" => "gpt-5-2-codex-unlocked",
+        "anthropic" => "claude-unlocked",
+        "google" => "gemini-unlocked",
+        _ => "provider-unlocked",
+    };
+    let task_subject = match origin {
+        ProviderOrigin::BlockedModel => "blocked-model-task",
+        ProviderOrigin::Onboarding => "onboarding-task",
+        ProviderOrigin::Conversation => "conversation-task",
+    };
+    let resume_line = match origin {
+        ProviderOrigin::BlockedModel => {
+            "Return to the blocked model action to finish applying GPT-5.2 Codex."
+        }
+        ProviderOrigin::Onboarding => {
+            "Return to first-run setup to continue with available models."
+        }
+        ProviderOrigin::Conversation => {
+            "Return to the conversation with this provider ready."
+        }
+    };
+    // Keep the historic gate phrasing "Return to model choices" visible as the
+    // destination consequence while the primary action itself is Continue.
+    let destination_line = match origin {
+        ProviderOrigin::BlockedModel => "Return to model choices",
+        ProviderOrigin::Onboarding => "Return to onboarding",
+        ProviderOrigin::Conversation => "Return to conversation",
+    };
+    let primary_row = format!("› [enter] {primary_label}");
+
+    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(4, 4, task, TextStyle::muted())?;
+    canvas.write(6, 4, &success_line, TextStyle::bright())?;
     canvas.write(
         8,
         4,
@@ -1975,71 +2174,64 @@ fn render_connect_connected(
             bold: false,
         },
     )?;
-    canvas.write(
-        10,
-        4,
-        "GPT-5.2 Codex can use this provider now.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        12,
-        4,
-        "Return to the blocked model action to finish applying GPT-5.2 Codex.",
-        TextStyle::muted(),
-    )?;
+    canvas.write(10, 4, &method_line, TextStyle::text())?;
+    canvas.write(12, 4, benefit, TextStyle::text())?;
+    canvas.write(14, 4, resume_line, TextStyle::muted())?;
     // In-frame ordered-storyboard honesty: capability work is never the live return.
     canvas.write(
-        15,
+        16,
         4,
         "Capability setup stays on its own ordered path, not this return.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        16,
+        17,
         4,
         "The ordered storyboard later opens that separate capability branch.",
         TextStyle::muted(),
     )?;
+    canvas.write(
+        19,
+        4,
+        "Continue is safe to repeat · it cannot create another connection.",
+        TextStyle::muted(),
+    )?;
 
     write_dock_border(canvas)?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 1,
-        "Provider ready",
-        TextStyle::bright(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 1, "Provider ready", TextStyle::bright())?;
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "Your conversation draft and pending GPT-5.2 Codex remain exactly as left.",
+        &format!("{dock_preserve} · never into MCP."),
         TextStyle::text(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 3,
-        "› [enter] Return to model choices",
-        TextStyle::accent(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 3, &primary_row, TextStyle::accent())?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Close",
+        &format!("  [esc] Close · {destination_line}"),
         TextStyle::muted(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "Success returns to the blocked model origin, never into MCP.",
-        TextStyle::muted(),
-    )?;
+    dock_line(canvas, DOCK_TOP + 5, return_hint, TextStyle::muted())?;
+
+    let origin_end = if origin == ProviderOrigin::BlockedModel {
+        48
+    } else {
+        4 + origin_label.chars().count() as u16
+    };
+    let task_end = 4 + task.chars().count() as u16;
+    let success_end = 4 + success_line.chars().count() as u16;
+    let method_end = 4 + method_line.chars().count() as u16;
+    let benefit_end = 4 + benefit.chars().count() as u16;
+    let primary_end = 4 + primary_row.chars().count() as u16;
 
     let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
             "origin",
-            "blocked-model-origin",
-            reference(3, 4, 48),
+            origin.origin_subject(),
+            reference(3, 4, origin_end),
             "summary",
             None,
         ),
@@ -2047,8 +2239,8 @@ fn render_connect_connected(
             screen_id,
             fixture_id,
             "task",
-            "blocked-model-task",
-            reference(4, 4, FLOW4_PROVIDER_TASK.len() as u16),
+            task_subject,
+            reference(4, 4, task_end),
             "summary",
             None,
         ),
@@ -2056,8 +2248,17 @@ fn render_connect_connected(
             screen_id,
             fixture_id,
             "success",
-            "openai-connected",
-            reference(6, 4, 23),
+            success_subject.as_str(),
+            reference(6, 4, success_end),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "method",
+            method.lower(),
+            reference(10, 4, method_end),
             "focused",
             None,
         ),
@@ -2065,8 +2266,8 @@ fn render_connect_connected(
             screen_id,
             fixture_id,
             "outcome",
-            "gpt-5-2-codex-unlocked",
-            reference(10, 4, 44),
+            outcome_subject,
+            reference(12, 4, benefit_end),
             "focused",
             None,
         ),
@@ -2075,7 +2276,7 @@ fn render_connect_connected(
             fixture_id,
             "bridge-note",
             "ordered-capability-branch",
-            reference(15, 4, 66),
+            reference(16, 4, 66),
             "summary",
             None,
         ),
@@ -2084,11 +2285,11 @@ fn render_connect_connected(
             fixture_id,
             "primary-action",
             "action.connect-connected.return",
-            reference(DOCK_TOP + 3, 4, 38),
+            reference(DOCK_TOP + 3, 4, primary_end),
             "focused",
             Some(action(
                 "action.connect-connected.return",
-                "Return to model choices",
+                primary_label,
                 false,
             )),
         ),
@@ -2119,14 +2320,14 @@ fn render_connect_connected(
         transition(
             "action.connect-connected.return",
             "connect-connected",
-            "model-picker",
+            return_target,
             "direct",
-            "provider success returns to its blocked model origin before any MCP action",
+            "provider success returns to its recorded origin before any MCP action",
         ),
         transition(
             "action.connect-connected.close",
             "connect-connected",
-            "model-picker",
+            return_target,
             "cancel",
             "closing succeeds the same way and never routes into MCP",
         ),
@@ -2138,7 +2339,7 @@ fn render_connect_connected(
             fixture_id,
             "bridge-note",
             "action.storyboard.open-mcp-after-provider",
-            reference(16, 4, 68),
+            reference(17, 4, 68),
             "summary",
             Some(action(
                 "action.storyboard.open-mcp-after-provider",
@@ -2161,6 +2362,258 @@ fn render_connect_connected(
             .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
         transitions,
+    ))
+}
+
+fn render_connect_disconnect(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+    origin: ProviderOrigin,
+) -> Result<ScreenEvidence, String> {
+    let origin_label = origin.visible_label();
+    let target = disconnect_target(fixture_id);
+    let plan = disconnect_source_plan(fixture_id);
+    let question = format!("Disconnect {}?", target.name);
+    let primary_label = format!("Disconnect {}", target.name);
+    let primary_row = format!("› [enter] {primary_label}");
+
+    let (removable_line, remaining_line, availability_line, impact_line) = match plan {
+        DisconnectSourcePlan::OnlyRemovableLocal => (
+            format!(
+                "This will remove the removable local key for {}.",
+                target.name
+            ),
+            "No other effective credential source for this provider remains."
+                .to_owned(),
+            format!(
+                "After disconnect, {} will show as not connected.",
+                target.name
+            ),
+            "Other providers and MCP connections stay unchanged.".to_owned(),
+        ),
+        DisconnectSourcePlan::RemovablePlusEnvironment => (
+            format!(
+                "This will remove the removable local key for {}.",
+                target.name
+            ),
+            "Environment credentials remain · this provider stays available."
+                .to_owned(),
+            format!(
+                "{} stays available from the environment credential source.",
+                target.name
+            ),
+            "Active model is unaffected · no silent model switch.".to_owned(),
+        ),
+        DisconnectSourcePlan::LastSourceActiveModel => (
+            format!(
+                "This will remove the removable local key for {}.",
+                target.name
+            ),
+            "No other effective credential source remains for this provider."
+                .to_owned(),
+            format!(
+                "Models that need {} will become unavailable.",
+                target.name
+            ),
+            "Choose a replacement model or cancel · no automatic model change."
+                .to_owned(),
+        ),
+    };
+
+    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(4, 4, "Confirm disconnect", TextStyle::bright())?;
+    canvas.write(6, 4, &question, TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        &format!(
+            "{} is still connected until you confirm.",
+            target.name
+        ),
+        TextStyle::text(),
+    )?;
+    canvas.write(10, 4, &removable_line, TextStyle::text())?;
+    canvas.write(12, 4, &remaining_line, TextStyle::muted())?;
+    canvas.write(14, 4, &availability_line, TextStyle::muted())?;
+    canvas.write(16, 4, &impact_line, TextStyle::text())?;
+    canvas.write(
+        18,
+        4,
+        "Cancel keeps the credential and returns to the provider list.",
+        TextStyle::muted(),
+    )?;
+
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        &format!("Selected · {} · Connected", target.name),
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Disconnect removes only this named target and source.",
+        TextStyle::text(),
+    )?;
+    dock_line(canvas, DOCK_TOP + 3, &primary_row, TextStyle::accent())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "  [esc] Cancel · keep connected",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Credential remains until you confirm disconnect.",
+        TextStyle::muted(),
+    )?;
+
+    let origin_end = if origin == ProviderOrigin::BlockedModel {
+        48
+    } else {
+        4 + origin_label.chars().count() as u16
+    };
+    let question_end = 4 + question.chars().count() as u16;
+    let removable_end = 4 + removable_line.chars().count() as u16;
+    let remaining_end = 4 + remaining_line.chars().count() as u16;
+    let impact_end = 4 + impact_line.chars().count() as u16;
+    let primary_end = 4 + primary_row.chars().count() as u16;
+    let still_end = 4
+        + format!(
+            "{} is still connected until you confirm.",
+            target.name
+        )
+        .chars()
+        .count() as u16;
+
+    let target_subject = format!("provider.{}", target.id);
+    let remaining_subject = match plan {
+        DisconnectSourcePlan::RemovablePlusEnvironment => "environment-remaining",
+        DisconnectSourcePlan::OnlyRemovableLocal
+        | DisconnectSourcePlan::LastSourceActiveModel => "no-remaining-source",
+    };
+    let impact_subject = match plan {
+        DisconnectSourcePlan::LastSourceActiveModel => "replacement-or-cancel-required",
+        _ => "no-silent-switch",
+    };
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            origin.origin_subject(),
+            reference(3, 4, origin_end),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "target",
+            target_subject.as_str(),
+            reference(6, 4, question_end),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pre-confirm-state",
+            "credential-still-present",
+            reference(8, 4, still_end),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "consequence",
+            "removable-local-credential",
+            reference(10, 4, removable_end),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "remaining-sources",
+            remaining_subject,
+            reference(12, 4, remaining_end),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "model-impact",
+            impact_subject,
+            reference(16, 4, impact_end),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.connect-disconnect.confirm",
+            reference(DOCK_TOP + 3, 4, primary_end),
+            "focused",
+            Some(action(
+                "action.connect-disconnect.confirm",
+                primary_label.as_str(),
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.connect-disconnect.cancel",
+            reference(DOCK_TOP + 4, 4, 35),
+            "summary",
+            Some(action(
+                "action.connect-disconnect.cancel",
+                "Cancel",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.connect-disconnect.confirm",
+                "connect-disconnect",
+                "connect-provider",
+                "direct",
+                "confirm removes only the selected removable credential and recomputes availability",
+            ),
+            transition(
+                "action.connect-disconnect.cancel",
+                "connect-disconnect",
+                "connect-provider",
+                "cancel",
+                "cancel keeps the selected provider connected and restores the catalogue",
+            ),
+        ],
     ))
 }
 

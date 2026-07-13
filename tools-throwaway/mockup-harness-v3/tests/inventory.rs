@@ -188,6 +188,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "connect-apikey",
             "connect-oauth",
             "connect-connected",
+            "connect-disconnect",
             "mcp",
             "turn-error",
             "error-network",
