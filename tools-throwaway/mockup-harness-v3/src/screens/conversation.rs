@@ -531,17 +531,19 @@ fn render_config_picker_returned_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    let (title, summary, detail) = if fixture_id.contains("skills-apply")
-        || fixture_id.contains("skills-access-confirm")
-    {
+    let (title, summary, detail) = if fixture_id.contains("skills-access-confirm") {
+        // Access-confirm commits APPLIED_SKILLS_WEB; primary summary must include
+        // Research the web so return reconciliation matches the disclosure scope.
+        (
+            "Code · Session skills updated",
+            "Applied skills · Commit cleanly, Design reviews, Review images, Research the web",
+            "Research the web is on for this project · access was confirmed.",
+        )
+    } else if fixture_id.contains("skills-apply") {
         (
             "Code · Session skills updated",
             "Applied skills · Commit cleanly, Design reviews, Review images",
-            if fixture_id.contains("access-confirm") {
-                "Research the web is on for this project · access was confirmed."
-            } else {
-                "The pending skill set was applied once and is now active."
-            },
+            "The pending skill set was applied once and is now active.",
         )
     } else if fixture_id.contains("skills-cancel") {
         (

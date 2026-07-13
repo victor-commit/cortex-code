@@ -183,9 +183,32 @@ fn skills_escalation_routes_through_access_guard_like_work_style() {
     assert_eq!(confirmed.before.screen_id, "mode-switch");
     assert_eq!(confirmed.after.screen_id, "chat-turn");
     assert_ne!(confirmed.before.attachment, confirmed.after.attachment);
+    assert!(
+        confirmed
+            .after
+            .attachment
+            .contains("Research the web"),
+        "confirm must commit the elevated web skill set on attachment"
+    );
     assert_eq!(confirmed.side_effects[0].status, "skills-and-access-applied");
     assert_reconciled_hash(&confirmed, "attachment", false);
     assert_reconciled_hash(&confirmed, "draft", true);
+    assert_eq!(
+        confirmed.before.origin_stack, confirmed.after.origin_stack,
+        "access-guard confirm must preserve origin identity"
+    );
+    assert_eq!(
+        confirmed.before.draft, confirmed.after.draft,
+        "access-guard confirm must preserve the composer draft"
+    );
+    let confirmed_text = confirmed.audit.render_txt();
+    let applied_web_primary = confirmed_text
+        .lines()
+        .find(|line| line.contains("Applied skills") && line.contains("Research the web"));
+    assert!(
+        applied_web_primary.is_some(),
+        "skills-access-confirm primary Applied skills line must include Research the web; text was:\n{confirmed_text}"
+    );
 
     let denied =
         replay_case("skills-access-cancel", 1).expect("skill access denial preserves prior set");
@@ -201,7 +224,49 @@ fn skills_escalation_routes_through_access_guard_like_work_style() {
         denied.before.attachment, denied.after.attachment,
         "prior skill set remains after access denial"
     );
+    assert!(!denied.after.attachment.contains("Research the web"));
     assert_reconciled_hash(&denied, "attachment", true);
+}
+
+#[test]
+fn skills_apply_and_access_confirm_return_summaries_match_applied_attachment_sets() {
+    let ordinary = replay_case("skills-apply", 1).expect("ordinary skill apply must replay");
+    let ordinary_text = ordinary.audit.render_txt();
+    let ordinary_primary = ordinary_text
+        .lines()
+        .find(|line| line.contains("Applied skills"))
+        .expect("ordinary skills-apply return must render an Applied skills summary");
+    assert!(
+        ordinary_primary.contains("Commit cleanly")
+            && ordinary_primary.contains("Design reviews")
+            && ordinary_primary.contains("Review images"),
+        "ordinary apply primary line must list the base applied set: {ordinary_primary}"
+    );
+    assert!(
+        !ordinary_primary.contains("Research the web"),
+        "ordinary non-elevated apply must not list Research the web on the primary Applied skills line: {ordinary_primary}"
+    );
+    assert!(
+        !ordinary.after.attachment.contains("Research the web"),
+        "ordinary apply attachment is the review set without web"
+    );
+
+    let confirm = replay_case("skills-access-confirm", 1).expect("access confirm must replay");
+    let confirm_text = confirm.audit.render_txt();
+    let confirm_primary = confirm_text
+        .lines()
+        .find(|line| line.contains("Applied skills"))
+        .expect("skills-access-confirm return must render an Applied skills summary");
+    assert!(
+        confirm_primary.contains("Research the web"),
+        "confirm primary Applied skills line must include Research the web when attachment is the web set: {confirm_primary}"
+    );
+    assert!(
+        confirm.after.attachment.contains("Research the web"),
+        "confirm attachment must be APPLIED_SKILLS_WEB"
+    );
+    assert_eq!(confirm.before.draft, confirm.after.draft);
+    assert_eq!(confirm.before.origin_stack, confirm.after.origin_stack);
 }
 
 #[test]
