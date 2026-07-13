@@ -161,8 +161,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        // Minimal restored-history view used by compact disclosure round trips.
-        // Deeper long-history navigation remains milestone work for shell/history.
+        // Compact history restore plus earlier/latest long-history navigation.
         status: IMPLEMENTED,
     },
     ScreenSpec {
@@ -254,7 +253,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "blocked-command",
@@ -275,7 +274,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Session,
         flow: FlowOwner::DailyWork,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "compact",

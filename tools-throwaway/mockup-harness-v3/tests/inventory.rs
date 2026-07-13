@@ -154,6 +154,8 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "tool-task",
             "tool-task-expanded",
             "rich-response",
+            "shell",
+            "todo-list",
             "compact",
             "file-mention",
             "composer-multiline",

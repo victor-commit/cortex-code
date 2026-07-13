@@ -448,6 +448,8 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "tool-task"
             | "tool-task-expanded"
             | "rich-response"
+            | "shell"
+            | "todo-list"
             | "compact"
     ) {
         let document = crate::screens::conversation::render(screen_id, fixture_id)?;

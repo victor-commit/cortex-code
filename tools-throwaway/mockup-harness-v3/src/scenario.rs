@@ -1064,6 +1064,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "tool-task-collapse" => tool_task_collapse(),
         "compact-expand-history" => compact_expand_history(),
         "compact-collapse-history" => compact_collapse_history(),
+        "shell-interrupt" => shell_interrupt(),
+        "shell-complete" => shell_complete(),
+        "todo-progress" => todo_progress(),
+        "chat-long-scroll-return-latest" => chat_long_scroll_return_latest(),
+        "chat-long-scroll-jump-earlier" => chat_long_scroll_jump_earlier(),
         "file-mention-insert" => file_mention_insert(),
         "file-mention-dismiss" => file_mention_dismiss(),
         "file-mention-no-results" => file_mention_no_results(),
@@ -1178,6 +1183,25 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             PreservedFieldHash {
                 before: sha256_hex(order.as_bytes()),
                 after: sha256_hex(order.as_bytes()),
+            },
+        );
+    }
+    if matches!(case_id, "shell-interrupt" | "shell-complete") {
+        let captured = "git status output · cargo test partial · master ahead 1";
+        preserved_field_hashes.insert(
+            "captured_output".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(captured.as_bytes()),
+                after: sha256_hex(captured.as_bytes()),
+            },
+        );
+    }
+    if case_id == "todo-progress" {
+        preserved_field_hashes.insert(
+            "user_task".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(before.user_task.as_bytes()),
+                after: sha256_hex(after.user_task.as_bytes()),
             },
         );
     }
@@ -7629,6 +7653,310 @@ fn tool_task_collapse() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn shell_interrupt() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "shell",
+        "Also list the tests that should cover the search.",
+        "shell-cargo-test-running",
+        "shell-cargo-test-running",
+        "shell-interrupt",
+        Some("activity.shell.cargo-test"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.transcript =
+        "git status completed with exit 0. cargo test is still running with captured output."
+            .to_owned();
+    before.partial_response =
+        "Compiling cortex-server v0.1.0\nFinished test profile in 3.1s\ntest routes::login::rate_limited ... ok"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "shell-cargo-test-interrupted".to_owned();
+    after.focus = "shell-continue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "git status completed with exit 0. cargo test was interrupted; captured output kept."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.interrupt".to_owned(),
+        label: "Stop command".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "interrupt stops the live command, keeps captured output, and restores the composer"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.interrupt.1".to_owned(),
+        owner_id: "activity.shell.cargo-test".to_owned(),
+        count: 1,
+        outcome: "interrupted".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.interrupt",
+        "shell-command",
+        "interrupted",
+        "running command stopped with captured output and exit status retained",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn shell_complete() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "shell",
+        "Also list the tests that should cover the search.",
+        "shell-cargo-test-running",
+        "shell-cargo-test-running",
+        "shell-complete",
+        Some("activity.shell.cargo-test"),
+        0,
+    );
+    before.user_task = "Check the branch, then run the focused tests.".to_owned();
+    before.transcript =
+        "git status completed with exit 0. cargo test is still running with captured output."
+            .to_owned();
+    before.partial_response =
+        "Compiling cortex-server v0.1.0\nFinished test profile in 3.1s\ntest routes::login::rate_limited ... ok"
+            .to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "shell-cargo-test-complete".to_owned();
+    after.focus = "shell-continue".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "git status completed with exit 0. cargo test completed with exit 0; output preserved."
+            .to_owned();
+    after.partial_response = String::new();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.shell.complete".to_owned(),
+        label: "Command finished".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "completion replaces the running row with exit 0 and restores the composer"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.shell.complete.1".to_owned(),
+        owner_id: "activity.shell.cargo-test".to_owned(),
+        count: 1,
+        outcome: "completed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.shell.complete",
+        "shell-command",
+        "completed",
+        "running command finished with exit 0 and preserved captured output",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn todo_progress() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "todo-list",
+        "Type a follow-up, it runs after this turn…",
+        "todo-current-login-tests",
+        "todo-progress-baseline",
+        "todo-advance",
+        Some("activity.todo.plan"),
+        0,
+    );
+    before.user_task = "Implement rate limiting on the login endpoint.".to_owned();
+    before.transcript =
+        "Plan: 3 of 5 done, 1 in progress (login tests), 1 pending (verify suite).".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "todo-progress-advanced".to_owned();
+    after.focus = "todo-current-verify-suite".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Plan: 4 of 5 done, 1 in progress (verify suite), 0 pending. Origin request unchanged."
+            .to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.todo.advance".to_owned(),
+        label: "Mark current done".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "only affected task states and the progress summary change while the origin turn and composer stay put"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.todo.advance.1".to_owned(),
+        owner_id: "activity.todo.plan".to_owned(),
+        count: 1,
+        outcome: "advanced".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.todo.advance",
+        "todo-progress",
+        "advanced",
+        "current item completed; summary moved from 3 of 5 to 4 of 5 without leaving conversation",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn chat_long_scroll_return_latest() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-long-scroll",
+        "Add a short note about the remaining risk.",
+        "earlier-turn-band",
+        "earlier-visible-turns",
+        "return-to-latest",
+        Some("scroll.history.earlier"),
+        0,
+    );
+    before.user_task = "Review earlier turns, then return to the latest work.".to_owned();
+    before.transcript =
+        "Reading earlier turns. 12 earlier turns exist above the viewport. Draft kept.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "latest-visible-turn".to_owned();
+    after.focus = "latest-composer".to_owned();
+    after.scroll_anchor = "latest-turn".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Returned to the latest turn and composer. Draft preserved at newest work.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.chat-long-scroll.return-latest".to_owned(),
+        label: "Jump to latest".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "return to latest restores the prior draft and lands near the exact latest activity"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.chat-long-scroll.return-latest.1".to_owned(),
+        owner_id: "scroll.history.position".to_owned(),
+        count: 1,
+        outcome: "at-latest".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.chat-long-scroll.return-latest",
+        "history-navigation",
+        "returned",
+        "scroll returned to the latest turn with draft preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn chat_long_scroll_jump_earlier() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = disclosure_base(
+        "chat-long-scroll",
+        "Add a short note about the remaining risk.",
+        "latest-turn",
+        "latest-visible-turn",
+        "jump-earlier",
+        Some("scroll.history.latest"),
+        0,
+    );
+    before.user_task = "Review earlier turns, then return to the latest work.".to_owned();
+    before.transcript =
+        "Near the latest activity. 12 earlier turns remain available above.".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "earlier-visible-turns".to_owned();
+    after.focus = "return-to-latest".to_owned();
+    after.scroll_anchor = "earlier-turn-band".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.transcript =
+        "Jumped to earlier turns. Draft preserved. Jump to latest remains available.".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.chat-long-scroll.jump-earlier".to_owned(),
+        label: "Jump to earlier".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "jump earlier preserves the draft and lands at the earlier-turn-band anchor"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.chat-long-scroll.jump-earlier.1".to_owned(),
+        owner_id: "scroll.history.position".to_owned(),
+        count: 1,
+        outcome: "at-earlier".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.chat-long-scroll.jump-earlier",
+        "history-navigation",
+        "jumped",
+        "scroll moved to earlier turns with draft preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 fn compact_expand_history() -> (
     ScenarioState,
     ScenarioState,
@@ -8860,7 +9188,11 @@ fn permission_evidence(case_id: &str) -> Option<PermissionEvidence> {
 }
 
 fn permission_evidence_at_offset(case_id: &str, byte_offset: usize) -> Option<PermissionEvidence> {
-    if case_id.starts_with("session-") {
+    if case_id.starts_with("session-")
+        || case_id.starts_with("shell-")
+        || case_id.starts_with("todo-")
+        || case_id.starts_with("chat-long-scroll-")
+    {
         return None;
     }
     use crate::screens::input_and_approval::{

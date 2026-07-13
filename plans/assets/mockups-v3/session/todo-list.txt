@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Daily work · current conversation                                                                                   
+    Implement rate limiting on the login endpoint.                                                                      
+    You · Implement rate limiting on the login endpoint.                                                                
+                                                                                                                        
+                                                                                                                        
+    Code                                                                                                                
+                                                                                                                        
+    Updated plan                                                                                                        
+                                                                                                                        
+    ✓ Read the auth middleware            reviewed the login handler · done                                             
+    ✓ Add a token-bucket limiter          created the request guard · done                                              
+    ✓ Wire the POST /login route          attached the limiter · done                                                   
+    ● Add tests/login_ratelimit.rs        cover the fifth attempt · in progress                                         
+    ○ Run cargo test and cargo fmt        verify the full change · pending                                              
+      ● Writing tests… 22s · 1 file · next work is this item                                                            
+                                                                                                                        
+    3 of 5 done · 1 in progress · 1 pending                                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Type a follow-up, it runs after this turn…                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

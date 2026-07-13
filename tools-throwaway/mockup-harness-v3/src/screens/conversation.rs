@@ -299,10 +299,19 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
                 DAILY_WORK_ORIGIN,
                 "Audit the auth module and add the rate-limit tests.",
             ),
-            "compact" | "chat-long-scroll" => (
+            "todo-list" => (
+                DAILY_WORK_ORIGIN,
+                "Implement rate limiting on the login endpoint.",
+            ),
+            "shell" => (
+                DAILY_WORK_ORIGIN,
+                "Check the branch, then run the focused tests.",
+            ),
+            "compact" => (
                 DAILY_WORK_ORIGIN,
                 "Continue from the compacted conversation summary.",
             ),
+            "chat-long-scroll" => chat_long_scroll_origin_and_task(fixture_id),
             // Other non-chat-turn conversation screens stay on the daily journey frame.
             _ => (DAILY_WORK_ORIGIN, DAILY_WORK_TASK),
         },
@@ -391,6 +400,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "tool-task" => render_tool_task(&mut canvas, screen_id, fixture_id)?,
         "tool-task-expanded" => render_tool_task_expanded(&mut canvas, screen_id, fixture_id)?,
         "rich-response" => render_rich_response(&mut canvas, screen_id, fixture_id)?,
+        "shell" => render_shell(&mut canvas, screen_id, fixture_id)?,
+        "todo-list" => render_todo_list(&mut canvas, screen_id, fixture_id)?,
         "compact" => render_compact(&mut canvas, screen_id, fixture_id)?,
         "chat-long-scroll" => render_chat_long_scroll(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown conversation pilot screen: {screen_id}")),
@@ -405,7 +416,10 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             session_id: "session.daily-work.1".to_owned(),
             turn_id: match screen_id {
                 "tool-task" | "tool-task-expanded" => "turn.daily-work.task-audit.22",
-                "compact" | "chat-long-scroll" => "turn.daily-work.compact.19",
+                "todo-list" => "turn.daily-work.todo.20",
+                "shell" => "turn.daily-work.shell.21",
+                "compact" => "turn.daily-work.compact.19",
+                "chat-long-scroll" => chat_long_scroll_turn_id(fixture_id),
                 _ => "turn.daily-work.18",
             }
             .to_owned(),
@@ -3643,6 +3657,626 @@ fn render_tool_task_expanded(
     ))
 }
 
+fn chat_long_scroll_mode(fixture_id: &str) -> &'static str {
+    if fixture_id.contains("compact")
+        || fixture_id.contains("history-restore")
+        || fixture_id.contains("collapse-history")
+        || fixture_id.contains("expand-history")
+        || fixture_id == "session.disclosure.compact"
+    {
+        "compact-restore"
+    } else if fixture_id.contains("jump-earlier")
+        || fixture_id.contains("earlier")
+        || fixture_id.ends_with(".earlier")
+    {
+        "earlier"
+    } else if fixture_id.contains("return-latest")
+        || fixture_id.contains("latest")
+        || fixture_id.ends_with(".latest")
+    {
+        "latest"
+    } else {
+        // Canonical default: mid-history view with earlier-turn signal + return-to-latest.
+        "earlier"
+    }
+}
+
+fn chat_long_scroll_origin_and_task(fixture_id: &str) -> (&'static str, &'static str) {
+    match chat_long_scroll_mode(fixture_id) {
+        "compact-restore" => (
+            DAILY_WORK_ORIGIN,
+            "Continue from the compacted conversation summary.",
+        ),
+        _ => (
+            DAILY_WORK_ORIGIN,
+            "Review earlier turns, then return to the latest work.",
+        ),
+    }
+}
+
+fn chat_long_scroll_turn_id(fixture_id: &str) -> &'static str {
+    match chat_long_scroll_mode(fixture_id) {
+        "compact-restore" => "turn.daily-work.compact.19",
+        _ => "turn.daily-work.history.23",
+    }
+}
+
+fn shell_mode(fixture_id: &str) -> &'static str {
+    if fixture_id.contains("interrupt") {
+        "interrupted"
+    } else if fixture_id.contains("complete") {
+        "completed"
+    } else {
+        "running"
+    }
+}
+
+fn todo_mode(fixture_id: &str) -> &'static str {
+    // Only the named progress-advance scenario and its resulting audit fixture
+    // render the post-advance counts. Baseline / canonical stay at 3 of 5.
+    if fixture_id.contains("todo-progress")
+        || fixture_id.contains("advanced")
+        || fixture_id.ends_with(".after")
+    {
+        "advanced"
+    } else {
+        "baseline"
+    }
+}
+
+fn render_shell(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let mode = shell_mode(fixture_id);
+    canvas.write(
+        4,
+        4,
+        "You · Check the branch, then run the focused tests.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "I will check the branch state first, then run the focused suite.",
+        TextStyle::text(),
+    )?;
+
+    // Completed command with captured output kept inline under the turn.
+    let completed = ActivityRow::new(
+        "Shell · git status --short --branch",
+        ActivityState::Succeeded,
+        "exit 0 · 0.2s",
+    )
+    .compact();
+    write_component(canvas, 11, 4, &completed)?;
+    canvas.write(
+        12,
+        4,
+        "  ⎿ ## master...origin/master [ahead 1]",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "  ⎿ M crates/server/src/models/session.rs",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "  ⎿ ?? crates/server/tests/login_regression.rs",
+        TextStyle::muted(),
+    )?;
+
+    match mode {
+        "interrupted" => {
+            let interrupted = ActivityRow::new(
+                "Shell · cargo test --workspace",
+                ActivityState::Failed,
+                "Interrupted · exit status kept",
+            )
+            .with_elapsed("4s")
+            .compact();
+            write_component(canvas, 16, 4, &interrupted)?;
+            canvas.write(
+                17,
+                4,
+                "  ⎿ Compiling cortex-server v0.1.0",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                18,
+                4,
+                "  ⎿ Finished test profile in 3.1s",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                19,
+                4,
+                "  ⎿ test routes::login::rate_limited ... ok",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                21,
+                4,
+                "Command stopped · captured output kept · composer restored.",
+                TextStyle::muted(),
+            )?;
+            composer(canvas, "Reply to Code", Some("Send reply"))?;
+        }
+        "completed" => {
+            let finished = ActivityRow::new(
+                "Shell · cargo test --workspace",
+                ActivityState::Succeeded,
+                "exit 0 · 4.2s",
+            )
+            .compact();
+            write_component(canvas, 16, 4, &finished)?;
+            canvas.write(
+                17,
+                4,
+                "  ⎿ Compiling cortex-server v0.1.0",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                18,
+                4,
+                "  ⎿ Finished test profile in 3.1s",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                19,
+                4,
+                "  ⎿ test routes::login::rate_limited ... ok",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                20,
+                4,
+                "  ⎿ test routes::api::quota_enforced ... ok",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                22,
+                4,
+                "Both commands finished · exit 0 preserved · continue in this turn.",
+                TextStyle::muted(),
+            )?;
+            composer(canvas, "Reply to Code", Some("Send reply"))?;
+        }
+        _ => {
+            let running = ActivityRow::new(
+                "Shell · cargo test --workspace",
+                ActivityState::Running,
+                "running · 4s elapsed",
+            )
+            .with_interrupt("Stop command")
+            .compact();
+            write_component(canvas, 16, 4, &running)?;
+            canvas.write(
+                17,
+                4,
+                "  ⎿ Compiling cortex-server v0.1.0",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                18,
+                4,
+                "  ⎿ Finished test profile in 3.1s",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                19,
+                4,
+                "  ⎿ test routes::login::rate_limited ... ok",
+                TextStyle::muted(),
+            )?;
+            canvas.write(
+                20,
+                4,
+                "  ⎿ test routes::api::quota_enforced ... █",
+                TextStyle::muted(),
+            )?;
+            composer(
+                canvas,
+                "Type a follow-up, it will wait until this command finishes",
+                None,
+            )?;
+        }
+    }
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 56),
+        "summary",
+        None,
+    );
+    let first_cmd = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "shell-git-status",
+        reference(11, 4, 70),
+        "summary",
+        None,
+    );
+    let first_out = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "shell-git-status-output",
+        reference(12, 4, 48),
+        "summary",
+        None,
+    );
+    let second_cmd = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        match mode {
+            "interrupted" => "shell-cargo-test-interrupted",
+            "completed" => "shell-cargo-test-complete",
+            _ => "shell-cargo-test-running",
+        },
+        reference(16, 4, 78),
+        "summary",
+        match mode {
+            "running" => Some(action(
+                "action.shell.interrupt",
+                "Stop command",
+                false,
+            )),
+            "completed" => Some(action(
+                "action.shell.complete",
+                "Command finished",
+                true,
+            )),
+            _ => None,
+        },
+    );
+    let automatic_complete = if mode == "running" {
+        Some(semantic(
+            screen_id,
+            fixture_id,
+            "completion",
+            "shell-cargo-test",
+            reference(16, 4, 78),
+            "summary",
+            Some(action(
+                "action.shell.complete",
+                "Command finished",
+                true,
+            )),
+        ))
+    } else {
+        None
+    };
+    let second_out = semantic(
+        screen_id,
+        fixture_id,
+        "activity",
+        "shell-cargo-test-output",
+        reference(17, 4, 42),
+        "summary",
+        None,
+    );
+    let composer_ev = match mode {
+        "running" => semantic(
+            screen_id,
+            fixture_id,
+            "queued-input",
+            "follow-up",
+            reference(COMPOSER_TOP, 4, 68),
+            "summary",
+            None,
+        ),
+        _ => semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.shell.continue",
+            reference(COMPOSER_TOP, 4, 29),
+            "summary",
+            Some(action("action.shell.continue", "Send reply", false)),
+        ),
+    };
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let mut candidates = vec![
+        request.0.clone(),
+        first_cmd.0.clone(),
+        first_out.0.clone(),
+        second_cmd.0.clone(),
+        second_out.0.clone(),
+        composer_ev.0.clone(),
+        status.0.clone(),
+    ];
+    let mut events = vec![
+        request.1.clone(),
+        first_cmd.1.clone(),
+        first_out.1.clone(),
+        second_cmd.1.clone(),
+        second_out.1.clone(),
+        composer_ev.1.clone(),
+        status.1.clone(),
+    ];
+    if let Some(complete) = automatic_complete {
+        candidates.push(complete.0);
+        events.push(complete.1);
+    }
+    let transitions = match mode {
+        "running" => vec![
+            transition(
+                "action.shell.interrupt",
+                "shell",
+                "shell",
+                "direct",
+                "interrupt stops the live command, keeps captured output, and restores the composer",
+            ),
+            transition(
+                "action.shell.complete",
+                "shell",
+                "shell",
+                "automatic",
+                "completion replaces the running row with exit 0 and restores the composer",
+            ),
+        ],
+        "interrupted" => vec![transition(
+            "action.shell.continue",
+            "shell",
+            "chat-turn",
+            "direct",
+            "after interrupt the same turn continues with preserved output",
+        )],
+        _ => vec![transition(
+            "action.shell.continue",
+            "shell",
+            "chat-turn",
+            "direct",
+            "after completion the same turn continues with exit status and output preserved",
+        )],
+    };
+    Ok((candidates, events, transitions))
+}
+
+fn render_todo_list(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let advanced = todo_mode(fixture_id) == "advanced";
+    canvas.write(
+        4,
+        4,
+        "You · Implement rate limiting on the login endpoint.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Code", TextStyle::bright())?;
+    canvas.write(9, 4, "Updated plan", TextStyle::bright())?;
+
+    canvas.write(
+        11,
+        4,
+        "✓ Read the auth middleware            reviewed the login handler · done",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        12,
+        4,
+        "✓ Add a token-bucket limiter          created the request guard · done",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        13,
+        4,
+        "✓ Wire the POST /login route          attached the limiter · done",
+        TextStyle::text(),
+    )?;
+
+    if advanced {
+        canvas.write(
+            14,
+            4,
+            "✓ Add tests/login_ratelimit.rs        cover the fifth attempt · done",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            15,
+            4,
+            "● Run cargo test and cargo fmt        verify the full change · in progress",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            17,
+            4,
+            "4 of 5 done · 1 in progress · 0 pending",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            19,
+            4,
+            "● Running the focused suite · 22s · next work is this verification step",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(
+            14,
+            4,
+            "● Add tests/login_ratelimit.rs        cover the fifth attempt · in progress",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            15,
+            4,
+            "○ Run cargo test and cargo fmt        verify the full change · pending",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            16,
+            4,
+            "  ● Writing tests… 22s · 1 file · next work is this item",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            18,
+            4,
+            "3 of 5 done · 1 in progress · 1 pending",
+            TextStyle::text(),
+        )?;
+    }
+
+    composer(
+        canvas,
+        "Type a follow-up, it runs after this turn…",
+        None,
+    )?;
+
+    let request = semantic(
+        screen_id,
+        fixture_id,
+        "transcript",
+        "user-request",
+        reference(4, 4, 58),
+        "summary",
+        None,
+    );
+    let item1 = semantic(
+        screen_id,
+        fixture_id,
+        "todo-item",
+        "todo-done-auth-middleware",
+        reference(11, 4, 72),
+        "summary",
+        None,
+    );
+    let item2 = semantic(
+        screen_id,
+        fixture_id,
+        "todo-item",
+        "todo-done-token-bucket",
+        reference(12, 4, 72),
+        "summary",
+        None,
+    );
+    let item3 = semantic(
+        screen_id,
+        fixture_id,
+        "todo-item",
+        "todo-done-login-route",
+        reference(13, 4, 70),
+        "summary",
+        None,
+    );
+    let (item4, item5) = if advanced {
+        (
+            semantic(
+                screen_id,
+                fixture_id,
+                "todo-item",
+                "todo-done-login-tests",
+                reference(14, 4, 74),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "todo-item",
+                "todo-current-verify-suite",
+                reference(15, 4, 78),
+                "summary",
+                Some(action(
+                    "action.todo.advance",
+                    "Mark current done",
+                    true,
+                )),
+            ),
+        )
+    } else {
+        (
+            semantic(
+                screen_id,
+                fixture_id,
+                "todo-item",
+                "todo-current-login-tests",
+                reference(14, 4, 78),
+                "summary",
+                Some(action(
+                    "action.todo.advance",
+                    "Mark current done",
+                    true,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "todo-item",
+                "todo-pending-verify-suite",
+                reference(15, 4, 74),
+                "summary",
+                None,
+            ),
+        )
+    };
+    let summary = semantic(
+        screen_id,
+        fixture_id,
+        "todo-summary",
+        "todo-progress-summary",
+        reference(if advanced { 17 } else { 18 }, 4, 42),
+        "summary",
+        None,
+    );
+    let composer_ev = semantic(
+        screen_id,
+        fixture_id,
+        "queued-input",
+        "follow-up",
+        reference(COMPOSER_TOP, 4, 48),
+        "summary",
+        None,
+    );
+    let status = semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    );
+    let pairs = [
+        request, item1, item2, item3, item4, item5, summary, composer_ev, status,
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.todo.advance",
+            "todo-list",
+            "todo-list",
+            "automatic",
+            "only affected task states and the progress summary change while the origin turn and composer stay put",
+        )],
+    ))
+}
+
 fn render_compact(
     canvas: &mut Canvas,
     screen_id: &str,
@@ -3763,85 +4397,304 @@ fn render_chat_long_scroll(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, "Earlier history restored · same session", TextStyle::muted())?;
-    canvas.write(
-        6,
-        4,
-        "Turn 1 · You · Find the shared rate-limit guard.",
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        7,
-        4,
-        "Turn 1 · Code · Found middleware/rate_limit.rs as the single owner.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        9,
-        4,
-        "Turn 8 · You · Confirm login and API both call it.",
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        10,
-        4,
-        "Turn 8 · Code · Yes. Both reuse one safety rule.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        12,
-        4,
-        "Turn 18 · You · Find where the server applies the rate limit and explain the safe path.",
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        13,
-        4,
-        "Turn 18 · Code · The shared request guard applies the limit before route work begins.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        15,
-        4,
-        "▾ Full history open  [enter] Return to compact summary",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "18 turns restored in order · draft and reading position kept.",
-        TextStyle::muted(),
-    )?;
-    composer(canvas, "Resume from the compacted summary", Some("Send reply"))?;
+    let mode = chat_long_scroll_mode(fixture_id);
 
-    let restore = semantic(
+    if mode == "compact-restore" {
+        canvas.write(4, 4, "Earlier history restored · same session", TextStyle::muted())?;
+        canvas.write(
+            6,
+            4,
+            "Turn 1 · You · Find the shared rate-limit guard.",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            7,
+            4,
+            "Turn 1 · Code · Found middleware/rate_limit.rs as the single owner.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            9,
+            4,
+            "Turn 8 · You · Confirm login and API both call it.",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            10,
+            4,
+            "Turn 8 · Code · Yes. Both reuse one safety rule.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            12,
+            4,
+            "Turn 18 · You · Find where the server applies the rate limit and explain the safe path.",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            13,
+            4,
+            "Turn 18 · Code · The shared request guard applies the limit before route work begins.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            15,
+            4,
+            "▾ Full history open  [enter] Return to compact summary",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            17,
+            4,
+            "18 turns restored in order · draft and reading position kept.",
+            TextStyle::muted(),
+        )?;
+        composer(canvas, "Resume from the compacted summary", Some("Send reply"))?;
+
+        let restore = semantic(
+            screen_id,
+            fixture_id,
+            "disclosure",
+            "history-restore",
+            reference(15, 4, 56),
+            "focused",
+            Some(action(
+                "action.compact.collapse-history",
+                "Return to compact summary",
+                false,
+            )),
+        );
+        let turns = semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "restored-history",
+            reference(6, 4, 50),
+            "focused",
+            None,
+        );
+        let composer_ev = semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-long-scroll.continue",
+            reference(COMPOSER_TOP, 4, 43),
+            "summary",
+            Some(action(
+                "action.chat-long-scroll.continue",
+                "Send reply",
+                false,
+            )),
+        );
+        let status = semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        );
+        let pairs = [turns, restore, composer_ev, status];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            vec![transition(
+                "action.compact.collapse-history",
+                "chat-long-scroll",
+                "compact",
+                "direct",
+                "return restores the same compact summary and draft without reordering turns",
+            )],
+        ));
+    }
+
+    // Long-history navigation modes (earlier viewport vs latest).
+    let draft = "Add a short note about the remaining risk.";
+    if mode == "latest" {
+        canvas.write(
+            4,
+            4,
+            "Near the latest activity · draft kept",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            6,
+            4,
+            "↑ 12 earlier turns · [ctrl+u] Jump to earlier",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            8,
+            4,
+            "You · why keep the old token around for five minutes after rotation?",
+            TextStyle::bright(),
+        )?;
+        canvas.write(10, 4, "Code", TextStyle::bright())?;
+        canvas.write(
+            12,
+            4,
+            "The grace window absorbs racing requests so a client that fired two",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            13,
+            4,
+            "calls in parallel can still present the outgoing token briefly.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            14,
+            4,
+            "Within that window enforce() accepts the old token for reads only.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            16,
+            4,
+            "● In short · rotation is immediate for writes; reads get a five-minute grace window.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            18,
+            4,
+            "● Latest turn · scroll position at newest work",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            20,
+            4,
+            "↑ Earlier turns stay available without covering this answer.",
+            TextStyle::muted(),
+        )?;
+        composer(canvas, draft, Some("Send reply"))?;
+    } else {
+        // earlier
+        canvas.write(
+            4,
+            4,
+            "↑ 12 earlier turns · [ctrl+u] Jump to earlier · reading older work",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            6,
+            4,
+            "You · where do refresh tokens get persisted?",
+            TextStyle::bright(),
+        )?;
+        canvas.write(8, 4, "Code", TextStyle::bright())?;
+        canvas.write(
+            10,
+            4,
+            "They live in the sessions table, one row per device. TokenService",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            11,
+            4,
+            "writes them through store::persist() at issue time and rotates the",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            12,
+            4,
+            "row in place on every refresh.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            14,
+            4,
+            "You · add an integration test that proves rotation invalidates the old token",
+            TextStyle::bright(),
+        )?;
+        canvas.write(16, 4, "Code", TextStyle::bright())?;
+        canvas.write(
+            18,
+            4,
+            "Added rotation_invalidates_previous_token to crates/server/tests/auth.rs.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            19,
+            4,
+            "It signs in, refreshes once, then replays the pre-refresh token.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            21,
+            4,
+            "› Jump to latest  [enter] Return to the newest turn and composer",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            23,
+            4,
+            "Scroll position · earlier-turn-band · draft preserved",
+            TextStyle::muted(),
+        )?;
+        composer(canvas, draft, Some("Send reply"))?;
+    }
+
+    let indicator = semantic(
         screen_id,
         fixture_id,
-        "disclosure",
-        "history-restore",
-        reference(15, 4, 56),
-        "focused",
+        "scroll",
+        "earlier-turns-indicator",
+        reference(if mode == "latest" { 6 } else { 4 }, 4, 62),
+        "summary",
         Some(action(
-            "action.compact.collapse-history",
-            "Return to compact summary",
+            "action.chat-long-scroll.jump-earlier",
+            "Jump to earlier",
             false,
         )),
     );
-    let turns = semantic(
+    let transcript = semantic(
         screen_id,
         fixture_id,
         "transcript",
-        "restored-history",
-        reference(6, 4, 50),
-        "focused",
+        if mode == "latest" {
+            "latest-visible-turn"
+        } else {
+            "earlier-visible-turns"
+        },
+        reference(if mode == "latest" { 8 } else { 6 }, 4, 60),
+        "summary",
         None,
     );
+    let nav = if mode == "latest" {
+        semantic(
+            screen_id,
+            fixture_id,
+            "scroll",
+            "history-position-latest",
+            reference(18, 4, 50),
+            "summary",
+            None,
+        )
+    } else {
+        semantic(
+            screen_id,
+            fixture_id,
+            "scroll",
+            "return-to-latest",
+            reference(21, 4, 68),
+            "summary",
+            Some(action(
+                "action.chat-long-scroll.return-latest",
+                "Jump to latest",
+                false,
+            )),
+        )
+    };
     let composer_ev = semantic(
         screen_id,
         fixture_id,
         "primary-action",
         "action.chat-long-scroll.continue",
-        reference(COMPOSER_TOP, 4, 43),
+        reference(COMPOSER_TOP, 4, 48),
         "summary",
         Some(action(
             "action.chat-long-scroll.continue",
@@ -3858,20 +4711,49 @@ fn render_chat_long_scroll(
         "summary",
         None,
     );
-    let pairs = [turns, restore, composer_ev, status];
+    let pairs = [indicator, transcript, nav, composer_ev, status];
+    let transitions = if mode == "latest" {
+        vec![
+            transition(
+                "action.chat-long-scroll.jump-earlier",
+                "chat-long-scroll",
+                "chat-long-scroll",
+                "direct",
+                "jump earlier preserves the draft and lands at the earlier-turn-band anchor",
+            ),
+            transition(
+                "action.chat-long-scroll.continue",
+                "chat-long-scroll",
+                "streaming",
+                "direct",
+                "reply continues from the latest turn without losing the draft",
+            ),
+        ]
+    } else {
+        vec![
+            transition(
+                "action.chat-long-scroll.return-latest",
+                "chat-long-scroll",
+                "chat-long-scroll",
+                "direct",
+                "return to latest restores the prior draft and lands near the exact latest activity",
+            ),
+            transition(
+                "action.chat-long-scroll.jump-earlier",
+                "chat-long-scroll",
+                "chat-long-scroll",
+                "direct",
+                "jump earlier preserves the draft and lands at the earlier-turn-band anchor",
+            ),
+        ]
+    };
     Ok((
         pairs
             .iter()
             .map(|(candidate, _)| candidate.clone())
             .collect(),
         pairs.iter().map(|(_, event)| event.clone()).collect(),
-        vec![transition(
-            "action.compact.collapse-history",
-            "chat-long-scroll",
-            "compact",
-            "direct",
-            "return restores the same compact summary and draft without reordering turns",
-        )],
+        transitions,
     ))
 }
 

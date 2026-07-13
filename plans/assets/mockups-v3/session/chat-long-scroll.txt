@@ -1,27 +1,27 @@
                                                                                                                         
                                                                                                                         
     Daily work · current conversation                                                                                   
-    Continue from the compacted conversation summary.                                                                   
-    Earlier history restored · same session                                                                             
+    Review earlier turns, then return to the latest work.                                                               
+    ↑ 12 earlier turns · [ctrl+u] Jump to earlier · reading older work                                                  
                                                                                                                         
-    Turn 1 · You · Find the shared rate-limit guard.                                                                    
-    Turn 1 · Code · Found middleware/rate_limit.rs as the single owner.                                                 
+    You · where do refresh tokens get persisted?                                                                        
                                                                                                                         
-    Turn 8 · You · Confirm login and API both call it.                                                                  
-    Turn 8 · Code · Yes. Both reuse one safety rule.                                                                    
+    Code                                                                                                                
                                                                                                                         
-    Turn 18 · You · Find where the server applies the rate limit and explain the safe path.                             
-    Turn 18 · Code · The shared request guard applies the limit before route work begins.                               
+    They live in the sessions table, one row per device. TokenService                                                   
+    writes them through store::persist() at issue time and rotates the                                                  
+    row in place on every refresh.                                                                                      
                                                                                                                         
-    ▾ Full history open  [enter] Return to compact summary                                                              
+    You · add an integration test that proves rotation invalidates the old token                                        
                                                                                                                         
-    18 turns restored in order · draft and reading position kept.                                                       
+    Code                                                                                                                
                                                                                                                         
+    Added rotation_invalidates_previous_token to crates/server/tests/auth.rs.                                           
+    It signs in, refreshes once, then replays the pre-refresh token.                                                    
                                                                                                                         
+    › Jump to latest  [enter] Return to the newest turn and composer                                                    
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+    Scroll position · earlier-turn-band · draft preserved                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,7 +31,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Resume from the compacted summary                                                                                 
+  │ › Add a short note about the remaining risk.                                                                        
                                                                                                                         
                                                                                                                         
     [enter] Send reply                                                                                                  
