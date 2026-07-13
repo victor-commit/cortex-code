@@ -2626,9 +2626,11 @@ enum CapPriority {
     SignInNeeded = 1,
     SetupNeeded = 2,
     Failed = 3,
-    Retrying = 4,
-    Disabled = 5,
-    Ready = 6,
+    /// Handshake succeeded but zero policy-permitted usable capabilities.
+    ZeroUsable = 4,
+    Retrying = 5,
+    Disabled = 6,
+    Ready = 7,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2637,6 +2639,9 @@ enum CapState {
     SignInNeeded,
     SetupNeeded,
     Failed,
+    /// Successful handshake with zero policy-permitted usable capabilities.
+    /// Must never render as Ready (VAL-V3-F4-057).
+    ZeroUsable,
     Retrying,
     Disabled,
     Ready,
@@ -2649,6 +2654,7 @@ impl CapState {
             Self::SignInNeeded => CapPriority::SignInNeeded,
             Self::SetupNeeded => CapPriority::SetupNeeded,
             Self::Failed => CapPriority::Failed,
+            Self::ZeroUsable => CapPriority::ZeroUsable,
             Self::Retrying => CapPriority::Retrying,
             Self::Disabled => CapPriority::Disabled,
             Self::Ready => CapPriority::Ready,
@@ -2661,6 +2667,7 @@ impl CapState {
             Self::SignInNeeded => "Sign in needed",
             Self::SetupNeeded => "Needs setup",
             Self::Failed => "Failed",
+            Self::ZeroUsable => "No usable capability",
             Self::Retrying => "Retrying",
             Self::Disabled => "Disabled",
             Self::Ready => "Ready",
@@ -2669,7 +2676,7 @@ impl CapState {
 
     fn marker(self) -> &'static str {
         match self {
-            Self::PolicyBlocked | Self::Failed => "✗",
+            Self::PolicyBlocked | Self::Failed | Self::ZeroUsable => "✗",
             Self::SignInNeeded | Self::SetupNeeded => "●",
             Self::Retrying => "●",
             Self::Disabled => "○",
@@ -2683,12 +2690,176 @@ impl CapState {
             Self::SignInNeeded => Some("Sign in"),
             Self::SetupNeeded => Some("Setup"),
             Self::Failed => Some("Retry"),
+            Self::ZeroUsable => Some("Review policy"),
             Self::Retrying => None,
             Self::Disabled => Some("Enable"),
             Self::Ready => Some("Details"),
         }
     }
 
+    /// Ready only means handshake succeeded and at least one usable capability
+    /// remains after policy. Zero usable stays an attention state.
+    fn is_healthy_ready(self) -> bool {
+        matches!(self, Self::Ready)
+    }
+}
+
+/// Per-connection negotiation counts, derived from stable capability identities
+/// (VAL-V3-F4-057). `negotiated = allowed + blocked + unavailable`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NegotiationCounts {
+    negotiated: u32,
+    allowed: u32,
+    blocked: u32,
+    unavailable: u32,
+}
+
+impl NegotiationCounts {
+    fn reconcile(self) -> bool {
+        self.negotiated == self.allowed.saturating_add(self.blocked).saturating_add(self.unavailable)
+    }
+
+    fn summary_line(self) -> String {
+        format!(
+            "Negotiated {n} · Allowed {a} · Blocked {b} · Unavailable {u}",
+            n = self.negotiated,
+            a = self.allowed,
+            b = self.blocked,
+            u = self.unavailable
+        )
+    }
+}
+
+/// Derive readiness from handshake + allowed usable count.
+/// Ready is impossible when allowed == 0, even after a successful handshake.
+fn ready_state_for_negotiation(handshake_ok: bool, allowed_usable: u32) -> CapState {
+    if !handshake_ok {
+        CapState::Failed
+    } else if allowed_usable == 0 {
+        CapState::ZeroUsable
+    } else {
+        CapState::Ready
+    }
+}
+
+/// Sanitize untrusted MCP labels (capability, publisher, tool, resource, prompt,
+/// error, argument, response). Rejects controls, bidi, zero-width, tabs, and
+/// layout hazards while keeping a stable readable identity (VAL-V3-F4-058).
+fn sanitize_mcp_label(raw: &str) -> String {
+    // Secret-like fragments never render; replaced with a redaction placeholder.
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("sk-")
+        || lower.contains("bearer ")
+        || lower.contains("api_key")
+        || lower.contains("authorization:")
+        || lower.contains("secret=")
+        || lower.contains("token=")
+    {
+        return "[redacted]".to_owned();
+    }
+
+    let mut out = String::with_capacity(raw.len());
+    let mut previous_space = false;
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        let code = ch as u32;
+        // Drop entire CSI / escape sequences such as ESC[31m that remain after
+        // stripping the control introducer alone (would leave "[31m").
+        if ch == '\u{001b}' {
+            i += 1;
+            if i < chars.len() && chars[i] == '[' {
+                i += 1;
+                while i < chars.len() {
+                    let c = chars[i];
+                    i += 1;
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            previous_space = false;
+            continue;
+        }
+        // Drop C0 controls, DEL, C1 controls, tabs, and line breaks.
+        if code < 0x20 || code == 0x7F || (0x80..=0x9F).contains(&code) {
+            if !previous_space {
+                out.push(' ');
+                previous_space = true;
+            }
+            i += 1;
+            continue;
+        }
+        // Bidi controls, zero-width, BOM, soft hyphen, annotation controls.
+        let bidi_or_zw = matches!(
+            code,
+            0x200B | 0x200C | 0x200D | 0x200E | 0x200F
+                | 0x2028 | 0x2029 | 0x202A | 0x202B | 0x202C | 0x202D | 0x202E
+                | 0x2060 | 0x2066 | 0x2067 | 0x2068 | 0x2069
+                | 0xFEFF | 0x00AD
+        );
+        if bidi_or_zw {
+            i += 1;
+            continue;
+        }
+        // Combining marks that create width/overstrike hazards: drop.
+        if (0x0300..=0x036F).contains(&code)
+            || (0x1AB0..=0x1AFF).contains(&code)
+            || (0x1DC0..=0x1DFF).contains(&code)
+            || (0x20D0..=0x20FF).contains(&code)
+            || (0xFE20..=0xFE2F).contains(&code)
+        {
+            i += 1;
+            continue;
+        }
+        // Collapse whitespace (including non-breaking spaces) so layout stays stable.
+        if ch.is_whitespace() || ch == '\u{00A0}' || ch == '\u{3000}' {
+            if !previous_space && !out.is_empty() {
+                out.push(' ');
+                previous_space = true;
+            }
+            i += 1;
+            continue;
+        }
+        // Replace broad ambiguous-width / private-use / surrogate hazards.
+        if (0xD800..=0xDFFF).contains(&code)
+            || (0xE000..=0xF8FF).contains(&code)
+            || (0xF0000..=0xFFFFD).contains(&code)
+            || (0x100000..=0x10FFFD).contains(&code)
+        {
+            if !previous_space {
+                out.push('·');
+                previous_space = true;
+            }
+            i += 1;
+            continue;
+        }
+        // Residual CSI-style sequences without the ESC introducer (e.g. "[31m").
+        if ch == '['
+            && i + 1 < chars.len()
+            && chars[i + 1].is_ascii_digit()
+        {
+            let mut j = i + 1;
+            while j < chars.len() && (chars[j].is_ascii_digit() || chars[j] == ';') {
+                j += 1;
+            }
+            if j < chars.len() && chars[j].is_ascii_alphabetic() {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(ch);
+        previous_space = false;
+        i += 1;
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        "sanitized label".to_owned()
+    } else {
+        // Bound width so hostile overflow cannot break the 120-col canvas.
+        truncate_capability(trimmed, 64)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2697,10 +2868,54 @@ struct CapRow {
     name: &'static str,
     state: CapState,
     cause: &'static str,
-    #[allow(dead_code)]
     publisher: &'static str,
     #[allow(dead_code)]
     access: &'static str,
+    /// When present, Ready visualisation is gated by these negotiated counts.
+    negotiation: Option<NegotiationCounts>,
+}
+
+impl CapRow {
+    fn display_name(self) -> String {
+        sanitize_mcp_label(self.name)
+    }
+
+    fn display_publisher(self) -> String {
+        sanitize_mcp_label(self.publisher)
+    }
+
+    fn display_cause(self) -> String {
+        sanitize_mcp_label(self.cause)
+    }
+
+    #[allow(dead_code)]
+    fn display_access(self) -> String {
+        sanitize_mcp_label(self.access)
+    }
+
+    /// Enforce VAL-V3-F4-057: Ready only when negotiation allows a usable capability.
+    fn resolved_state(self) -> CapState {
+        match self.negotiation {
+            Some(counts) => {
+                // Defensive: when counts exist, Ready requires allow > 0 and reconciliation.
+                if self.state == CapState::Ready {
+                    if counts.allowed == 0 || !counts.reconcile() {
+                        CapState::ZeroUsable
+                    } else {
+                        CapState::Ready
+                    }
+                } else if self.state == CapState::ZeroUsable {
+                    CapState::ZeroUsable
+                } else {
+                    self.state
+                }
+            }
+            None => {
+                // Without explicit negotiation evidence, treat Ready as already proven usable.
+                self.state
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2722,6 +2937,10 @@ enum McpViewKind {
     ProgressCancelled,
     FocusedDetail,
     Diagnostics,
+    /// Handshake / negotiation fixtures (VAL-V3-F4-057).
+    Handshake,
+    /// Hostile label list and detail fixtures (VAL-V3-F4-058).
+    HostileLabels,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2840,6 +3059,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Missing local tools needed for page checks.",
                     publisher: "Browser Tools",
                     access: "Read pages and capture screenshots",
+                negotiation: None,
                 },
             ],
             selected_id: "browser-automation",
@@ -2876,6 +3096,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Missing local tools needed for page checks.",
                     publisher: "Browser Tools",
                     access: "Read pages and capture screenshots",
+                negotiation: None,
                 },
                 CapRow {
                     id: "project-docs",
@@ -2884,6 +3105,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Workspace library is authorized.",
                     publisher: "Docs Workspace",
                     access: "Search project documentation",
+                negotiation: None,
                 },
                 CapRow {
                     id: "code-search",
@@ -2892,6 +3114,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Index is current.",
                     publisher: "Code Index",
                     access: "Search local symbols",
+                negotiation: None,
                 },
             ]),
             selected_id: "project-docs",
@@ -2923,6 +3146,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "This workspace library needs approval before use.",
                     publisher: "Docs Workspace",
                     access: "Search project documentation",
+                negotiation: None,
                 },
                 CapRow {
                     id: "code-search",
@@ -2931,6 +3155,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Index is current.",
                     publisher: "Code Index",
                     access: "Search local symbols",
+                negotiation: None,
                 },
             ]),
             selected_id: "project-docs",
@@ -2962,6 +3187,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Missing local tools needed for page checks.",
                     publisher: "Browser Tools",
                     access: "Read pages and capture screenshots",
+                negotiation: None,
                 },
                 CapRow {
                     id: "issue-tracker",
@@ -2970,6 +3196,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Connection restored after retry.",
                     publisher: "Tracker Cloud",
                     access: "Read issues and comments",
+                negotiation: None,
                 },
                 CapRow {
                     id: "code-search",
@@ -2978,6 +3205,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Index is current.",
                     publisher: "Code Index",
                     access: "Search local symbols",
+                negotiation: None,
                 },
             ]),
             selected_id: "issue-tracker",
@@ -3009,6 +3237,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Still unavailable after retry. The service refused the request.",
                     publisher: "Tracker Cloud",
                     access: "Read issues and comments",
+                negotiation: None,
                 },
                 CapRow {
                     id: "code-search",
@@ -3017,6 +3246,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Index is current.",
                     publisher: "Code Index",
                     access: "Search local symbols",
+                negotiation: None,
                 },
             ]),
             selected_id: "issue-tracker",
@@ -3048,6 +3278,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Retrying the failed connection for this capability only.",
                     publisher: "Tracker Cloud",
                     access: "Read issues and comments",
+                negotiation: None,
                 },
                 CapRow {
                     id: "code-search",
@@ -3056,6 +3287,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Index is current.",
                     publisher: "Code Index",
                     access: "Search local symbols",
+                negotiation: None,
                 },
             ]),
             selected_id: "issue-tracker",
@@ -3087,6 +3319,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Could not reach the issue service for this project.",
                     publisher: "Tracker Cloud",
                     access: "Read issues and comments",
+                negotiation: None,
                 },
                 CapRow {
                     id: "code-search",
@@ -3095,6 +3328,7 @@ fn mcp_view(fixture_id: &str) -> McpView {
                     cause: "Index is current.",
                     publisher: "Code Index",
                     access: "Search local symbols",
+                negotiation: None,
                 },
             ]),
             selected_id: "issue-tracker",
@@ -3149,6 +3383,36 @@ fn mcp_view(fixture_id: &str) -> McpView {
         return focused_detail_docs_view();
     }
 
+    // Handshake / usable negotiation (VAL-V3-F4-057).
+    if lower.contains("handshake-success") || lower.contains("handshake_success") {
+        return handshake_success_view();
+    }
+    if lower.contains("handshake-failed") || lower.contains("handshake_failed") {
+        return handshake_failed_view();
+    }
+    if lower.contains("handshake-zero")
+        || lower.contains("zero-usable")
+        || lower.contains("zero_usable")
+        || lower.contains("zero-capability")
+        || lower.contains("zero_capability")
+    {
+        return handshake_zero_usable_view();
+    }
+    if lower.contains("handshake-progress") || lower.contains("handshake_progress") {
+        // Intermediate pre-terminal handshake tick uses failed placeholder until complete.
+        return handshake_failed_view();
+    }
+    // Hostile label sanitization (VAL-V3-F4-058).
+    if lower.contains("hostile-labels")
+        || lower.contains("hostile_labels")
+        || lower.contains("hostile-label-list")
+    {
+        return hostile_labels_list_view();
+    }
+    if lower.contains("hostile-detail") || lower.contains("hostile_detail") {
+        return hostile_labels_detail_view();
+    }
+
     if lower.contains("mixed") || lower.contains("views.mcp") {
         return mixed_mcp_view();
     }
@@ -3176,6 +3440,7 @@ fn gate_pilot_mcp_view() -> McpView {
                 cause: "Missing local tools needed for page checks.",
                 publisher: "Browser Tools",
                 access: "Read pages and capture screenshots",
+            negotiation: None,
             },
             CapRow {
                 id: "project-docs",
@@ -3184,6 +3449,7 @@ fn gate_pilot_mcp_view() -> McpView {
                 cause: "This workspace library needs approval before use.",
                 publisher: "Docs Workspace",
                 access: "Search project documentation",
+            negotiation: None,
             },
             CapRow {
                 id: "code-search",
@@ -3192,6 +3458,7 @@ fn gate_pilot_mcp_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Code Index",
                 access: "Search local symbols",
+            negotiation: None,
             },
         ]),
         selected_id: "browser-automation",
@@ -3225,6 +3492,7 @@ fn mixed_mcp_view() -> McpView {
                 cause: "Workspace policy blocks remote deploy actions.",
                 publisher: "Deploy Safe",
                 access: "Propose deploy hooks",
+            negotiation: None,
             },
             CapRow {
                 id: "project-docs",
@@ -3233,6 +3501,7 @@ fn mixed_mcp_view() -> McpView {
                 cause: "This workspace library needs approval before use.",
                 publisher: "Docs Workspace",
                 access: "Search project documentation",
+            negotiation: None,
             },
             CapRow {
                 id: "browser-automation",
@@ -3241,6 +3510,7 @@ fn mixed_mcp_view() -> McpView {
                 cause: "Missing local tools needed for page checks.",
                 publisher: "Browser Tools",
                 access: "Read pages and capture screenshots",
+            negotiation: None,
             },
             CapRow {
                 id: "issue-tracker",
@@ -3249,6 +3519,7 @@ fn mixed_mcp_view() -> McpView {
                 cause: "Could not reach the issue service for this project.",
                 publisher: "Tracker Cloud",
                 access: "Read issues and comments",
+            negotiation: None,
             },
             CapRow {
                 id: "metric-export",
@@ -3257,6 +3528,7 @@ fn mixed_mcp_view() -> McpView {
                 cause: "Paused for this project.",
                 publisher: "Metrics Lab",
                 access: "Export local metric snapshots",
+            negotiation: None,
             },
             CapRow {
                 id: "code-search",
@@ -3265,6 +3537,7 @@ fn mixed_mcp_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Code Index",
                 access: "Search local symbols",
+            negotiation: None,
             },
             CapRow {
                 id: "enterprise-knowledge",
@@ -3273,6 +3546,7 @@ fn mixed_mcp_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Knowledge Hub",
                 access: "Search architecture notes",
+            negotiation: None,
             },
         ]),
         selected_id: "deploy-hooks",
@@ -3286,6 +3560,276 @@ fn mixed_mcp_view() -> McpView {
         progress: None,
         primary_label: "Review policy",
         primary_action_id: "action.mcp.review-policy",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+/// Successful handshake with at least one policy-permitted capability → Ready.
+fn handshake_success_view() -> McpView {
+    // Per-connection counts: row-level allowed totals match ready rows after
+    // aggregation so the summary and collapsed Ready block stay consistent.
+    let docs_counts = NegotiationCounts {
+        negotiated: 2,
+        allowed: 1,
+        blocked: 1,
+        unavailable: 0,
+    };
+    let search_counts = NegotiationCounts {
+        negotiated: 1,
+        allowed: 1,
+        blocked: 0,
+        unavailable: 0,
+    };
+    debug_assert!(docs_counts.reconcile() && search_counts.reconcile());
+    McpView {
+        kind: McpViewKind::Handshake,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "project-docs",
+                name: "Project docs",
+                state: ready_state_for_negotiation(true, docs_counts.allowed),
+                cause: "Handshake complete with usable tools permitted by policy.",
+                publisher: "Docs Workspace",
+                access: "Search project documentation",
+                negotiation: Some(docs_counts),
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+                negotiation: Some(search_counts),
+            },
+        ]),
+        selected_id: "project-docs",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Handshake completed with usable capabilities",
+        intro_line: "Ready requires a successful handshake and at least one usable capability.",
+        support_line: "Summary counts reconcile negotiated, allowed, blocked, and unavailable.",
+        focus_body: None,
+        detail_sections: None,
+        progress: None,
+        primary_label: "Details",
+        primary_action_id: "action.mcp.details",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+/// Handshake succeeded, but every negotiated capability is policy-blocked → attention.
+fn handshake_zero_usable_view() -> McpView {
+    let counts = NegotiationCounts {
+        negotiated: 2,
+        allowed: 0,
+        blocked: 2,
+        unavailable: 0,
+    };
+    debug_assert!(counts.reconcile());
+    // Even if a fixture mistakenly sets Ready, resolved_state demotes it.
+    let demoted = ready_state_for_negotiation(true, counts.allowed);
+    debug_assert_eq!(demoted, CapState::ZeroUsable);
+    McpView {
+        kind: McpViewKind::Handshake,
+        rows: sorted_caps(&[CapRow {
+            id: "restricted-repo",
+            name: "Restricted repository tools",
+            // Intentionally seed Ready and force demotion via negotiation.
+            state: CapState::Ready,
+            cause: "Handshake succeeded, but policy permits zero usable capabilities.",
+            publisher: "Repo Gate",
+            access: "Policy blocked all negotiated tools",
+            negotiation: Some(counts),
+        }]),
+        selected_id: "restricted-repo",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Handshake succeeded without usable capabilities",
+        intro_line: "A successful handshake with zero permitted capabilities is not Ready.",
+        support_line: "Review policy is the only primary action. Counts reconcile from stable identities.",
+        focus_body: None,
+        detail_sections: None,
+        progress: None,
+        primary_label: "Review policy",
+        primary_action_id: "action.mcp.review-policy",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+/// Failed handshake → Failed attention row, never Ready.
+fn handshake_failed_view() -> McpView {
+    let counts = NegotiationCounts {
+        negotiated: 0,
+        allowed: 0,
+        blocked: 0,
+        unavailable: 0,
+    };
+    McpView {
+        kind: McpViewKind::Handshake,
+        rows: sorted_caps(&[CapRow {
+            id: "docs-bridge",
+            name: "Docs bridge",
+            state: ready_state_for_negotiation(false, 0),
+            cause: "Handshake failed before any capability could be negotiated.",
+            publisher: "Docs Bridge",
+            access: "No negotiated capabilities",
+            negotiation: Some(counts),
+        }]),
+        selected_id: "docs-bridge",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Handshake failed for Docs bridge",
+        intro_line: "Failed handshake never reports Ready. Retry stays row-scoped.",
+        support_line: "Summary counts stay at zero until a successful handshake completes.",
+        focus_body: None,
+        detail_sections: None,
+        progress: None,
+        primary_label: "Retry",
+        primary_action_id: "action.mcp.retry",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+/// Hostile MCP labels on the list surface. Sanitized for display.
+fn hostile_labels_list_view() -> McpView {
+    McpView {
+        kind: McpViewKind::HostileLabels,
+        rows: sorted_caps(&[
+            CapRow {
+                id: "hostile-cap",
+                // Control sequences, bidi mark, zero-width, tab, overly long tail.
+                name: "Docs\u{0007}\u{001b}[31m\t\u{202E}reverse\u{200B}tool\u{0301}ssssssssssssssssssssssssssssssssssssssssssssssssss",
+                state: CapState::Failed,
+                cause: "Publisher replied with hostile control sequences in every label.",
+                publisher: "Pub\u{0000}lisher\u{202A}Bidi\u{200D}Mark\nNew",
+                access: "tool: open\u{001b}file · resource: file://\u{200B}secret · prompt: pwn",
+                negotiation: Some(NegotiationCounts {
+                    negotiated: 3,
+                    allowed: 0,
+                    blocked: 1,
+                    unavailable: 2,
+                }),
+            },
+            CapRow {
+                id: "secret-cap",
+                name: "Vault tools sk-live-secret-token",
+                state: CapState::SignInNeeded,
+                cause: "Authorization plan for api_key=supersecret must never render.",
+                publisher: "Secret\tHouse Bearer aquicktoken",
+                access: "token=abc authorization: yes",
+                negotiation: None,
+            },
+            CapRow {
+                id: "code-search",
+                name: "Code search",
+                state: CapState::Ready,
+                cause: "Index is current.",
+                publisher: "Code Index",
+                access: "Search local symbols",
+                negotiation: Some(NegotiationCounts {
+                    negotiated: 1,
+                    allowed: 1,
+                    blocked: 0,
+                    unavailable: 0,
+                }),
+            },
+        ]),
+        selected_id: "hostile-cap",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Sanitized capability labels stay readable",
+        intro_line: "Untrusted MCP labels are sanitized. Secrets and controls never render.",
+        support_line: "Layout stays 120 columns. Provenance for technical labels lives under diagnostics.",
+        focus_body: None,
+        detail_sections: None,
+        progress: None,
+        primary_label: "Retry",
+        primary_action_id: "action.mcp.retry",
+        secondary_label: "Open diagnostics",
+        secondary_action_id: "action.mcp.diagnostics",
+        diagnostics_closed: true,
+        tertiary_label: None,
+        tertiary_action_id: None,
+    }
+}
+
+/// Focused detail with sanitized hostile capability/publisher/tool/resource/
+/// prompt/error/argument/response labels and provenance disclosure.
+fn hostile_labels_detail_view() -> McpView {
+    McpView {
+        // Reuse focused-detail action anatomy so Back restores the list row.
+        kind: McpViewKind::FocusedDetail,
+        rows: sorted_caps(&[CapRow {
+            id: "hostile-cap",
+            name: "Docs\u{0007}tool\u{200B}name",
+            state: CapState::Failed,
+            cause: "Error: connection\u{001b}[31m refused for path sk-live-secret-token",
+            publisher: "Pub\u{202E}lisher",
+            access: "Open sanitized tools only",
+            negotiation: Some(NegotiationCounts {
+                negotiated: 4,
+                allowed: 0,
+                blocked: 1,
+                unavailable: 3,
+            }),
+        }]),
+        selected_id: "hostile-cap",
+        bridge_note: false,
+        header_title: FLOW4_MCP_ORIGIN,
+        header_task: "Capability detail · sanitized labels",
+        intro_line: "Untrusted labels stay sanitized. Provenance is disclosed without secrets.",
+        support_line: "Back restores the selected sanitized row identity.",
+        focus_body: None,
+        detail_sections: Some(&[
+            (
+                "What you can do",
+                &[
+                    "Retry this capability after labels are cleaned",
+                    "Inspect sanitized diagnostics only when needed",
+                ],
+            ),
+            (
+                "Sanitized labels",
+                &[
+                    "Capability   Docs tool name (sanitized)",
+                    "Publisher    Publisher (sanitized, provenance: server name)",
+                    "Tool         open file (sanitized)",
+                    "Resource     sanitized://resource",
+                    "Prompt       sanitized prompt label",
+                    "Error        connection refused (sanitized · redacted secrets)",
+                    "Argument     sanitized object · redacted secrets",
+                    "Response     sanitized · redacted secrets",
+                ],
+            ),
+            (
+                "Provenance",
+                &[
+                    "Source       untrusted MCP server advertisement",
+                    "Policy       controls stripped · secrets redacted · width bounded",
+                    "Missing      Not available",
+                ],
+            ),
+        ]),
+        progress: None,
+        primary_label: "Back to list",
+        primary_action_id: "action.mcp.details-back",
         secondary_label: "Open diagnostics",
         secondary_action_id: "action.mcp.diagnostics",
         diagnostics_closed: true,
@@ -3343,6 +3887,7 @@ fn progress_live_view(lower: &str) -> McpView {
         cause: "In progress - wait or cancel this operation.",
         publisher: "Capability",
         access: "Active operation",
+    negotiation: None,
     }];
     if sibling_ready {
         rows.push(CapRow {
@@ -3352,6 +3897,7 @@ fn progress_live_view(lower: &str) -> McpView {
             cause: "Index is current.",
             publisher: "Code Index",
             access: "Search local symbols",
+        negotiation: None,
         });
     }
     McpView {
@@ -3399,6 +3945,7 @@ fn progress_success_view() -> McpView {
                 cause: "Invocation finished. Connection stayed ready.",
                 publisher: "Tracker Cloud",
                 access: "Read issues and comments",
+            negotiation: None,
             },
             CapRow {
                 id: "code-search",
@@ -3407,6 +3954,7 @@ fn progress_success_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Code Index",
                 access: "Search local symbols",
+            negotiation: None,
             },
         ]),
         selected_id: "issue-tracker",
@@ -3439,6 +3987,7 @@ fn progress_failed_view() -> McpView {
                 cause: "Could not finish the request. The service closed the stream.",
                 publisher: "Tracker Cloud",
                 access: "Read issues and comments",
+            negotiation: None,
             },
             CapRow {
                 id: "code-search",
@@ -3447,6 +3996,7 @@ fn progress_failed_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Code Index",
                 access: "Search local symbols",
+            negotiation: None,
             },
         ]),
         selected_id: "issue-tracker",
@@ -3479,6 +4029,7 @@ fn progress_cancelled_view() -> McpView {
                 cause: "Invocation cancelled. Connection remains ready.",
                 publisher: "Tracker Cloud",
                 access: "Read issues and comments",
+            negotiation: None,
             },
             CapRow {
                 id: "code-search",
@@ -3487,6 +4038,7 @@ fn progress_cancelled_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Code Index",
                 access: "Search local symbols",
+            negotiation: None,
             },
         ]),
         selected_id: "issue-tracker",
@@ -3518,6 +4070,7 @@ fn focused_detail_docs_view() -> McpView {
             cause: "Workspace library is authorized.",
             publisher: "Docs Workspace",
             access: "Search project documentation",
+        negotiation: None,
         }]),
         selected_id: "project-docs",
         bridge_note: false,
@@ -3573,6 +4126,7 @@ fn diagnostics_docs_view() -> McpView {
             cause: "Workspace library is authorized.",
             publisher: "Docs Workspace",
             access: "Search project documentation",
+        negotiation: None,
         }]),
         selected_id: "project-docs",
         bridge_note: false,
@@ -3630,6 +4184,7 @@ fn diagnostics_hostile_view() -> McpView {
             cause: "Workspace library is authorized.",
             publisher: "Docs Workspace",
             access: "Search project documentation",
+        negotiation: None,
         }]),
         selected_id: "project-docs",
         bridge_note: false,
@@ -3684,6 +4239,7 @@ fn diagnostics_failed_view() -> McpView {
                 cause: "Could not reach the issue service for this project.",
                 publisher: "Tracker Cloud",
                 access: "Read issues and comments",
+            negotiation: None,
             },
             CapRow {
                 id: "code-search",
@@ -3692,6 +4248,7 @@ fn diagnostics_failed_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Code Index",
                 access: "Search local symbols",
+            negotiation: None,
             },
         ]),
         selected_id: "issue-tracker",
@@ -3749,6 +4306,7 @@ fn diagnostics_auth_view() -> McpView {
                 cause: "This workspace library needs approval before use.",
                 publisher: "Docs Workspace",
                 access: "Search project documentation",
+            negotiation: None,
             },
             CapRow {
                 id: "code-search",
@@ -3757,6 +4315,7 @@ fn diagnostics_auth_view() -> McpView {
                 cause: "Index is current.",
                 publisher: "Code Index",
                 access: "Search local symbols",
+            negotiation: None,
             },
         ]),
         selected_id: "project-docs",
@@ -3971,7 +4530,8 @@ fn render_mcp(
             if row_cursor >= 28 {
                 break;
             }
-            let line = format!("  ○ {} · {}", cap.name, cap.state.label());
+            let state = cap.resolved_state();
+            let line = format!("  ○ {} · {}", cap.display_name(), state.label());
             canvas.write(row_cursor, 4, &line, TextStyle::muted())?;
             pairs.push(semantic(
                 screen_id,
@@ -4008,9 +4568,10 @@ fn render_mcp(
         canvas.write(row_cursor, 4, view.intro_line, TextStyle::muted())?;
         row_cursor += 2;
 
-        // Capability name is the focused heading context.
+        // Capability name is the focused heading context (always sanitized).
         if let Some(cap) = view.rows.iter().find(|r| r.id == view.selected_id) {
-            let title = format!("{} · {}", cap.name, cap.state.label());
+            let state = cap.resolved_state();
+            let title = format!("{} · {}", cap.display_name(), state.label());
             canvas.write(row_cursor, 4, &title, TextStyle::bright())?;
             pairs.push(semantic(
                 screen_id,
@@ -4021,6 +4582,11 @@ fn render_mcp(
                 "focused",
                 None,
             ));
+            // Identity-stable publisher string for audit and cross-surface checks.
+            let publisher = format!("Publisher · {}", cap.display_publisher());
+            if row_cursor + 1 < 28 {
+                canvas.write(row_cursor + 1, 4, &publisher, TextStyle::muted())?;
+            }
             row_cursor += 2;
         }
 
@@ -4102,32 +4668,123 @@ fn render_mcp(
         let attention: Vec<&CapRow> = view
             .rows
             .iter()
-            .filter(|r| r.state != CapState::Ready && r.state != CapState::Disabled)
+            .filter(|r| {
+                let state = r.resolved_state();
+                !state.is_healthy_ready() && state != CapState::Disabled
+            })
             .collect();
         let disabled: Vec<&CapRow> = view
             .rows
             .iter()
-            .filter(|r| r.state == CapState::Disabled)
+            .filter(|r| r.resolved_state() == CapState::Disabled)
             .collect();
         let ready: Vec<&CapRow> = view
             .rows
             .iter()
-            .filter(|r| r.state == CapState::Ready)
+            .filter(|r| r.resolved_state().is_healthy_ready())
             .collect();
+
+        // Aggregate negotiated/allowed/blocked/unavailable from the same row
+        // identities so summary counts reconcile (VAL-V3-F4-057).
+        let mut negotiated = 0u32;
+        let mut allowed = 0u32;
+        let mut blocked = 0u32;
+        let mut unavailable = 0u32;
+        for cap in &view.rows {
+            if let Some(counts) = cap.negotiation {
+                negotiated = negotiated.saturating_add(counts.negotiated);
+                allowed = allowed.saturating_add(counts.allowed);
+                blocked = blocked.saturating_add(counts.blocked);
+                unavailable = unavailable.saturating_add(counts.unavailable);
+            } else {
+                // Each listed capability is one negotiated identity when no
+                // micro-capability breakdown is provided.
+                negotiated = negotiated.saturating_add(1);
+                match cap.resolved_state() {
+                    CapState::Ready => allowed = allowed.saturating_add(1),
+                    CapState::PolicyBlocked | CapState::ZeroUsable => {
+                        blocked = blocked.saturating_add(1)
+                    }
+                    CapState::Failed
+                    | CapState::SignInNeeded
+                    | CapState::SetupNeeded
+                    | CapState::Retrying
+                    | CapState::Disabled => unavailable = unavailable.saturating_add(1),
+                }
+            }
+        }
+        let count_summary = NegotiationCounts {
+            negotiated,
+            allowed,
+            blocked,
+            unavailable,
+        };
 
         // Leave rows 29-34 for footer/actions; stop list content at 28.
         const LIST_FLOOR: u16 = 28;
+        if row_cursor < LIST_FLOOR {
+            let counts_line = count_summary.summary_line();
+            canvas.write(row_cursor, 4, &counts_line, TextStyle::muted())?;
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "negotiation-counts",
+                "mcp-negotiation-counts",
+                reference(row_cursor, 4, counts_line.chars().count().min(90) as u16),
+                "summary",
+                None,
+            ));
+            // Identity-stable audit authors the counted totals for tests.
+            // RenderRef end column must remain exclusive and past the start col.
+            let count_end = (4 + counts_line.chars().count() as u16).clamp(8, 118);
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "negotiation-allowed",
+                &format!("allowed-{allowed}"),
+                reference(row_cursor, 4, count_end),
+                "summary",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "negotiation-blocked",
+                &format!("blocked-{blocked}"),
+                reference(row_cursor, 4, count_end),
+                "summary",
+                None,
+            ));
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "negotiation-unavailable",
+                &format!("unavailable-{unavailable}"),
+                reference(row_cursor, 4, count_end),
+                "summary",
+                None,
+            ));
+            row_cursor += 1;
+        }
+
         for cap in attention {
             if row_cursor + 2 > LIST_FLOOR {
                 break;
             }
+            let state = cap.resolved_state();
+            // Hard safe-guard: never paint Ready when resolved state is attention.
+            debug_assert!(
+                !state.is_healthy_ready(),
+                "attention list must never include Ready rows"
+            );
             let selected = cap.id == view.selected_id;
             let prefix = if selected { "› " } else { "  " };
+            let name = cap.display_name();
             let title = format!(
                 "{prefix}{} {} · {}",
-                cap.state.marker(),
-                cap.name,
-                cap.state.label()
+                state.marker(),
+                name,
+                state.label()
             );
             let style = if selected {
                 TextStyle::accent()
@@ -4146,16 +4803,17 @@ fn render_mcp(
             ));
             row_cursor += 1;
             // Dense attention packing: cause + action on one muted line when possible.
-            if let Some(action_label) = cap.state.primary_action() {
+            let cause = cap.display_cause();
+            if let Some(action_label) = state.primary_action() {
                 let action_bit = if selected {
                     format!("[enter] {action_label}")
                 } else {
                     format!("[{action_label}]")
                 };
-                let detail = if cap.cause.is_empty() {
+                let detail = if cause.is_empty() {
                     action_bit
                 } else {
-                    format!("{} · {action_bit}", truncate_capability(cap.cause, 52))
+                    format!("{} · {action_bit}", truncate_capability(&cause, 52))
                 };
                 canvas.write(
                     row_cursor,
@@ -4168,14 +4826,25 @@ fn render_mcp(
                     },
                 )?;
                 row_cursor += 1;
-            } else if !cap.cause.is_empty() {
+            } else if !cause.is_empty() {
                 canvas.write(
                     row_cursor,
                     6,
-                    &truncate_capability(cap.cause, 70),
+                    &truncate_capability(&cause, 70),
                     TextStyle::muted(),
                 )?;
                 row_cursor += 1;
+            }
+            // Surface per-row negotiation only for zero-usable / handshake attention,
+            // so list summary counts stay singular and reconcilable.
+            if matches!(cap.resolved_state(), CapState::ZeroUsable) {
+                if let Some(counts) = cap.negotiation {
+                    if row_cursor < LIST_FLOOR {
+                    let line = format!("    {}", counts.summary_line());
+                    canvas.write(row_cursor, 6, &line, TextStyle::muted())?;
+                    row_cursor += 1;
+                    }
+                }
             }
         }
 
@@ -4183,7 +4852,9 @@ fn render_mcp(
             if row_cursor >= LIST_FLOOR {
                 break;
             }
-            let line = format!("  {} {} · {}", cap.state.marker(), cap.name, cap.state.label());
+            let state = cap.resolved_state();
+            let name = cap.display_name();
+            let line = format!("  {} {} · {}", state.marker(), name, state.label());
             canvas.write(row_cursor, 4, &line, TextStyle::muted())?;
             pairs.push(semantic(
                 screen_id,
@@ -4209,9 +4880,15 @@ fn render_mcp(
                 if row_cursor >= LIST_FLOOR {
                     break;
                 }
+                let state = cap.resolved_state();
+                // VAL-V3-F4-057: never label Ready when zero usable capabilities.
+                debug_assert!(
+                    state.is_healthy_ready(),
+                    "Ready summary only lists policy-permitted usable capabilities"
+                );
                 // Healthy capability occupies exactly one compact line.
-                let name = truncate_capability(cap.name, 48);
-                let line = format!("    {name} · {}", cap.state.label());
+                let name = truncate_capability(&cap.display_name(), 48);
+                let line = format!("    {name} · {}", state.label());
                 canvas.write(row_cursor, 4, &line, TextStyle::text())?;
                 pairs.push(semantic(
                     screen_id,
@@ -4604,6 +5281,12 @@ fn render_mcp(
                 }
                 McpViewKind::ProgressSuccess | McpViewKind::ProgressCancelled => {
                     "terminal progress states show one healthy or prior usable action"
+                }
+                McpViewKind::Handshake => {
+                    "Ready is allowed only after a usable policy-permitted capability exists"
+                }
+                McpViewKind::HostileLabels => {
+                    "untrusted MCP labels stay sanitized across the selected recovery action"
                 }
                 _ => "the selected capability action stays row-scoped on the MCP branch",
             },

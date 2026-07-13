@@ -1298,6 +1298,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mcp-diagnostics-close" => mcp_diagnostics_close(),
         "mcp-diagnostics-failed-open" => mcp_diagnostics_failed_open(),
         "mcp-diagnostics-failed-close" => mcp_diagnostics_failed_close(),
+        "mcp-handshake-success" => mcp_handshake_success(),
+        "mcp-handshake-failed" => mcp_handshake_failed(),
+        "mcp-handshake-zero-usable" => mcp_handshake_zero_usable(),
+        "mcp-hostile-labels-open" => mcp_hostile_labels_open(),
+        "mcp-hostile-labels-back" => mcp_hostile_labels_back(),
         "turn-error-retry" => turn_error_retry(),
         "turn-error-cancel" => turn_error_cancel(),
         "turn-error-inspect-connection" => turn_error_inspect_connection(),
@@ -2068,6 +2073,11 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mcp-diagnostics-close"
             | "mcp-diagnostics-failed-open"
             | "mcp-diagnostics-failed-close"
+            | "mcp-handshake-success"
+            | "mcp-handshake-failed"
+            | "mcp-handshake-zero-usable"
+            | "mcp-hostile-labels-open"
+            | "mcp-hostile-labels-back"
             | "login-choose-provider"
             | "connect-method-oauth"
             | "connect-oauth-finish"
@@ -2254,6 +2264,28 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                 "views.mcp.diagnostics-failed".to_owned()
             }
             ("mcp-diagnostics-failed-close", "mcp") => "views.mcp.failed-tracker".to_owned(),
+            ("mcp-handshake-success", "mcp") if after.focus.contains("ready") => {
+                "views.mcp.handshake-success".to_owned()
+            }
+            ("mcp-handshake-success", "mcp") => "views.mcp.handshake-progress".to_owned(),
+            ("mcp-handshake-failed", "mcp") if after.focus.contains("failed") => {
+                "views.mcp.handshake-failed".to_owned()
+            }
+            ("mcp-handshake-failed", "mcp") => "views.mcp.handshake-progress".to_owned(),
+            ("mcp-handshake-zero-usable", "mcp")
+                if after.focus.contains("zero") || after.focus.contains("attention") =>
+            {
+                "views.mcp.handshake-zero-usable".to_owned()
+            }
+            ("mcp-handshake-zero-usable", "mcp") => "views.mcp.handshake-progress".to_owned(),
+            ("mcp-hostile-labels-open", "mcp") if after.focus.contains("detail") => {
+                "views.mcp.hostile-detail".to_owned()
+            }
+            ("mcp-hostile-labels-open", "mcp") => "views.mcp.hostile-labels".to_owned(),
+            ("mcp-hostile-labels-back", "mcp") if after.focus.contains("detail") => {
+                "views.mcp.hostile-detail".to_owned()
+            }
+            ("mcp-hostile-labels-back", "mcp") => "views.mcp.hostile-labels".to_owned(),
             (_, "mcp") => "gate.provider-and-mcp.mcp".to_owned(),
             (_, "model-picker") => "gate.work-configuration.model-picker".to_owned(),
             (_, "onboarding") => "auth.onboarding.return".to_owned(),
@@ -9325,6 +9357,313 @@ fn mcp_diagnostics_failed_close() -> (
         "mcp-capability",
         "failed-row-restored",
         "diagnostics closed; issue-tracker stays selected with Retry recovery",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+/// Handshake success → Ready only because usable policy-permitted capabilities exist.
+fn mcp_handshake_success() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "project-docs",
+        "mcp-handshake-progress",
+        Some("pending.capability.project-docs"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.project-docs".to_owned();
+    before.selection = "project-docs".to_owned();
+    before.focus = "mcp-handshake-progress".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "project-docs".to_owned();
+    after.focus = "mcp-handshake-ready".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.handshake-complete".to_owned(),
+        label: "Complete handshake".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "automatic".to_owned(),
+        path: "successful handshake with usable permitted capabilities reports Ready".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.handshake-success.1".to_owned(),
+        owner_id: "pending.capability.project-docs".to_owned(),
+        count: 1,
+        outcome: "ready-usable".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.handshake-success",
+        "mcp-capability",
+        "ready",
+        "project-docs negotiated allowed=2 blocked=1 unavailable=0; Ready only after usable capability",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+/// Failed handshake never reports Ready.
+fn mcp_handshake_failed() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "docs-bridge",
+        "mcp-handshake-progress",
+        Some("pending.capability.docs-bridge"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.docs-bridge".to_owned();
+    before.selection = "docs-bridge".to_owned();
+    before.focus = "mcp-handshake-progress".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "docs-bridge".to_owned();
+    after.focus = "mcp-handshake-failed".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.handshake-failed".to_owned(),
+        label: "Handshake failed".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "automatic".to_owned(),
+        path: "failed handshake becomes a Failed attention row and never Ready".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.handshake-failed.1".to_owned(),
+        owner_id: "pending.capability.docs-bridge".to_owned(),
+        count: 1,
+        outcome: "handshake-failed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.handshake-failed",
+        "mcp-capability",
+        "failed",
+        "docs-bridge failed handshake; negotiated=allowed=blocked=unavailable=0; never Ready",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+/// Successful handshake with zero permitted capabilities is an attention state.
+fn mcp_handshake_zero_usable() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "restricted-repo",
+        "mcp-handshake-progress",
+        Some("pending.capability.restricted-repo"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.restricted-repo".to_owned();
+    before.selection = "restricted-repo".to_owned();
+    before.focus = "mcp-handshake-progress".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "restricted-repo".to_owned();
+    after.focus = "mcp-handshake-zero-usable-attention".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.review-policy".to_owned(),
+        label: "Review policy".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "automatic".to_owned(),
+        path: "zero usable negotiated capabilities stays attention, never Ready".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.handshake-zero-usable.1".to_owned(),
+        owner_id: "pending.capability.restricted-repo".to_owned(),
+        count: 1,
+        outcome: "zero-usable-attention".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.handshake-zero-usable",
+        "mcp-capability",
+        "attention",
+        "restricted-repo handshake allowed=0 blocked=2 unavailable=0; Ready forbidden",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+/// Open hostile-label focused detail; IDs remain stable across sanitization.
+fn mcp_hostile_labels_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "hostile-cap",
+        "mcp-hostile-list",
+        Some("pending.capability.hostile-cap"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.hostile-cap".to_owned();
+    before.selection = "hostile-cap".to_owned();
+    before.focus = "mcp-hostile-list".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "hostile-cap".to_owned();
+    after.focus = "mcp-hostile-detail".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.details".to_owned(),
+        label: "Details".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Details opens sanitized focused detail without control injection".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.hostile-labels-open.1".to_owned(),
+        owner_id: "pending.capability.hostile-cap".to_owned(),
+        count: 1,
+        outcome: "detail-open-sanitized".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.hostile-labels-open",
+        "mcp-capability",
+        "detail-open",
+        "hostile capability labels sanitized; identity hostile-cap remains stable",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+/// Back from hostile detail restores the same sanitized list row identity.
+fn mcp_hostile_labels_back() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let origin = vec!["chat-turn", "mcp"];
+    let mut before = state(
+        "mcp",
+        origin.clone(),
+        "Continue the paused conversation.",
+        "conversation-capabilities",
+        "hostile-cap",
+        "mcp-hostile-detail",
+        Some("pending.capability.hostile-cap"),
+        "return-to-chat-turn",
+        0,
+    );
+    apply_flow4_mcp_identity(&mut before);
+    before.paused_activity_id = "pending.capability.hostile-cap".to_owned();
+    before.selection = "hostile-cap".to_owned();
+    before.focus = "mcp-hostile-detail".to_owned();
+    before.scroll_anchor = "hostile-cap:0".to_owned();
+    before.state_hash = state_hash(&before);
+
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "hostile-cap".to_owned();
+    after.focus = "mcp-hostile-list".to_owned();
+    after.scroll_anchor = "hostile-cap:0".to_owned();
+    after.state_hash = state_hash(&after);
+
+    let action = ActionEvidence {
+        action_id: "action.mcp.details-back".to_owned(),
+        label: "Back to list".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: "mcp".to_owned(),
+        to_screen_id: "mcp".to_owned(),
+        kind: "direct".to_owned(),
+        path: "Back restores the same sanitized capability identity and scroll".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mcp.hostile-labels-back.1".to_owned(),
+        owner_id: "pending.capability.hostile-cap".to_owned(),
+        count: 0,
+        outcome: "list-restored-sanitized".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mcp.hostile-labels-back",
+        "mcp-capability",
+        "list-restored",
+        "hostile detail closed; hostile-cap identity remains stable with sanitized labels",
     );
     (before, after, action, transition, attempt, effect)
 }
