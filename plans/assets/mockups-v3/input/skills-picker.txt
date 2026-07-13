@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Choose session skills                                                                                               
+                                                                                                                        
+    Each skill names the result it helps achieve. Changes stay pending until Apply.                                     
+                                                                                                                        
+      Commit cleanly                                                                                                    
+      On · Keep commits under the linked identity                                                                       
+      Design reviews                                                                                                    
+      On · Keep screens simple and readable                                                                             
+    › Review images                                                                                                     
+      Pending on · Check rendered interfaces for clarity                                                                
+      Research the web                                                                                                  
+      Off · Search and summarize public web content                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Review images · session-local                                                                         │  
+  │ Pending set · Commit cleanly, Design reviews, Review images · apply once.                                        │  
+  │ › [enter] Apply skills · [esc] Cancel                                                                            │  
+  │ [space] Toggle · [↑↓] Move · enabled state is labeled on each row                                                │  
+  │ Apply commits the full pending set at once; Cancel restores the prior set.                                       │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

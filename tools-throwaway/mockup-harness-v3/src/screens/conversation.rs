@@ -115,6 +115,10 @@ fn classify_chat_turn_fixture(fixture_id: &str) -> Result<ChatTurnJourney, Strin
 
     if work_style_for_fixture(fixture_id).is_some()
         || fixture_id.starts_with("case.work-style-")
+        || fixture_id.starts_with("case.skills-")
+        || fixture_id.starts_with("case.subagent-")
+        || fixture_id.starts_with("case.variant-")
+        || fixture_id.starts_with("case.theme-")
     {
         return Ok(ChatTurnJourney::Flow3WorkStyleReturn);
     }
@@ -409,6 +413,14 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             ChatTurnJourney::Flow3SessionReturn => {
                 render_session_resumed_turn(&mut canvas, screen_id, fixture_id)?
             }
+            ChatTurnJourney::Flow3WorkStyleReturn
+                if fixture_id.starts_with("case.skills-")
+                    || fixture_id.starts_with("case.subagent-")
+                    || fixture_id.starts_with("case.variant-")
+                    || fixture_id.starts_with("case.theme-") =>
+            {
+                render_config_picker_returned_turn(&mut canvas, screen_id, fixture_id)?
+            }
             ChatTurnJourney::Flow3WorkStyleReturn => {
                 render_work_style_returned_turn(&mut canvas, screen_id, fixture_id)?
             }
@@ -512,6 +524,153 @@ fn work_style_for_fixture(fixture_id: &str) -> Option<WorkStyleEvidence> {
         pending: None,
         access_scope: access_scope.to_owned(),
     })
+}
+
+fn render_config_picker_returned_turn(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let (title, summary, detail) = if fixture_id.contains("skills-apply")
+        || fixture_id.contains("skills-access-confirm")
+    {
+        (
+            "Code · Session skills updated",
+            "Applied skills · Commit cleanly, Design reviews, Review images",
+            if fixture_id.contains("access-confirm") {
+                "Research the web is on for this project · access was confirmed."
+            } else {
+                "The pending skill set was applied once and is now active."
+            },
+        )
+    } else if fixture_id.contains("skills-cancel") {
+        (
+            "Code · Session skills unchanged",
+            "Applied skills · prior set restored",
+            "Cancel discarded the pending skill toggles without changing access.",
+        )
+    } else if fixture_id.contains("subagent-apply") {
+        (
+            "Code · Task helper started",
+            "Helper · Explore auth boundaries · this task only",
+            "Delegation stays task-local. Work style stays Careful edits.",
+        )
+    } else if fixture_id.contains("subagent-cancel") {
+        (
+            "Code · Task helper unchanged",
+            "No helper delegated for this task.",
+            "Cancel returned to the paused conversation without starting a helper.",
+        )
+    } else if fixture_id.contains("variant-apply") {
+        (
+            "Code · Response variant updated",
+            "Applied variant · Thorough on Claude Opus 4.8",
+            "Only the response variant changed. The base model and work style stay the same.",
+        )
+    } else if fixture_id.contains("variant-cancel") {
+        (
+            "Code · Response variant unchanged",
+            "Applied variant · Balanced on Claude Opus 4.8",
+            "Cancel kept the prior variant and base model relationship.",
+        )
+    } else if fixture_id.contains("theme-apply") {
+        (
+            "Code · Theme updated",
+            "Applied theme · Light",
+            "The temporary preview was committed. Non-theme content stays unchanged.",
+        )
+    } else if fixture_id.contains("theme-cancel") {
+        (
+            "Code · Theme unchanged",
+            "Applied theme · Dark",
+            "Cancel restored the previously applied palette and discarded the preview.",
+        )
+    } else {
+        return Err(format!(
+            "unknown config picker return fixture: {fixture_id}"
+        ));
+    };
+    canvas.write(5, 4, title, TextStyle::bright())?;
+    canvas.write(8, 4, summary, TextStyle::bright())?;
+    canvas.write(10, 4, detail, TextStyle::text())?;
+    canvas.write(
+        13,
+        4,
+        "Your transcript and draft are unchanged.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "Continue the paused conversation when you are ready.",
+        TextStyle::muted(),
+    )?;
+    composer(canvas, "Continue the retry conversation.", Some("Send reply"))?;
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "configuration-result",
+            "picker-return",
+            reference(5, 4, 40),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "applied-summary",
+            "picker-summary",
+            reference(8, 4, 70),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "preservation",
+            "origin-preserved",
+            reference(13, 4, 46),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.chat-turn.continue",
+            reference(34, 4, 24),
+            "focused",
+            Some(action(
+                "action.chat-turn.continue",
+                "Send reply",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![transition(
+            "action.chat-turn.continue",
+            "chat-turn",
+            "chat-turn",
+            "direct",
+            "the returned configuration summary stays in the same paused conversation",
+        )],
+    ))
 }
 
 fn render_work_style_returned_turn(

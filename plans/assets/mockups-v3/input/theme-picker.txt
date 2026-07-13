@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Choose a theme                                                                                                      
+                                                                                                                        
+    Moving focus previews colors temporarily. Apply commits; Cancel restores the applied palette.                       
+                                                                                                                        
+      Current · Dark                                                                                                    
+      Applied · Warm default palette for daily work.                                                                    
+    › Preview · Light                                                                                                   
+      Temporary preview · cooler daylight contrast.                                                                     
+      VS Code dark                                                                                                      
+      Familiar editor neutrals with a blue accent.                                                                      
+      Monokai                                                                                                           
+      Higher-contrast vivid coding palette.                                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Light · temporary preview of the daylight palette                                                     │  
+  │ Preview is temporary until Apply; Cancel restores Dark exactly.                                                  │  
+  │ › [enter] Apply theme · [esc] Cancel · restores previous theme                                                   │  
+  │ [↑↓] Preview · only the focused theme is temporary                                                               │  
+  │ Applied · Dark remains committed until you choose Apply.                                                         │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

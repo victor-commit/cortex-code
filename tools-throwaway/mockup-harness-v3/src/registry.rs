@@ -372,7 +372,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Input,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "session-picker",
@@ -386,21 +386,21 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Input,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "variant-picker",
         category: Category::Input,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "theme-picker",
         category: Category::Input,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ActionDock,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "permission-shell",

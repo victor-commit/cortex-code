@@ -1166,6 +1166,18 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "model-filter-no-match" => model_filter_no_match(),
         "model-filter-clear" => model_filter_clear(),
         "model-filter-cancel" => model_filter_cancel(),
+        "skills-apply" => skills_apply(),
+        "skills-cancel" => skills_cancel(),
+        "skills-access-pending" => skills_access_pending(),
+        "skills-access-confirm" => skills_access_confirm(),
+        "skills-access-cancel" => skills_access_cancel(),
+        "subagent-apply" => subagent_apply(),
+        "subagent-cancel" => subagent_cancel(),
+        "variant-apply" => variant_apply(),
+        "variant-cancel" => variant_cancel(),
+        "theme-preview" => theme_preview(),
+        "theme-apply" => theme_apply(),
+        "theme-cancel" => theme_cancel(),
         "model-to-work-style-bridge" => model_to_work_style_bridge(),
         "work-style-unchanged" => work_style_unchanged(),
         "work-style-access-pending" => work_style_access_pending(),
@@ -1719,6 +1731,40 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             "model-picker" => "flow3-model-picker".to_owned(),
             "chat-turn" => "flow1.daily-work.stable".to_owned(),
             other => format!("case.{case_id}.after.{other}.tick.{tick}"),
+        }
+    } else if matches!(
+        case_id,
+        "skills-apply"
+            | "skills-cancel"
+            | "skills-access-pending"
+            | "skills-access-confirm"
+            | "skills-access-cancel"
+            | "subagent-apply"
+            | "subagent-cancel"
+            | "variant-apply"
+            | "variant-cancel"
+            | "theme-preview"
+            | "theme-apply"
+            | "theme-cancel"
+    ) {
+        match (case_id, after.screen_id.as_str()) {
+            ("skills-apply" | "skills-cancel" | "skills-access-confirm", "chat-turn") => {
+                format!("case.{case_id}.tick.{tick}")
+            }
+            ("skills-access-pending", "mode-switch") => "flow3-skills-access".to_owned(),
+            ("skills-access-cancel", "skills-picker") => "flow3-skills-picker".to_owned(),
+            ("skills-access-pending" | "skills-access-confirm" | "skills-access-cancel", _) => {
+                format!("case.{case_id}.tick.{tick}")
+            }
+            ("subagent-apply" | "subagent-cancel", "chat-turn") => {
+                format!("case.{case_id}.tick.{tick}")
+            }
+            ("variant-apply" | "variant-cancel", "chat-turn") => {
+                format!("case.{case_id}.tick.{tick}")
+            }
+            ("theme-preview", "theme-picker") => "flow3-theme-picker-preview".to_owned(),
+            ("theme-apply" | "theme-cancel", "chat-turn") => format!("case.{case_id}.tick.{tick}"),
+            (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else if matches!(
         case_id,
@@ -6981,6 +7027,704 @@ fn model_filter_cancel() -> (
         "model-filter",
         "no-change",
         "the filter cancelled without changing the current model or draft",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+const APPLIED_SKILLS_BASE: &str = "skills=Commit cleanly|Design reviews";
+const APPLIED_SKILLS_REVIEW: &str =
+    "skills=Commit cleanly|Design reviews|Review images";
+const APPLIED_SKILLS_WEB: &str =
+    "skills=Commit cleanly|Design reviews|Review images|Research the web";
+const PENDING_SKILLS_ORDINARY: &str = "skills-pending=Review images";
+const PENDING_SKILLS_ACCESS: &str = "skills-pending=Research the web";
+const APPLIED_VARIANT_BALANCED: &str = "variant=Balanced";
+const APPLIED_VARIANT_THOROUGH: &str = "variant=Thorough";
+const APPLIED_THEME_DARK: &str = "theme=Dark";
+const APPLIED_THEME_LIGHT: &str = "theme=Light";
+
+fn skills_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "skills-picker",
+        vec!["chat-turn", "skills-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "review-images",
+        "skills-selection",
+        Some("pending.skills.review-images"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_SKILLS_BASE.to_owned();
+    before.queued_follow_up = PENDING_SKILLS_ORDINARY.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "skills-applied".to_owned();
+    after.pending_action = None;
+    after.attachment = APPLIED_SKILLS_REVIEW.to_owned();
+    after.queued_follow_up.clear();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.skills-picker.apply".to_owned(),
+        label: "Apply skills".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "Apply commits the exact pending skill set atomically and returns to the paused conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.skills-picker.apply.1".to_owned(),
+        owner_id: "pending.skills.review-images".to_owned(),
+        count: 1,
+        outcome: "skills-applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.skills-picker.apply",
+        "configuration",
+        "skills-applied",
+        "the pending skill set replaced the prior set in one atomic apply",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn skills_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "skills-picker",
+        vec!["chat-turn", "skills-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "review-images",
+        "skills-selection",
+        Some("pending.skills.review-images"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_SKILLS_BASE.to_owned();
+    before.queued_follow_up = PENDING_SKILLS_ORDINARY.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "skills-unchanged".to_owned();
+    after.pending_action = None;
+    after.queued_follow_up.clear();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.skills-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the prior skill set, focus, draft, and transcript exactly"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.skills-picker.cancel.1".to_owned(),
+        owner_id: "pending.skills.review-images".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.skills-picker.cancel",
+        "configuration",
+        "no-change",
+        "cancel left the prior skill set unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn skills_access_pending() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "skills-picker",
+        vec!["chat-turn", "skills-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "research-the-web",
+        "skills-selection",
+        Some("pending.skills.research-the-web"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_SKILLS_REVIEW.to_owned();
+    before.queued_follow_up.clear();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "mode-switch".to_owned();
+    after.focus = "access-confirmation".to_owned();
+    after.queued_follow_up = PENDING_SKILLS_ACCESS.to_owned();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.skills-picker.review-access".to_owned(),
+        label: "Review access change".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "a capability-expanding skill opens the nested access guard before any apply"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.skills-picker.review-access.1".to_owned(),
+        owner_id: "pending.skills.research-the-web".to_owned(),
+        count: 0,
+        outcome: "awaiting-access-confirmation".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.skills-picker.review-access",
+        "configuration",
+        "access-pending",
+        "Research the web remained pending while access confirmation stayed open",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn skills_access_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "mode-switch",
+        vec!["chat-turn", "skills-picker", "mode-switch"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "research-the-web",
+        "access-confirmation",
+        Some("pending.skills.research-the-web"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_SKILLS_REVIEW.to_owned();
+    before.queued_follow_up = PENDING_SKILLS_ACCESS.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "skills-and-access-applied".to_owned();
+    after.pending_action = None;
+    after.attachment = APPLIED_SKILLS_WEB.to_owned();
+    after.queued_follow_up.clear();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mode-switch.confirm".to_owned(),
+        label: "Apply access change".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirmation applies only the disclosed skill access and returns to the skills origin conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mode-switch.skills-confirm.1".to_owned(),
+        owner_id: "pending.skills.research-the-web".to_owned(),
+        count: 1,
+        outcome: "skills-and-access-applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mode-switch.skills-confirm",
+        "configuration",
+        "skills-and-access-applied",
+        "Research the web was applied with the disclosed project-web scope only",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn skills_access_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "mode-switch",
+        vec!["chat-turn", "skills-picker", "mode-switch"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "research-the-web",
+        "access-confirmation",
+        Some("pending.skills.research-the-web"),
+        "return-to-skills-picker",
+        0,
+    );
+    before.attachment = APPLIED_SKILLS_REVIEW.to_owned();
+    before.queued_follow_up = PENDING_SKILLS_ACCESS.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "skills-picker".to_owned();
+    after.focus = "skills-selection".to_owned();
+    after.selection = "research-the-web".to_owned();
+    after.pending_action = None;
+    after.queued_follow_up.clear();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mode-switch.cancel".to_owned(),
+        label: "Keep current skills".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "denial preserves the prior skill set and returns to the skills picker".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mode-switch.skills-cancel.1".to_owned(),
+        owner_id: "pending.skills.research-the-web".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mode-switch.skills-cancel",
+        "configuration",
+        "no-change",
+        "cancel left the prior skill set and access unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn subagent_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "subagent-picker",
+        vec!["chat-turn", "subagent-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "no-helper",
+        "subagent-selection",
+        Some("pending.subagent.explore"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "explore-auth-boundaries".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.subagent-picker.apply".to_owned(),
+        label: "Use this helper".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "using the helper keeps the choice task-local and returns to the paused conversation"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.subagent-picker.apply.1".to_owned(),
+        owner_id: "pending.subagent.explore".to_owned(),
+        count: 1,
+        outcome: "helper-delegated".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.subagent-picker.apply",
+        "delegation",
+        "helper-delegated",
+        "Explore auth boundaries was delegated for this task only",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn subagent_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "subagent-picker",
+        vec!["chat-turn", "subagent-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "no-helper",
+        "subagent-selection",
+        Some("pending.subagent.explore"),
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.subagent-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the exact conversation origin with no helper started".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.subagent-picker.cancel.1".to_owned(),
+        owner_id: "pending.subagent.explore".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.subagent-picker.cancel",
+        "delegation",
+        "no-change",
+        "cancel left task delegation unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn variant_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "variant-picker",
+        vec!["chat-turn", "variant-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "balanced",
+        "variant-selection",
+        Some("pending.variant.thorough"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_VARIANT_BALANCED.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "thorough".to_owned();
+    after.attachment = APPLIED_VARIANT_THOROUGH.to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.variant-picker.apply".to_owned(),
+        label: "Apply variant".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "Apply changes only the response variant and returns with the same base model"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.variant-picker.apply.1".to_owned(),
+        owner_id: "pending.variant.thorough".to_owned(),
+        count: 1,
+        outcome: "variant-applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.variant-picker.apply",
+        "configuration",
+        "variant-applied",
+        "Thorough replaced Balanced while Claude Opus 4.8 stayed the base model",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn variant_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "variant-picker",
+        vec!["chat-turn", "variant-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "balanced",
+        "variant-selection",
+        Some("pending.variant.thorough"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_VARIANT_BALANCED.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.variant-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the previous variant and conversation origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.variant-picker.cancel.1".to_owned(),
+        owner_id: "pending.variant.thorough".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.variant-picker.cancel",
+        "configuration",
+        "no-change",
+        "cancel left the prior variant and base model unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn theme_preview() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "theme-picker",
+        vec!["chat-turn", "theme-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "dark",
+        "theme-selection",
+        Some("pending.theme.dark"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_THEME_DARK.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.selection = "light".to_owned();
+    after.focus = "theme-preview-light".to_owned();
+    after.pending_action = Some("pending.theme.light".to_owned());
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.theme-picker.preview".to_owned(),
+        label: "Preview Light".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "focus preview updates the temporary palette without committing the applied theme"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.theme-picker.preview.1".to_owned(),
+        owner_id: "pending.theme.light".to_owned(),
+        count: 0,
+        outcome: "previewing".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.theme-picker.preview",
+        "configuration",
+        "theme-preview",
+        "Light was previewed temporarily while Dark remained the applied theme",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn theme_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "theme-picker",
+        vec!["chat-turn", "theme-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "light",
+        "theme-preview-light",
+        Some("pending.theme.light"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_THEME_DARK.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "light-applied".to_owned();
+    after.attachment = APPLIED_THEME_LIGHT.to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.theme-picker.apply".to_owned(),
+        label: "Apply theme".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "Apply commits the focused theme and returns to the exact conversation origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.theme-picker.apply.1".to_owned(),
+        owner_id: "pending.theme.light".to_owned(),
+        count: 1,
+        outcome: "theme-applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.theme-picker.apply",
+        "configuration",
+        "theme-applied",
+        "Light replaced Dark as the applied theme",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn theme_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "theme-picker",
+        vec!["chat-turn", "theme-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "light",
+        "theme-preview-light",
+        Some("pending.theme.light"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_THEME_DARK.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "dark".to_owned();
+    after.pending_action = None;
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.theme-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the previously applied palette and content state without committing preview"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.theme-picker.cancel.1".to_owned(),
+        owner_id: "pending.theme.light".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.theme-picker.cancel",
+        "configuration",
+        "no-change",
+        "cancel restored Dark exactly and discarded the temporary Light preview",
     );
     (before, after, action, transition, attempt, effect)
 }

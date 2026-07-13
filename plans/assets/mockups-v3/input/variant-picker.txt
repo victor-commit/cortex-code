@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Choose a response variant                                                                                           
+                                                                                                                        
+    Base model · Claude Opus 4.8 · the variant only changes deliberation for the next replies.                          
+                                                                                                                        
+                                                                                                                        
+      Fast                                                                                                              
+      Least deliberation · quickest replies for narrow edits.                                                           
+                                                                                                                        
+      Current · Balanced                                                                                                
+      Current · Moderate wait with careful everyday reasoning.                                                          
+                                                                                                                        
+    › Pending · Thorough                                                                                                
+      More careful, slower replies for risky or multi-step changes.                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Thorough · keeps Claude Opus 4.8                                                                      │  
+  │ Apply changes only the response variant; the base model stays the same.                                          │  
+  │ › [enter] Apply variant · [esc] Cancel                                                                           │  
+  │ [↑↓] Choose · each row explains the practical tradeoff                                                           │  
+  │ Cancel keeps Balanced on the same base model.                                                                    │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

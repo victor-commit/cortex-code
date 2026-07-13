@@ -32,7 +32,12 @@ type ScreenEvidence = (
 );
 
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
-    let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
+    let model_name = if matches!(screen_id, "variant-picker") {
+        "Claude Opus 4.8"
+    } else {
+        MODEL
+    };
+    let statusline = StatusLine::new(PROJECT_PATH, BRANCH, model_name)?;
     ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
     let mut canvas = Canvas::new();
     let (candidates, events, transitions) = match screen_id {
@@ -40,6 +45,10 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "model-picker" => render_model_picker(&mut canvas, screen_id, fixture_id)?,
         "model-picker-filtered" => render_model_picker_filtered(&mut canvas, screen_id, fixture_id)?,
         "agent-picker" => render_agent_picker(&mut canvas, screen_id, fixture_id)?,
+        "skills-picker" => render_skills_picker(&mut canvas, screen_id, fixture_id)?,
+        "subagent-picker" => render_subagent_picker(&mut canvas, screen_id, fixture_id)?,
+        "variant-picker" => render_variant_picker(&mut canvas, screen_id, fixture_id)?,
+        "theme-picker" => render_theme_picker(&mut canvas, screen_id, fixture_id)?,
         "mode-switch" => render_mode_switch(&mut canvas, screen_id, fixture_id)?,
         "mode-switch-refused" => render_mode_switch_refused(&mut canvas, screen_id, fixture_id)?,
         _ => return Err(format!("unknown Flow 3 onboarding screen: {screen_id}")),
@@ -53,7 +62,8 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         events,
         transitions,
         work_style: match screen_id {
-            "onboarding" | "model-picker" | "agent-picker" => Some(WorkStyleEvidence {
+            "onboarding" | "model-picker" | "agent-picker" | "skills-picker"
+            | "subagent-picker" | "variant-picker" | "theme-picker" => Some(WorkStyleEvidence {
                 applied: "Careful edits".to_owned(),
                 pending: (screen_id == "agent-picker" && !fixture_id.contains("current-only"))
                     .then(|| {
@@ -67,7 +77,11 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             }),
             "mode-switch" => Some(WorkStyleEvidence {
                 applied: "Careful edits".to_owned(),
-                pending: Some("Autonomous changes".to_owned()),
+                pending: Some(if fixture_id.contains("skills") {
+                    "Research the web".to_owned()
+                } else {
+                    "Autonomous changes".to_owned()
+                }),
                 access_scope: "asks before editing project files".to_owned(),
             }),
             "mode-switch-refused" => Some(WorkStyleEvidence {
@@ -1271,12 +1285,899 @@ fn render_agent_picker(
     ))
 }
 
+fn render_skills_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let escalating = fixture_id.contains("access") || fixture_id.contains("escalat");
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Choose session skills", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Each skill names the result it helps achieve. Changes stay pending until Apply.",
+        TextStyle::muted(),
+    )?;
+    // Applied set: Commit cleanly, Design reviews. Pending: also Review images; escalating adds Research the web.
+    let rows = [
+        (
+            "Commit cleanly",
+            "On · Keep commits under the linked identity",
+            true,
+            false,
+        ),
+        (
+            "Design reviews",
+            "On · Keep screens simple and readable",
+            true,
+            false,
+        ),
+        (
+            "Review images",
+            "Pending on · Check rendered interfaces for clarity",
+            false,
+            true,
+        ),
+        (
+            "Research the web",
+            if escalating {
+                "Pending on · Search and summarize public web content"
+            } else {
+                "Off · Search and summarize public web content"
+            },
+            false,
+            escalating,
+        ),
+    ];
+    let selected_index = if escalating { 3 } else { 2 };
+    for (index, (label, consequence, _, _)) in rows.iter().enumerate() {
+        let row = 11 + index as u16 * 2;
+        let marker = if index == selected_index { "›" } else { " " };
+        let style = if index == selected_index {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
+        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+    }
+    write_dock_border(canvas)?;
+    let selected = rows[selected_index];
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        &format!(
+            "Selected · {} · {}",
+            selected.0,
+            if escalating {
+                "expands access"
+            } else {
+                "session-local"
+            }
+        ),
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        if escalating {
+            "Turning this on expands capability; review the access scope before applying."
+        } else {
+            "Pending set · Commit cleanly, Design reviews, Review images · apply once."
+        },
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        if escalating {
+            "› [enter] Review access change · [esc] Cancel"
+        } else {
+            "› [enter] Apply skills · [esc] Cancel"
+        },
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "[space] Toggle · [↑↓] Move · enabled state is labeled on each row",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Apply commits the full pending set at once; Cancel restores the prior set.",
+        TextStyle::muted(),
+    )?;
+
+    let primary_id = if escalating {
+        "action.skills-picker.review-access"
+    } else {
+        "action.skills-picker.apply"
+    };
+    let primary_label = if escalating {
+        "Review access change"
+    } else {
+        "Apply skills"
+    };
+    let target = if escalating {
+        "mode-switch"
+    } else {
+        "chat-turn"
+    };
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "picker",
+            "skills-selection",
+            reference(7, 4, 24),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "skill-row",
+            "commit-cleanly",
+            reference(11, 4, 20),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "skill-row",
+            "design-reviews",
+            reference(13, 4, 20),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "skill-row",
+            "review-images",
+            reference(15, 4, 20),
+            if escalating { "summary" } else { "focused" },
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "skill-row",
+            "research-the-web",
+            reference(17, 4, 22),
+            if escalating { "focused" } else { "summary" },
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "selected-detail",
+            selected.0,
+            reference(DOCK_TOP + 1, 4, 50),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-consequence",
+            if escalating {
+                "access-review-needed"
+            } else {
+                "atomic-pending-set"
+            },
+            reference(DOCK_TOP + 2, 4, 84),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            primary_id,
+            reference(DOCK_TOP + 3, 4, 58),
+            "focused",
+            Some(action(primary_id, primary_label, false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.skills-picker.cancel",
+            reference(DOCK_TOP + 3, 59, 82),
+            "summary",
+            Some(action("action.skills-picker.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                primary_id,
+                "skills-picker",
+                target,
+                "direct",
+                if escalating {
+                    "a capability-expanding skill toggles into the same access-guard confirmation used by work style"
+                } else {
+                    "Apply commits the exact pending skill set atomically and returns to the paused conversation"
+                },
+            ),
+            transition(
+                "action.skills-picker.cancel",
+                "skills-picker",
+                "chat-turn",
+                "cancel",
+                "cancel restores the prior skill set, focus, draft, and transcript exactly",
+            ),
+        ],
+    ))
+}
+
+fn render_subagent_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let _ = fixture_id;
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Delegate this task", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Pick a helper for the current task only. Global work style stays unchanged.",
+        TextStyle::muted(),
+    )?;
+    let rows = [
+        (
+            "Explore auth boundaries",
+            "Find existing auth middleware and the shared guard path.",
+        ),
+        (
+            "Summarize findings",
+            "Turn the open notes into a short review for this turn.",
+        ),
+        (
+            "Plan the next edit",
+            "Outline a narrow change without applying it.",
+        ),
+    ];
+    let selected_index = 0;
+    for (index, (label, consequence)) in rows.iter().enumerate() {
+        let row = 12 + index as u16 * 3;
+        let marker = if index == selected_index { "›" } else { " " };
+        let style = if index == selected_index {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
+        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+    }
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Selected · Explore auth boundaries · this task only",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Delegation stays task-local; your session work style is unchanged.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Use this helper · [esc] Cancel",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "[↑↓] Choose · outcome describes fit for the current task",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Cancel returns to the conversation without starting a helper.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "picker",
+            "subagent-selection",
+            reference(7, 4, 22),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "subagent-row",
+            "explore-auth-boundaries",
+            reference(12, 4, 32),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "subagent-row",
+            "summarize-findings",
+            reference(15, 4, 26),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "subagent-row",
+            "plan-the-next-edit",
+            reference(18, 4, 24),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "selected-detail",
+            "explore-auth-boundaries",
+            reference(DOCK_TOP + 1, 4, 58),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-consequence",
+            "task-local-delegation",
+            reference(DOCK_TOP + 2, 4, 72),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.subagent-picker.apply",
+            reference(DOCK_TOP + 3, 4, 50),
+            "focused",
+            Some(action(
+                "action.subagent-picker.apply",
+                "Use this helper",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.subagent-picker.cancel",
+            reference(DOCK_TOP + 3, 51, 75),
+            "summary",
+            Some(action("action.subagent-picker.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.subagent-picker.apply",
+                "subagent-picker",
+                "chat-turn",
+                "direct",
+                "using the helper keeps the choice task-local and returns to the paused conversation",
+            ),
+            transition(
+                "action.subagent-picker.cancel",
+                "subagent-picker",
+                "chat-turn",
+                "cancel",
+                "cancel restores the exact conversation origin with no helper started",
+            ),
+        ],
+    ))
+}
+
+fn render_variant_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let _ = fixture_id;
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Choose a response variant", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Base model · Claude Opus 4.8 · the variant only changes deliberation for the next replies.",
+        TextStyle::muted(),
+    )?;
+    let rows = [
+        (
+            "Fast",
+            "Least deliberation · quickest replies for narrow edits.",
+        ),
+        (
+            "Balanced",
+            "Current · Moderate wait with careful everyday reasoning.",
+        ),
+        (
+            "Thorough",
+            "More careful, slower replies for risky or multi-step changes.",
+        ),
+    ];
+    let selected_index = 2;
+    for (index, (label, consequence)) in rows.iter().enumerate() {
+        let row = 12 + index as u16 * 3;
+        let marker = if index == selected_index { "›" } else { " " };
+        let style = if index == selected_index {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        let visible = if index == 1 {
+            format!("{marker} Current · {label}")
+        } else if index == selected_index {
+            format!("{marker} Pending · {label}")
+        } else {
+            format!("{marker} {label}")
+        };
+        canvas.write(row, 4, &visible, style)?;
+        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+    }
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Selected · Thorough · keeps Claude Opus 4.8",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Apply changes only the response variant; the base model stays the same.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Apply variant · [esc] Cancel",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "[↑↓] Choose · each row explains the practical tradeoff",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Cancel keeps Balanced on the same base model.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "picker",
+            "variant-selection",
+            reference(7, 4, 28),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "variant-row",
+            "fast",
+            reference(12, 4, 10),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "variant-row",
+            "balanced",
+            reference(15, 4, 24),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "variant-row",
+            "thorough",
+            reference(18, 4, 22),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "selected-detail",
+            "thorough",
+            reference(DOCK_TOP + 1, 4, 48),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "pending-consequence",
+            "variant-only-change",
+            reference(DOCK_TOP + 2, 4, 78),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.variant-picker.apply",
+            reference(DOCK_TOP + 3, 4, 48),
+            "focused",
+            Some(action(
+                "action.variant-picker.apply",
+                "Apply variant",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.variant-picker.cancel",
+            reference(DOCK_TOP + 3, 49, 70),
+            "summary",
+            Some(action("action.variant-picker.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.variant-picker.apply",
+                "variant-picker",
+                "chat-turn",
+                "direct",
+                "Apply changes only the response variant and returns with the same base model",
+            ),
+            transition(
+                "action.variant-picker.cancel",
+                "variant-picker",
+                "chat-turn",
+                "cancel",
+                "cancel restores the previous variant and conversation origin",
+            ),
+        ],
+    ))
+}
+
+fn render_theme_picker(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let _previewing_light = fixture_id.contains("preview") || fixture_id.contains("light");
+    canvas.write(
+        4,
+        4,
+        "You · Continue the paused conversation.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(7, 4, "Choose a theme", TextStyle::bright())?;
+    canvas.write(
+        9,
+        4,
+        "Moving focus previews colors temporarily. Apply commits; Cancel restores the applied palette.",
+        TextStyle::muted(),
+    )?;
+    let rows = [
+        ("Dark", "Applied · Warm default palette for daily work."),
+        ("Light", "Temporary preview · cooler daylight contrast."),
+        ("VS Code dark", "Familiar editor neutrals with a blue accent."),
+        ("Monokai", "Higher-contrast vivid coding palette."),
+    ];
+    // Default published frame is the temporary Light preview with Dark still applied.
+    let selected_index = 1;
+    for (index, (label, consequence)) in rows.iter().enumerate() {
+        let row = 11 + index as u16 * 2;
+        let marker = if index == selected_index { "›" } else { " " };
+        let style = if index == selected_index {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        let visible = if index == 0 {
+            format!("{marker} Current · {label}")
+        } else if index == selected_index {
+            format!("{marker} Preview · {label}")
+        } else {
+            format!("{marker} {label}")
+        };
+        canvas.write(row, 4, &visible, style)?;
+        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+    }
+    write_dock_border(canvas)?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 1,
+        "Selected · Light · temporary preview of the daylight palette",
+        TextStyle::bright(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Preview is temporary until Apply; Cancel restores Dark exactly.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Apply theme · [esc] Cancel · restores previous theme",
+        TextStyle::accent(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 4,
+        "[↑↓] Preview · only the focused theme is temporary",
+        TextStyle::muted(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 5,
+        "Applied · Dark remains committed until you choose Apply.",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "transcript",
+            "conversation-origin",
+            reference(4, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "picker",
+            "theme-selection",
+            reference(7, 4, 18),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "theme-row",
+            "dark",
+            reference(11, 4, 18),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "theme-row",
+            "light",
+            reference(13, 4, 20),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "theme-row",
+            "vscode-dark",
+            reference(15, 4, 18),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "theme-row",
+            "monokai",
+            reference(17, 4, 14),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "selected-detail",
+            "light",
+            reference(DOCK_TOP + 1, 4, 64),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "theme-preview",
+            "temporary-light",
+            reference(DOCK_TOP + 2, 4, 70),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "action.theme-picker.apply",
+            reference(DOCK_TOP + 3, 4, 48),
+            "focused",
+            Some(action("action.theme-picker.apply", "Apply theme", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "action.theme-picker.cancel",
+            reference(DOCK_TOP + 3, 49, 92),
+            "summary",
+            Some(action("action.theme-picker.cancel", "Cancel", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "local-control",
+            "action.theme-picker.preview",
+            reference(DOCK_TOP + 4, 4, 24),
+            "summary",
+            Some(action(
+                "action.theme-picker.preview",
+                "Preview theme",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "statusline",
+            "shared-statusline",
+            reference(CANVAS_ROWS - 1, 2, 38),
+            "summary",
+            None,
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        vec![
+            transition(
+                "action.theme-picker.apply",
+                "theme-picker",
+                "chat-turn",
+                "direct",
+                "Apply commits the focused theme and returns to the exact conversation origin",
+            ),
+            transition(
+                "action.theme-picker.cancel",
+                "theme-picker",
+                "chat-turn",
+                "cancel",
+                "cancel restores the previously applied palette and content state without committing preview",
+            ),
+            transition(
+                "action.theme-picker.preview",
+                "theme-picker",
+                "theme-picker",
+                "direct",
+                "focus preview updates the temporary palette without committing the applied theme",
+            ),
+        ],
+    ))
+}
+
 fn render_mode_switch(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let gate_origin = is_gate_fixture(fixture_id);
+    let skills_access = fixture_id.contains("skills");
     if gate_origin {
         canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
         canvas.write(4, 4, FLOW3_SETUP_TASK, TextStyle::bright())?;
@@ -1288,58 +2189,122 @@ fn render_mode_switch(
             TextStyle::bright(),
         )?;
     }
-    canvas.write(7, 4, "Review a work-style change", TextStyle::bright())?;
-    canvas.write(9, 4, "Requested: Autonomous changes", TextStyle::text())?;
-    canvas.write(
-        11,
-        4,
-        "How Code should work: edit project files without asking each time.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        13,
-        4,
-        "Scope: this project · until you choose another work style.",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        15,
-        4,
-        "Your transcript and draft stay unchanged while this is pending.",
-        TextStyle::muted(),
-    )?;
-    write_dock_border(canvas)?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 1,
-        "Pending · Careful edits remains active",
-        TextStyle::bright(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 2,
-        "The requested access applies only after you confirm.",
-        TextStyle::text(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 3,
-        "› [enter] Apply access change · [esc] Keep Careful edits",
-        TextStyle::accent(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 4,
-        "One confirmation changes the work style; Cancel changes nothing.",
-        TextStyle::muted(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "Return to How Code should work to choose another outcome.",
-        TextStyle::muted(),
-    )?;
+    if skills_access {
+        canvas.write(7, 4, "Review a capability change", TextStyle::bright())?;
+        canvas.write(9, 4, "Requested: Research the web", TextStyle::text())?;
+        canvas.write(
+            11,
+            4,
+            "This skill can search public web content during the session.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            13,
+            4,
+            "Scope: this project · until you turn the skill off.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            15,
+            4,
+            "Your transcript and draft stay unchanged while this is pending.",
+            TextStyle::muted(),
+        )?;
+        write_dock_border(canvas)?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Pending · current skill set remains active",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "The requested access applies only after you confirm.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Apply access change · [esc] Keep current skills",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "One confirmation expands skill access; Cancel changes nothing.",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "Return to session skills to choose another set.",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(7, 4, "Review a work-style change", TextStyle::bright())?;
+        canvas.write(9, 4, "Requested: Autonomous changes", TextStyle::text())?;
+        canvas.write(
+            11,
+            4,
+            "How Code should work: edit project files without asking each time.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            13,
+            4,
+            "Scope: this project · until you choose another work style.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            15,
+            4,
+            "Your transcript and draft stay unchanged while this is pending.",
+            TextStyle::muted(),
+        )?;
+        write_dock_border(canvas)?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Pending · Careful edits remains active",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "The requested access applies only after you confirm.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Apply access change · [esc] Keep Careful edits",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "One confirmation changes the work style; Cancel changes nothing.",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "Return to How Code should work to choose another outcome.",
+            TextStyle::muted(),
+        )?;
+    }
 
+    let cancel_label = if skills_access {
+        "Keep current skills"
+    } else {
+        "Keep Careful edits"
+    };
+    let cancel_target = if skills_access {
+        "skills-picker"
+    } else {
+        "agent-picker"
+    };
     let pairs = [
         semantic(
             screen_id,
@@ -1363,7 +2328,11 @@ fn render_mode_switch(
             screen_id,
             fixture_id,
             "requested-behavior",
-            "autonomous-changes",
+            if skills_access {
+                "research-the-web"
+            } else {
+                "autonomous-changes"
+            },
             reference(9, 4, 38),
             "focused",
             None,
@@ -1372,7 +2341,11 @@ fn render_mode_switch(
             screen_id,
             fixture_id,
             "capability-scope",
-            "project-file-access",
+            if skills_access {
+                "project-web-access"
+            } else {
+                "project-file-access"
+            },
             reference(13, 4, 80),
             "focused",
             None,
@@ -1390,7 +2363,11 @@ fn render_mode_switch(
             screen_id,
             fixture_id,
             "pending-state",
-            "careful-edits-remains-active",
+            if skills_access {
+                "current-skills-remain-active"
+            } else {
+                "careful-edits-remains-active"
+            },
             reference(DOCK_TOP + 1, 4, 43),
             "focused",
             None,
@@ -1417,7 +2394,7 @@ fn render_mode_switch(
             "summary",
             Some(action(
                 "action.mode-switch.cancel",
-                "Keep Careful edits",
+                cancel_label,
                 false,
             )),
         ),
@@ -1443,14 +2420,20 @@ fn render_mode_switch(
                 "mode-switch",
                 "chat-turn",
                 "direct",
-                "confirmation applies the one work_style value and returns to the paused conversation",
+                if skills_access {
+                    "confirmation applies the disclosed skill access and returns to the paused conversation"
+                } else {
+                    "confirmation applies the one work_style value and returns to the paused conversation"
+                },
             ),
             transition(
                 "action.mode-switch.cancel",
                 "mode-switch",
-                "agent-picker",
+                cancel_target,
                 "cancel",
-                if gate_origin {
+                if skills_access {
+                    "cancel leaves the prior skill set and access unchanged, then returns to the skills picker"
+                } else if gate_origin {
                     "cancel leaves Careful edits and its current access active, then returns to the work-style choice while preserving the current conversation origin"
                 } else {
                     "cancel leaves Careful edits and its current access active, then returns to the work-style choice"

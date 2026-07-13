@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    You · Continue the paused conversation.                                                                             
+                                                                                                                        
+                                                                                                                        
+    Delegate this task                                                                                                  
+                                                                                                                        
+    Pick a helper for the current task only. Global work style stays unchanged.                                         
+                                                                                                                        
+                                                                                                                        
+    › Explore auth boundaries                                                                                           
+      Find existing auth middleware and the shared guard path.                                                          
+                                                                                                                        
+      Summarize findings                                                                                                
+      Turn the open notes into a short review for this turn.                                                            
+                                                                                                                        
+      Plan the next edit                                                                                                
+      Outline a narrow change without applying it.                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Selected · Explore auth boundaries · this task only                                                              │  
+  │ Delegation stays task-local; your session work style is unchanged.                                               │  
+  │ › [enter] Use this helper · [esc] Cancel                                                                         │  
+  │ [↑↓] Choose · outcome describes fit for the current task                                                         │  
+  │ Cancel returns to the conversation without starting a helper.                                                    │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Sonnet 4.5                                                                                  

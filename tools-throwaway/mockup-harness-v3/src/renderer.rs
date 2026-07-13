@@ -71,6 +71,10 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "model-picker",
     "model-picker-filtered",
     "agent-picker",
+    "skills-picker",
+    "subagent-picker",
+    "variant-picker",
+    "theme-picker",
     "mode-switch",
     "mode-switch-refused",
     "session-picker",
@@ -1390,7 +1394,7 @@ mod tests {
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("a partial implementation set remains renderable");
-        assert_eq!(implemented.canonical_ids().count(), 54);
+        assert_eq!(implemented.canonical_ids().count(), 58);
         assert!(
             preflight_render(&PublicSelector::All)
                 .expect_err("full render must reject missing renderers")
