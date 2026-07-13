@@ -108,6 +108,10 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "review",
     "diff-viewer",
     "share",
+    "status",
+    "theme-gallery-dark",
+    "theme-gallery-light",
+    "empty",
 ];
 
 static STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);

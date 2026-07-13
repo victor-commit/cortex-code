@@ -428,7 +428,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Views,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "timeline",
@@ -477,14 +477,14 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Views,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "theme-gallery-light",
         category: Category::Views,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "sidebar-context",
@@ -589,7 +589,7 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::States,
         flow: FlowOwner::WorkConfiguration,
         surface: Surface::ConversationShell,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "error-network",

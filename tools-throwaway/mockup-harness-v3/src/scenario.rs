@@ -717,12 +717,16 @@ impl CaseReplay {
         // rebinds conversation/session/task from provider identity to MCP.
         // session-resume-latest rebinds to the selected timeline session.
         // fork-confirm creates a distinct forked session identity.
+        // empty-session-resume intentionally switches from the empty origin into
+        // a chosen prior session (not a settings-change return).
         if ((self.before.session_id != self.after.session_id
             || self.before.paused_activity_id != self.after.paused_activity_id)
             && self.case_id != "session-resume-latest"
             && self.case_id != "provider-to-mcp-bridge"
-            && self.case_id != "fork-confirm")
+            && self.case_id != "fork-confirm"
+            && self.case_id != "empty-session-resume")
             || (self.case_id != "flow2-submit-bridge"
+                && self.case_id != "empty-session-resume"
                 && self.before.submitted_prompt != self.after.submitted_prompt)
         {
             return Err(
@@ -1203,6 +1207,19 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "theme-preview" => theme_preview(),
         "theme-apply" => theme_apply(),
         "theme-cancel" => theme_cancel(),
+        "theme-gallery-open-dark" => theme_gallery_open_dark(),
+        "theme-gallery-open-light" => theme_gallery_open_light(),
+        "theme-gallery-return-dark" => theme_gallery_return_dark(),
+        "theme-gallery-return-light" => theme_gallery_return_light(),
+        "status-open" => status_open(),
+        "status-return" => status_return(),
+        "status-details" => status_details(),
+        "empty-open-model" => empty_open_model(),
+        "empty-model-cancel" => empty_model_cancel(),
+        "empty-model-apply" => empty_model_apply(),
+        "empty-open-session" => empty_open_session(),
+        "empty-session-cancel" => empty_session_cancel(),
+        "empty-session-resume" => empty_session_resume(),
         "model-to-work-style-bridge" => model_to_work_style_bridge(),
         "work-style-unchanged" => work_style_unchanged(),
         "work-style-access-pending" => work_style_access_pending(),
@@ -1910,6 +1927,19 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "theme-preview"
             | "theme-apply"
             | "theme-cancel"
+            | "theme-gallery-open-dark"
+            | "theme-gallery-open-light"
+            | "theme-gallery-return-dark"
+            | "theme-gallery-return-light"
+            | "status-open"
+            | "status-return"
+            | "status-details"
+            | "empty-open-model"
+            | "empty-model-cancel"
+            | "empty-model-apply"
+            | "empty-open-session"
+            | "empty-session-cancel"
+            | "empty-session-resume"
     ) {
         match (case_id, after.screen_id.as_str()) {
             ("skills-apply" | "skills-cancel" | "skills-access-confirm", "chat-turn") => {
@@ -1928,6 +1958,23 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             }
             ("theme-preview", "theme-picker") => "flow3-theme-picker-preview".to_owned(),
             ("theme-apply" | "theme-cancel", "chat-turn") => format!("case.{case_id}.tick.{tick}"),
+            ("theme-gallery-open-dark", "theme-gallery-dark") => {
+                "views.theme-gallery.dark".to_owned()
+            }
+            ("theme-gallery-open-light", "theme-gallery-light") => {
+                "views.theme-gallery.light".to_owned()
+            }
+            ("theme-gallery-return-dark" | "theme-gallery-return-light", "theme-picker") => {
+                "flow3-theme-picker-preview".to_owned()
+            }
+            ("status-open", "status") => "views.status.default".to_owned(),
+            ("status-details", "status") => "views.status.advanced".to_owned(),
+            ("status-return", "chat-turn") => "flow1.daily-work.stable".to_owned(),
+            ("empty-open-model", "model-picker") => "views.empty.model-picker".to_owned(),
+            ("empty-model-cancel" | "empty-model-apply", "empty") => "views.empty.origin".to_owned(),
+            ("empty-open-session", "session-picker") => "views.empty.session-picker".to_owned(),
+            ("empty-session-cancel", "empty") => "views.empty.origin".to_owned(),
+            ("empty-session-resume", "chat-turn") => "flow1.daily-work.stable".to_owned(),
             (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
     } else if matches!(
@@ -8802,6 +8849,807 @@ fn theme_preview() -> (
         "configuration",
         "theme-preview",
         "Light was previewed temporarily while Dark remained the applied theme",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn theme_gallery_open_dark() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "theme-picker",
+        vec!["chat-turn", "theme-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "light",
+        "theme-preview-light",
+        Some("pending.theme.light"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_THEME_DARK.to_owned();
+    let mut after = before.clone();
+    after.screen_id = "theme-gallery-dark".to_owned();
+    after.focus = "theme-gallery-dark".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "theme-picker".to_owned(),
+        "theme-gallery-dark".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.theme-picker.open-gallery-dark".to_owned(),
+        label: "Open dark gallery".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "open dark gallery without committing the pending theme".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.theme-gallery.open-dark.1".to_owned(),
+        owner_id: "pending.theme.light".to_owned(),
+        count: 0,
+        outcome: "gallery-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.theme-gallery.open-dark",
+        "navigation",
+        "gallery-open",
+        "Dark gallery opened while pending Light preview stayed temporary",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn theme_gallery_open_light() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "theme-picker",
+        vec!["chat-turn", "theme-picker"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "light",
+        "theme-preview-light",
+        Some("pending.theme.light"),
+        "return-to-chat-turn",
+        0,
+    );
+    before.attachment = APPLIED_THEME_DARK.to_owned();
+    let mut after = before.clone();
+    after.screen_id = "theme-gallery-light".to_owned();
+    after.focus = "theme-gallery-light".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "theme-picker".to_owned(),
+        "theme-gallery-light".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.theme-picker.open-gallery-light".to_owned(),
+        label: "Open light gallery".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "open light gallery without committing the pending theme".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.theme-gallery.open-light.1".to_owned(),
+        owner_id: "pending.theme.light".to_owned(),
+        count: 0,
+        outcome: "gallery-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.theme-gallery.open-light",
+        "navigation",
+        "gallery-open",
+        "Light gallery opened while pending Light preview stayed temporary",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn theme_gallery_return_dark() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "theme-gallery-dark",
+        vec!["chat-turn", "theme-picker", "theme-gallery-dark"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "light",
+        "theme-gallery-dark",
+        Some("pending.theme.light"),
+        "return-to-theme-picker",
+        0,
+    );
+    before.attachment = APPLIED_THEME_DARK.to_owned();
+    let mut after = before.clone();
+    after.screen_id = "theme-picker".to_owned();
+    after.focus = "theme-preview-light".to_owned();
+    after.origin_stack = vec!["chat-turn".to_owned(), "theme-picker".to_owned()];
+    after.return_policy = "return-to-chat-turn".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.theme-gallery.return".to_owned(),
+        label: "Return to theme picker".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "gallery return restores the picker with pending theme, focus, and conversation origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.theme-gallery.return-dark.1".to_owned(),
+        owner_id: "pending.theme.light".to_owned(),
+        count: 0,
+        outcome: "gallery-return".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.theme-gallery.return-dark",
+        "navigation",
+        "gallery-return",
+        "Returned to theme picker without committing preview or losing origin",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn theme_gallery_return_light() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "theme-gallery-light",
+        vec!["chat-turn", "theme-picker", "theme-gallery-light"],
+        "Continue the retry conversation.",
+        "turn-retry-review",
+        "light",
+        "theme-gallery-light",
+        Some("pending.theme.light"),
+        "return-to-theme-picker",
+        0,
+    );
+    before.attachment = APPLIED_THEME_DARK.to_owned();
+    let mut after = before.clone();
+    after.screen_id = "theme-picker".to_owned();
+    after.focus = "theme-preview-light".to_owned();
+    after.origin_stack = vec!["chat-turn".to_owned(), "theme-picker".to_owned()];
+    after.return_policy = "return-to-chat-turn".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.theme-gallery.return".to_owned(),
+        label: "Return to theme picker".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "gallery return restores the picker with pending theme, focus, and conversation origin"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.theme-gallery.return-light.1".to_owned(),
+        owner_id: "pending.theme.light".to_owned(),
+        count: 0,
+        outcome: "gallery-return".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.theme-gallery.return-light",
+        "navigation",
+        "gallery-return",
+        "Returned to theme picker without committing preview or losing origin",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn status_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "chat-turn",
+        vec!["chat-turn"],
+        "Also list the tests that should cover the search.",
+        "turn.daily-work.18",
+        "none",
+        "composer",
+        None,
+        "stay-in-conversation",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "status".to_owned();
+    after.focus = "status-summary".to_owned();
+    after.origin_stack = vec!["chat-turn".to_owned(), "status".to_owned()];
+    after.return_policy = "return-to-chat-turn".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.chat-turn.open-status".to_owned(),
+        label: "Open status".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "status opens as a temporary detail over the paused conversation".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.status.open.1".to_owned(),
+        owner_id: "status.default".to_owned(),
+        count: 0,
+        outcome: "opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.status.open",
+        "navigation",
+        "status-open",
+        "Opened focused session status without changing model or work style",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn status_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "status",
+        vec!["chat-turn", "status"],
+        "Also list the tests that should cover the search.",
+        "turn.daily-work.18",
+        "status-summary",
+        "status-summary",
+        None,
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "none".to_owned();
+    after.origin_stack = vec!["chat-turn".to_owned()];
+    after.return_policy = "stay-in-conversation".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.status.return".to_owned(),
+        label: "Return".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "return restores the paused conversation draft and origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.status.return.1".to_owned(),
+        owner_id: "status.default".to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.status.return",
+        "navigation",
+        "status-return",
+        "Returned to the exact conversation without applying configuration",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn status_details() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = state(
+        "status",
+        vec!["chat-turn", "status"],
+        "Also list the tests that should cover the search.",
+        "turn.daily-work.18",
+        "status-summary",
+        "status-summary",
+        None,
+        "return-to-chat-turn",
+        0,
+    );
+    let mut after = before.clone();
+    after.selection = "status-advanced".to_owned();
+    after.focus = "status-advanced".to_owned();
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.status.details".to_owned(),
+        label: "Details".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "details discloses advanced metadata without leaving the temporary view".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.status.details.1".to_owned(),
+        owner_id: "status.advanced".to_owned(),
+        count: 0,
+        outcome: "disclosed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.status.details",
+        "disclosure",
+        "advanced-open",
+        "Advanced status metadata disclosed behind the default summary",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn empty_open_model() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "empty",
+        vec!["empty"],
+        "Ask Code to start a task",
+        "empty-origin",
+        "composer",
+        "composer",
+        None,
+        "stay-on-empty",
+        0,
+    );
+    before.paused_activity_id = "activity.empty-origin".to_owned();
+    before.conversation_id = "conversation.first-run".to_owned();
+    before.transcript_id = "transcript.first-run".to_owned();
+    before.session_id = "session.first-run.1".to_owned();
+    before.turn_id = "turn.first-run.0".to_owned();
+    before.user_task = "Start a new conversation".to_owned();
+    before.visible_origin = "Start · empty conversation".to_owned();
+    before.transcript = String::new();
+    let mut after = before.clone();
+    after.screen_id = "model-picker".to_owned();
+    after.focus = "model-selection".to_owned();
+    after.origin_stack = vec!["empty".to_owned(), "model-picker".to_owned()];
+    after.return_policy = "return-to-empty".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.empty.open-model-picker".to_owned(),
+        label: "Change model".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "configuration from empty records empty as origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.empty.open-model.1".to_owned(),
+        owner_id: "empty.origin".to_owned(),
+        count: 0,
+        outcome: "opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.empty.open-model",
+        "navigation",
+        "config-open",
+        "Model picker opened from empty without creating a transcript",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn empty_model_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "model-picker",
+        vec!["empty", "model-picker"],
+        "Ask Code to start a task",
+        "empty-origin",
+        "opus",
+        "model-selection",
+        Some("pending.model.opus"),
+        "return-to-empty",
+        0,
+    );
+    before.paused_activity_id = "activity.empty-origin".to_owned();
+    before.conversation_id = "conversation.first-run".to_owned();
+    before.transcript_id = "transcript.first-run".to_owned();
+    before.session_id = "session.first-run.1".to_owned();
+    before.turn_id = "turn.first-run.0".to_owned();
+    before.user_task = "Start a new conversation".to_owned();
+    before.visible_origin = "Start · empty conversation".to_owned();
+    before.transcript = String::new();
+    let mut after = before.clone();
+    after.screen_id = "empty".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.pending_action = None;
+    after.origin_stack = vec!["empty".to_owned()];
+    after.return_policy = "stay-on-empty".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.model-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel returns to the unchanged empty composer".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.empty.model-cancel.1".to_owned(),
+        owner_id: "empty.origin".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.empty.model-cancel",
+        "configuration",
+        "cancelled",
+        "Model cancel restored empty without applying a new model or draft loss",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn empty_model_apply() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "model-picker",
+        vec!["empty", "model-picker"],
+        "Ask Code to start a task",
+        "empty-origin",
+        "sonnet",
+        "model-selection",
+        Some("pending.model.sonnet"),
+        "return-to-empty",
+        0,
+    );
+    before.paused_activity_id = "activity.empty-origin".to_owned();
+    before.conversation_id = "conversation.first-run".to_owned();
+    before.transcript_id = "transcript.first-run".to_owned();
+    before.session_id = "session.first-run.1".to_owned();
+    before.turn_id = "turn.first-run.0".to_owned();
+    before.user_task = "Start a new conversation".to_owned();
+    before.visible_origin = "Start · empty conversation".to_owned();
+    before.transcript = String::new();
+    let mut after = before.clone();
+    after.screen_id = "empty".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.pending_action = None;
+    after.attachment = "model=Claude Sonnet 4.5".to_owned();
+    after.origin_stack = vec!["empty".to_owned()];
+    after.return_policy = "stay-on-empty".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.model-picker.apply".to_owned(),
+        label: "Apply model".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "apply returns to empty with only the selected setting changed".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.empty.model-apply.1".to_owned(),
+        owner_id: "empty.origin".to_owned(),
+        count: 1,
+        outcome: "applied".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.empty.model-apply",
+        "configuration",
+        "model-applied",
+        "Sonnet applied on empty origin without creating a transcript",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn empty_open_session() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "empty",
+        vec!["empty"],
+        "Ask Code to start a task",
+        "empty-origin",
+        "composer",
+        "composer",
+        None,
+        "stay-on-empty",
+        0,
+    );
+    before.paused_activity_id = "activity.empty-origin".to_owned();
+    before.conversation_id = "conversation.first-run".to_owned();
+    before.transcript_id = "transcript.first-run".to_owned();
+    before.session_id = "session.first-run.1".to_owned();
+    before.turn_id = "turn.first-run.0".to_owned();
+    before.user_task = "Start a new conversation".to_owned();
+    before.visible_origin = "Start · empty conversation".to_owned();
+    before.transcript = String::new();
+    let mut after = before.clone();
+    after.screen_id = "session-picker".to_owned();
+    after.focus = "session-list".to_owned();
+    after.origin_stack = vec!["empty".to_owned(), "session-picker".to_owned()];
+    after.return_policy = "return-to-empty".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.empty.open-session-picker".to_owned(),
+        label: "Resume sessions".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "resume from empty opens the session list with empty origin".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.empty.open-session.1".to_owned(),
+        owner_id: "empty.origin".to_owned(),
+        count: 0,
+        outcome: "opened".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.empty.open-session",
+        "navigation",
+        "session-list-open",
+        "Session picker opened from empty without creating a transcript",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn empty_session_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "session-picker",
+        vec!["empty", "session-picker"],
+        "Ask Code to start a task",
+        "empty-origin",
+        "retry-policy-review",
+        "session-list",
+        None,
+        "return-to-empty",
+        0,
+    );
+    before.paused_activity_id = "activity.empty-origin".to_owned();
+    before.conversation_id = "conversation.first-run".to_owned();
+    before.transcript_id = "transcript.first-run".to_owned();
+    before.session_id = "session.first-run.1".to_owned();
+    before.turn_id = "turn.first-run.0".to_owned();
+    before.user_task = "Start a new conversation".to_owned();
+    before.visible_origin = "Start · empty conversation".to_owned();
+    before.transcript = String::new();
+    let mut after = before.clone();
+    after.screen_id = "empty".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.origin_stack = vec!["empty".to_owned()];
+    after.return_policy = "stay-on-empty".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.session-picker.cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel resume leaves empty unchanged".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.empty.session-cancel.1".to_owned(),
+        owner_id: "empty.origin".to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.empty.session-cancel",
+        "navigation",
+        "cancelled",
+        "Session cancel restored empty without resuming or inventing a transcript",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn empty_session_resume() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "session-picker",
+        vec!["empty", "session-picker"],
+        "Ask Code to start a task",
+        "empty-origin",
+        "retry-policy-review",
+        "session-list",
+        None,
+        "return-to-empty",
+        0,
+    );
+    before.paused_activity_id = "activity.empty-origin".to_owned();
+    before.conversation_id = "conversation.first-run".to_owned();
+    before.transcript_id = "transcript.first-run".to_owned();
+    before.session_id = "session.first-run.1".to_owned();
+    before.turn_id = "turn.first-run.0".to_owned();
+    before.user_task = "Start a new conversation".to_owned();
+    before.visible_origin = "Start · empty conversation".to_owned();
+    before.transcript = String::new();
+    let mut after = before.clone();
+    after.screen_id = "chat-turn".to_owned();
+    after.conversation_id = "conversation.daily-work".to_owned();
+    after.transcript_id = "transcript.daily-work".to_owned();
+    after.session_id = "session.daily-work.1".to_owned();
+    after.turn_id = "turn.daily-work.18".to_owned();
+    after.user_task =
+        "Find where the server applies the rate limit and explain the safe path.".to_owned();
+    after.visible_origin = "Daily work · current conversation".to_owned();
+    after.transcript = "The current conversation remains available.".to_owned();
+    after.paused_activity_id = "activity.current-turn".to_owned();
+    after.focus = "composer".to_owned();
+    after.selection = "resumed".to_owned();
+    after.origin_stack = vec!["chat-turn".to_owned()];
+    after.return_policy = "stay-in-conversation".to_owned();
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.virtual_tick = 1;
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.session-picker.resume".to_owned(),
+        label: "Resume latest".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "resume intentionally opens the chosen session instead of empty".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.empty.session-resume.1".to_owned(),
+        owner_id: "session.retry-policy-review".to_owned(),
+        count: 1,
+        outcome: "resumed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.empty.session-resume",
+        "session",
+        "resumed",
+        "Resume opened the chosen session rather than a setting-change return",
     );
     (before, after, action, transition, attempt, effect)
 }
@@ -16213,19 +17061,46 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
 
     audit.validate()?;
     let canvas = &audit.styled_cells;
-    let palette = crate::chrome::tokens::palette(crate::chrome::tokens::Theme::Dark);
+    let theme = if audit.screen_id == "theme-gallery-light" {
+        crate::chrome::tokens::Theme::Light
+    } else {
+        crate::chrome::tokens::Theme::Dark
+    };
+    let palette = crate::chrome::tokens::palette(theme);
     let canvas_color = palette.color(crate::chrome::tokens::ColorToken::Canvas);
     let mut image = RgbImage::from_pixel(
         crate::chrome::tokens::PNG_WIDTH,
         crate::chrome::tokens::PNG_HEIGHT,
         Pixel([canvas_color.red, canvas_color.green, canvas_color.blue]),
     );
+    // Paint per-cell absolute backgrounds first so light galleries and swatches
+    // never inherit residual dark canvas pixels.
+    for cell in canvas {
+        if let Some((r, g, b)) = cell.absolute_bg {
+            let cell_x = cell.column as u32 * 10;
+            let cell_y = cell.row as u32 * 21;
+            for y in 0..21u32 {
+                for x in 0..10u32 {
+                    image.put_pixel(cell_x + x, cell_y + y, Pixel([r, g, b]));
+                }
+            }
+        }
+    }
     let (regular, bold) = crate::chrome::tokens::embedded_fonts()?;
     for cell in canvas {
         if cell.glyph == ' ' {
             continue;
         }
-        let foreground = palette.color(cell.style.foreground);
+        let token_fg = palette.color(cell.style.foreground);
+        let foreground = if let Some((r, g, b)) = cell.absolute_fg {
+            crate::chrome::tokens::Rgb {
+                red: r,
+                green: g,
+                blue: b,
+            }
+        } else {
+            token_fg
+        };
         let cell_x = cell.column as u32 * 10;
         let cell_y = cell.row as u32 * 21;
         if crate::chrome::tokens::glyph_rendering(cell.glyph)

@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Start · empty conversation                                                                                          
+    Start a new conversation                                                                                            
+                                                                                                                        
+                                                                                                                        
+    No messages yet. Type below to begin, or resume earlier work.                                                       
+                                                                                                                        
+    Ready · Claude Opus 4.8 · How Code should work · Careful edits                                                      
+                                                                                                                        
+    Secondary · /resume previous sessions · /model · /theme · change work style                                         
+    Those configuration detours return here without inventing a transcript                                              
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ › Ask Code to start a task                                                                                          
+  │                                                                                                                     
+                                                                                                                        
+    This is the primary start · subordinate resume and settings stay secondary                                          
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

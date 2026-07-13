@@ -210,6 +210,10 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "review",
             "diff-viewer",
             "share",
+            "status",
+            "theme-gallery-dark",
+            "theme-gallery-light",
+            "empty",
         ]
         .contains(&screen.id)
         {

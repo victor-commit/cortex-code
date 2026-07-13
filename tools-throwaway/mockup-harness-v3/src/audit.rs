@@ -35,6 +35,10 @@ pub struct StyledCell {
     pub column: u16,
     pub glyph: char,
     pub style: TextStyle,
+    /// Optional exact RGB for theme-preview swatches only (multi-hue samples).
+    pub absolute_fg: Option<(u8, u8, u8)>,
+    /// Optional exact RGB cell background (light canvas / swatch fill).
+    pub absolute_bg: Option<(u8, u8, u8)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -586,6 +590,27 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         validate_vision_hash(&render_hash, &render_hash)?;
         return Ok(document);
     }
+    if matches!(
+        screen_id,
+        "theme-gallery-dark" | "theme-gallery-light" | "status" | "empty"
+    ) {
+        // Onboarding complete/skip still use the specialized usable-empty path.
+        if screen_id == "empty"
+            && (fixture_id.contains("onboarding-complete")
+                || fixture_id.contains("onboarding-skip"))
+        {
+            let document = empty_after_onboarding_audit(fixture_id)?;
+            document.validate()?;
+            let render_hash = sha256_hex(document.render_txt().as_bytes());
+            validate_vision_hash(&render_hash, &render_hash)?;
+            return Ok(document);
+        }
+        let document = crate::screens::views_theme_status_empty::render(screen_id, fixture_id)?;
+        document.validate()?;
+        let render_hash = sha256_hex(document.render_txt().as_bytes());
+        validate_vision_hash(&render_hash, &render_hash)?;
+        return Ok(document);
+    }
     if screen_id == "diff-edit" && fixture_id.starts_with("case.permission-allow-once") {
         let document = crate::screens::input_and_approval::render(screen_id, fixture_id)?;
         document.validate()?;
@@ -593,18 +618,6 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         validate_vision_hash(&render_hash, &render_hash)?;
         return Ok(document);
     }
-    // VAL-V3-F3-003: onboarding complete/skip apply the recommended safe default into the
-    // destination empty conversation shell (statusline model + model_choice audit).
-    if screen_id == "empty"
-        && (fixture_id.contains("onboarding-complete") || fixture_id.contains("onboarding-skip"))
-    {
-        let document = empty_after_onboarding_audit(fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
-    }
-
     let (action, transition) = screen_action(screen_id);
     let statusline = StatusLine::new("~/project", "main", "Claude Opus 4.8")?;    ScreenComposition::new(screen_id, screen.surface, statusline.clone()).validate()?;
     let action_row = if screen.surface == Surface::ActionDock {
@@ -1243,10 +1256,22 @@ pub(crate) struct Canvas {
 
 impl Canvas {
     pub(crate) fn new() -> Self {
+        Self::new_with_theme(Theme::Dark)
+    }
+
+    /// Fills the canvas from the selected theme so light galleries keep a light ground.
+    pub(crate) fn new_with_theme(theme: Theme) -> Self {
         let style = TextStyle {
             foreground: ColorToken::Text,
             background: Some(ColorToken::Canvas),
             bold: false,
+        };
+        let absolute_bg = match theme {
+            Theme::Dark => None,
+            Theme::Light => {
+                let rgb = palette(Theme::Light).color(ColorToken::Canvas);
+                Some((rgb.red, rgb.green, rgb.blue))
+            }
         };
         let mut cells = Vec::with_capacity(CANVAS_CELL_COUNT);
         for row in 0..CANVAS_ROWS {
@@ -1256,6 +1281,8 @@ impl Canvas {
                     column,
                     glyph: ' ',
                     style,
+                    absolute_fg: None,
+                    absolute_bg,
                 });
             }
         }
@@ -1269,6 +1296,19 @@ impl Canvas {
         text: &str,
         style: TextStyle,
     ) -> Result<(), String> {
+        self.write_absolute(row, column, text, style, None, None)
+    }
+
+    /// Writes cells with optional exact RGB overrides for approved theme swatches.
+    pub(crate) fn write_absolute(
+        &mut self,
+        row: u16,
+        column: u16,
+        text: &str,
+        style: TextStyle,
+        absolute_fg: Option<(u8, u8, u8)>,
+        absolute_bg: Option<(u8, u8, u8)>,
+    ) -> Result<(), String> {
         validate_glyphs(text)?;
         validate_text_safety(text)?;
         let width = text.chars().count() as u16;
@@ -1276,12 +1316,17 @@ impl Canvas {
             return Err("audit text exceeds the fixed 120x40 canvas".to_owned());
         }
         for (offset, glyph) in text.chars().enumerate() {
+            let existing_bg = self.cells
+                [row as usize * CANVAS_COLUMNS as usize + column as usize + offset]
+                .absolute_bg;
             self.cells[row as usize * CANVAS_COLUMNS as usize + column as usize + offset] =
                 StyledCell {
                     row,
                     column: column + offset as u16,
                     glyph,
                     style,
+                    absolute_fg,
+                    absolute_bg: absolute_bg.or(existing_bg),
                 };
         }
         Ok(())
