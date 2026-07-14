@@ -2571,12 +2571,24 @@ fn render_reviewer_approved(
     ))
 }
 
-/// Explicit validation stages (VAL-V3-F6-027 / 028). No L0-L4 machine labels.
+/// Explicit validation stages (VAL-V3-F6-027 / 028 / 036 / 049).
+/// Compact failure opens this focused decision view; stage payloads and tool
+/// envelopes remain one level deeper and unwind one level at a time.
 fn render_verification_ladder(
     canvas: &mut Canvas,
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let lower = fixture_id.to_ascii_lowercase();
+    let stage_evidence = lower.contains("stage-evidence")
+        || lower.contains("stage_evidence")
+        || lower.contains("detailed-evidence")
+        || lower.contains("detailed_evidence");
+
+    if stage_evidence {
+        return render_verification_stage_evidence(canvas, screen_id, fixture_id);
+    }
+
     canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
@@ -2694,7 +2706,7 @@ fn render_verification_ladder(
             "secondary-action",
             "open-stage-evidence",
             reference(28, 4, 52),
-            "evidence",
+            "focused",
             Some(action(
                 "action.mission.view-stage-evidence",
                 "Open detailed evidence",
@@ -2707,7 +2719,7 @@ fn render_verification_ladder(
             "secondary-action",
             "view-tool-evidence",
             reference(29, 4, 32),
-            "evidence",
+            "focused",
             Some(action(
                 "action.mission.view-tool-evidence",
                 "View tool evidence",
@@ -2751,6 +2763,144 @@ fn render_verification_ladder(
             "nested stage evidence remains inside the validation detail",
         ),
     ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// One-level-deeper held-out stage payload under the validation decisions view.
+/// Unwinds only to Validation stages (never skips to the failure monitor).
+fn render_verification_stage_evidence(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Stage evidence · Held-out checks", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Focused detail for one failing stage. Mission counts stay unchanged.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Mission · Needs attention · 1 complete · 2 remaining",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        11,
+        4,
+        &format!("Blocker · {FAILURE_CAUSE}"),
+        TextStyle::text(),
+    )?;
+    canvas.write(13, 4, "Assertion detail · publish path marker", TextStyle::text())?;
+    canvas.write(
+        14,
+        4,
+        "  Expected · safe release marker present on the publish path.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        "  Observed · marker missing after the last path rewrite.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "  Hidden assertion body · truncated after 240 bytes …",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        "evidence body · path rewrite left the safe-path guard unset",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        19,
+        4,
+        "Source · held-out validation run for the current repair cycle",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        21,
+        4,
+        "This nested view does not open waves, workers, scores, or tool payloads.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        23,
+        4,
+        "Tool payloads stay a sibling advanced route from Validation stages.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        25,
+        4,
+        "[esc] Return to validation stages",
+        TextStyle::accent(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "validation-stage",
+            "stage.held-out.evidence",
+            reference(7, 4, 44),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "stage-evidence",
+            "held-out.assertion.publish-path",
+            reference(13, 4, 48),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "stage-evidence-return",
+            reference(25, 4, 44),
+            "evidence",
+            Some(action(
+                "action.mission.stage-evidence-return",
+                "Return to validation stages",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![transition(
+        "action.mission.stage-evidence-return",
+        screen_id,
+        "verification-ladder",
+        "cancel",
+        "stage evidence unwinds one level to the validation decision view",
+    )];
     Ok((
         pairs
             .iter()

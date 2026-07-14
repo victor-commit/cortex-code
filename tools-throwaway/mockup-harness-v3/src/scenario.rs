@@ -1412,6 +1412,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-concurrency-metrics-return" => mission_concurrency_metrics_return(),
         "mission-open-tool-envelope" => mission_open_tool_envelope(),
         "mission-tool-envelope-return" => mission_tool_envelope_return(),
+        "mission-open-stage-evidence" => mission_open_stage_evidence(),
+        "mission-stage-evidence-return" => mission_stage_evidence_return(),
         "mission-create-fix-task" => mission_create_fix_task(),
         "mission-fix-working" => mission_fix_working(),
         "mission-fix-validating" => mission_fix_validating(),
@@ -2700,6 +2702,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mission-concurrency-metrics-return"
             | "mission-open-tool-envelope"
             | "mission-tool-envelope-return"
+            | "mission-open-stage-evidence"
+            | "mission-stage-evidence-return"
             | "mission-create-fix-task"
             | "mission-fix-working"
             | "mission-fix-validating"
@@ -2749,8 +2753,12 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                 "gate.mission.workflow-monitor".to_owned()
             }
             ("mission-open-verification-ladder", "verification-ladder")
-            | ("mission-tool-envelope-return", "verification-ladder") => {
+            | ("mission-tool-envelope-return", "verification-ladder")
+            | ("mission-stage-evidence-return", "verification-ladder") => {
                 "orchestration.verification-ladder".to_owned()
+            }
+            ("mission-open-stage-evidence", "verification-ladder") => {
+                "verification-ladder.stage-evidence".to_owned()
             }
             ("mission-verification-ladder-return", "workflow-monitor-failure") => {
                 "gate.mission.workflow-monitor-failure".to_owned()
@@ -4813,6 +4821,130 @@ fn mission_concurrency_metrics_return() -> (
         "runtime-detail",
         "unchanged",
         "closing concurrency detail left mission stage and counts unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_open_stage_evidence() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "verification-ladder",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "verification-ladder",
+        ],
+        FLOW6_DRAFT,
+        "validation-stages",
+        "held-out",
+        "validation-stages",
+        Some(FLOW6_PENDING),
+        "return-to-validation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "verification-ladder".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "stage-evidence".to_owned();
+    after.selection = "held-out".to_owned();
+    after.scroll_anchor = "stage-evidence".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-stage-evidence".to_owned(),
+        label: "Open detailed evidence".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "nested stage evidence remains inside the validation detail".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-stage-evidence.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "stage-evidence-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-stage-evidence",
+        "validation-stages",
+        "disclosed",
+        "opening stage evidence preserved the failing mission counts and blocker",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_stage_evidence_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "verification-ladder",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "verification-ladder",
+        ],
+        FLOW6_DRAFT,
+        "stage-evidence",
+        "held-out",
+        "stage-evidence",
+        Some(FLOW6_PENDING),
+        "return-to-validation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "stage-evidence".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "validation-stages".to_owned();
+    after.selection = "held-out".to_owned();
+    after.scroll_anchor = "verification-ladder".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.stage-evidence-return".to_owned(),
+        label: "Return to validation stages".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "stage evidence unwinds one level to the validation decision view".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.stage-evidence-return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.stage-evidence-return",
+        "stage-evidence",
+        "unchanged",
+        "closing stage evidence restored the focused ladder without count or blocker change",
     );
     (before, after, action, transition, attempt, effect)
 }
