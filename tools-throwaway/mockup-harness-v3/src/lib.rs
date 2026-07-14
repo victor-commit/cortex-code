@@ -16,6 +16,7 @@ pub mod gate_programmatic_publication;
 pub mod gate_remaining_integration;
 pub mod gate_vision_review;
 pub mod final_canonical_vision;
+pub mod final_secret_commit_scope;
 pub mod registry;
 
 pub use flows::{
