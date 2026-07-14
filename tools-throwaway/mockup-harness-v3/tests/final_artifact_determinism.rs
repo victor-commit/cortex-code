@@ -314,6 +314,9 @@ fn harness_is_standalone_and_service_free() {
 
 #[test]
 fn public_list_statuses_and_selectors_cover_complete_registry() {
+    // Category selectors write the shared canonical gallery, so serialize against
+    // other final-artifact render tests that republish the same root.
+    let _lock = renderer_test_lock();
     let list = run(&["--list"]);
     assert!(list.status.success());
     assert!(list.stderr.is_empty());
@@ -355,7 +358,8 @@ fn public_list_statuses_and_selectors_cover_complete_registry() {
         let output = run(&[name]);
         assert!(
             output.status.success(),
-            "category selector {name} must succeed in the final gallery"
+            "category selector {name} must succeed in the final gallery; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
         );
         let count = canonical_inventory()
             .iter()

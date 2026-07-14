@@ -2,7 +2,7 @@
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let repo = args
-        .get(0)
+        .first()
         .map(String::as_str)
         .unwrap_or("/projects/cortex-code");
     let mission = args
