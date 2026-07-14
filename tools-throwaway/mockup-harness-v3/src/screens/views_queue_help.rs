@@ -686,7 +686,9 @@ fn render_help(fixture_id: &str) -> Result<AuditDocument, String> {
         for action in &matching {
             if action.group != current_group {
                 current_group = action.group;
-                canvas.write(row, 4, current_group, TextStyle::accent())?;
+                // Group headers use bright hierarchy; ACCENT stays for the one
+                // return primary below (VAL-V3-DS-004).
+                canvas.write(row, 4, current_group, TextStyle::bright())?;
                 push_pair(
                     &mut candidates,
                     &mut events,

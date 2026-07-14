@@ -243,7 +243,7 @@ fn render_onboarding(
             screen_id,
             fixture_id,
             "surface",
-            "onboarding-action-dock",
+            "action-dock",
             reference(20, 4, 34),
             "summary",
             None,
