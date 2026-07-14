@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Prepare the release safely and review the result.                                                                   
+                                                                                                                        
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Validation stages                                                                                                   
+    Decision view for the current validation run. Mission counts stay unchanged.                                        
+                                                                                                                        
+    Origin · failure on the safe publish path                                                                           
+                                                                                                                        
+    ✓ Deterministic checks · pass                                                                                       
+      Format, lint, type check, and build are clean.                                                                    
+                                                                                                                        
+    ✓ Agent-visible tests · pass                                                                                        
+      The automated cases that stay on this board still pass.                                                           
+                                                                                                                        
+    ✗ Held-out checks · needs repair                                                                                    
+      One hidden assertion failed on the safe publish path.                                                             
+      Current stage · repair this before review can continue.                                                           
+                                                                                                                        
+    ○ Intent audit · pending                                                                                            
+      Opens after the held-out failure is repaired.                                                                     
+                                                                                                                        
+    ○ Process check · pending                                                                                           
+      Final process evidence waits on a clean held-out pass.                                                            
+                                                                                                                        
+    [e] Open detailed evidence for the held-out failure                                                                 
+    [t] View tool evidence                                                                                              
+                                                                                                                        
+    [esc] Return to mission failure                                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

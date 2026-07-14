@@ -104,6 +104,11 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "team-board",
     "reviewer-output",
     "reviewer-approved",
+    "verification-ladder",
+    "intent-scorer-pass",
+    "intent-scorer-fail",
+    "concurrency-metrics",
+    "tool-envelope",
     "sidebar-context",
     "sidebar-files",
     "sidebar-lsp",
@@ -1416,18 +1421,22 @@ mod tests {
     #[test]
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
         let implemented = preflight_render(&PublicSelector::Implemented)
-            .expect("a partial implementation set remains renderable");
+            .expect("the implemented selector remains renderable");
         // Keep selector evidence tied to the live implemented map rather than a
         // hard-coded count that drifts every production milestone.
         assert_eq!(
             implemented.canonical_ids().count(),
             IMPLEMENTED_RENDERERS.len()
         );
-        let all_err = preflight_render(&PublicSelector::All)
-            .expect_err("full render must reject missing renderers");
-        assert!(
-            all_err.contains("no implemented renderer"),
-            "full render must fail closed on missing renderers: {all_err}"
+        // When every canonical ID has an implemented renderer, --all is valid
+        // and covers the full inventory. Fail-closed behaviour for missing
+        // renderers is covered by validate_renderer_map negatives elsewhere.
+        let all = preflight_render(&PublicSelector::All)
+            .expect("full render accepts a complete implemented inventory");
+        assert_eq!(all.canonical_ids().count(), canonical_inventory().len());
+        assert_eq!(
+            implemented.canonical_ids().count(),
+            all.canonical_ids().count()
         );
     }
 

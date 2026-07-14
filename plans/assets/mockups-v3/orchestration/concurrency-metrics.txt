@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Prepare the release safely and review the result.                                                                   
+                                                                                                                        
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Runtime detail                                                                                                      
+    Advanced concurrency view. Opening this does not change scheduling.                                                 
+                                                                                                                        
+    Needs attention                                                                                                     
+    ✗ Conflict on the safe publish path                                                                                 
+      Consequence · parallel edits wait until you pause or replan.                                                      
+                                                                                                                        
+    ● Held work · publish checklist handoff                                                                             
+      Consequence · one worker is blocked until the hold is cleared.                                                    
+                                                                                                                        
+    ○ Quarantine · risky draft branch kept aside                                                                        
+      Consequence · that branch will not merge until review accepts it.                                                 
+                                                                                                                        
+    Running cleanly                                                                                                     
+      Throughput · notes work and completed checks stay healthy.                                                        
+      Workers ready · two quiet capacity lines collapsed.                                                               
+                                                                                                                        
+    Use pause, replan, or retry from the monitor if the hold is blocking progress.                                      
+                                                                                                                        
+    [esc] Return to mission monitor                                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

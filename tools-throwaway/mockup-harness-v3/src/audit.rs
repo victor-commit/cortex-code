@@ -566,6 +566,11 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "team-board"
             | "reviewer-output"
             | "reviewer-approved"
+            | "verification-ladder"
+            | "intent-scorer-pass"
+            | "intent-scorer-fail"
+            | "concurrency-metrics"
+            | "tool-envelope"
     ) {
         let document = crate::screens::mission_workflow::render(screen_id, fixture_id)?;
         document.validate()?;

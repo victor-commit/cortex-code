@@ -132,6 +132,7 @@ pub struct ScreenSpec {
 }
 
 const IMPLEMENTED: ImplementationStatus = ImplementationStatus::Implemented;
+#[allow(dead_code)]
 const UNIMPLEMENTED: ImplementationStatus = ImplementationStatus::Unimplemented;
 
 const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
@@ -708,35 +709,35 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "intent-scorer-pass",
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "intent-scorer-fail",
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "concurrency-metrics",
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
     ScreenSpec {
         id: "tool-envelope",
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
         surface: Surface::TemporaryDetailView,
-        status: UNIMPLEMENTED,
+        status: IMPLEMENTED,
     },
 ];
 

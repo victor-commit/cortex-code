@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Prepare the release safely and review the result.                                                                   
+                                                                                                                        
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Tool evidence                                                                                                       
+    Focused diagnostics for the selected tool call. Secrets stay redacted.                                              
+                                                                                                                        
+    Origin · validation on the safe publish path                                                                        
+                                                                                                                        
+    ✓ Success · list publish checklist                                                                                  
+      Payload · 12 checklist rows · truncated after 400 bytes …                                                         
+      Credential fields · [redacted]                                                                                    
+                                                                                                                        
+    ✗ Execution error · verify safe publish path                                                                        
+      Outcome · command failed with a missing path marker.                                                              
+      Payload · error body truncated · secrets redacted.                                                                
+                                                                                                                        
+    ○ Refusal · ship without human approval                                                                             
+      Outcome · refused · the tool did not run.                                                                         
+      Reason · risky action needs explicit permission first.                                                            
+      Payload · none · refusal carries no success body.                                                                 
+                                                                                                                        
+    Raw JSON, transport fields, and secret values stay out of this view.                                                
+                                                                                                                        
+    [esc] Return to validation stages                                                                                   
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

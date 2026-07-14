@@ -1401,6 +1401,17 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-team-board-advanced-return" => mission_team_board_advanced_return(),
         "mission-progress-expand-working" => mission_progress_expand_working(),
         "mission-progress-collapse-group" => mission_progress_collapse_group(),
+        "mission-open-verification-ladder" => mission_open_verification_ladder(),
+        "mission-verification-ladder-return" => mission_verification_ladder_return(),
+        "mission-open-intent-scorer-pass" => mission_open_intent_scorer_pass(),
+        "mission-intent-scorer-pass-return" => mission_intent_scorer_pass_return(),
+        "mission-open-intent-scorer-fail" => mission_open_intent_scorer_fail(),
+        "mission-intent-scorer-fail-return" => mission_intent_scorer_fail_return(),
+        "mission-intent-scorer-fail-create-fix" => mission_intent_scorer_fail_create_fix(),
+        "mission-open-concurrency-metrics" => mission_open_concurrency_metrics(),
+        "mission-concurrency-metrics-return" => mission_concurrency_metrics_return(),
+        "mission-open-tool-envelope" => mission_open_tool_envelope(),
+        "mission-tool-envelope-return" => mission_tool_envelope_return(),
         "mission-create-fix-task" => mission_create_fix_task(),
         "mission-fix-working" => mission_fix_working(),
         "mission-fix-validating" => mission_fix_validating(),
@@ -2678,6 +2689,17 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mission-team-board-advanced-return"
             | "mission-progress-expand-working"
             | "mission-progress-collapse-group"
+            | "mission-open-verification-ladder"
+            | "mission-verification-ladder-return"
+            | "mission-open-intent-scorer-pass"
+            | "mission-intent-scorer-pass-return"
+            | "mission-open-intent-scorer-fail"
+            | "mission-intent-scorer-fail-return"
+            | "mission-intent-scorer-fail-create-fix"
+            | "mission-open-concurrency-metrics"
+            | "mission-concurrency-metrics-return"
+            | "mission-open-tool-envelope"
+            | "mission-tool-envelope-return"
             | "mission-create-fix-task"
             | "mission-fix-working"
             | "mission-fix-validating"
@@ -2725,6 +2747,37 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("mission-team-board-advanced", "team-board") => "team-board.advanced".to_owned(),
             ("mission-team-board-return", "workflow-monitor") => {
                 "gate.mission.workflow-monitor".to_owned()
+            }
+            ("mission-open-verification-ladder", "verification-ladder")
+            | ("mission-tool-envelope-return", "verification-ladder") => {
+                "orchestration.verification-ladder".to_owned()
+            }
+            ("mission-verification-ladder-return", "workflow-monitor-failure") => {
+                "gate.mission.workflow-monitor-failure".to_owned()
+            }
+            ("mission-open-intent-scorer-pass", "intent-scorer-pass") => {
+                "orchestration.intent-scorer-pass".to_owned()
+            }
+            ("mission-intent-scorer-pass-return", "reviewer-approved") => {
+                "gate.mission.reviewer-approved".to_owned()
+            }
+            ("mission-open-intent-scorer-fail", "intent-scorer-fail") => {
+                "orchestration.intent-scorer-fail".to_owned()
+            }
+            ("mission-intent-scorer-fail-return", "reviewer-output") => {
+                "gate.mission.reviewer-output".to_owned()
+            }
+            ("mission-intent-scorer-fail-create-fix", "workflow-monitor") => {
+                "workflow-monitor.fix-planned".to_owned()
+            }
+            ("mission-open-concurrency-metrics", "concurrency-metrics") => {
+                "orchestration.concurrency-metrics".to_owned()
+            }
+            ("mission-concurrency-metrics-return", "workflow-monitor") => {
+                "gate.mission.workflow-monitor".to_owned()
+            }
+            ("mission-open-tool-envelope", "tool-envelope") => {
+                "orchestration.tool-envelope".to_owned()
             }
             ("mission-progress-expand-working", "workflow-monitor") => {
                 "workflow-monitor.progress.expand-working".to_owned()
@@ -4201,6 +4254,692 @@ fn mission_team_board_advanced_return() -> (
         "team-board-advanced",
         "unchanged",
         "closing advanced detail restored the ownership board without work changes",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_open_verification_ladder() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor-failure",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+        ],
+        FLOW6_DRAFT,
+        "mission-failure",
+        "validation-stages",
+        "mission-failure",
+        Some(FLOW6_PENDING),
+        "return-to-failure",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "mission-failure".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "verification-ladder".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "validation-stages".to_owned();
+    after.selection = "held-out".to_owned();
+    after.scroll_anchor = "verification-ladder".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-validation-stages".to_owned(),
+        label: "Open evidence".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "validation stages open only from an explicit evidence action".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-validation-stages.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "validation-stages-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-validation-stages",
+        "mission-failure",
+        "disclosed",
+        "opening validation stages preserved the failing mission identity",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_verification_ladder_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "verification-ladder",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "verification-ladder",
+        ],
+        FLOW6_DRAFT,
+        "validation-stages",
+        "return",
+        "validation-stages",
+        Some(FLOW6_PENDING),
+        "return-to-failure",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "verification-ladder".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "workflow-monitor-failure".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "mission-failure".to_owned();
+    after.selection = "create-fix".to_owned();
+    after.scroll_anchor = "mission-failure".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.verification-ladder-return".to_owned(),
+        label: "Return to mission failure".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "validation stages return to the failure that opened them".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.verification-ladder-return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.verification-ladder-return",
+        "validation-stages",
+        "unchanged",
+        "closing validation stages restored the same failure state and counts",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_open_intent_scorer_pass() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-approved",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "reviewer-approved",
+        ],
+        FLOW6_DRAFT,
+        "human-completion",
+        "score-detail",
+        "human-completion",
+        Some(FLOW6_PENDING),
+        "return-to-approval",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "human-completion".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "intent-scorer-pass".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "score-detail".to_owned();
+    after.selection = "intent-fidelity".to_owned();
+    after.scroll_anchor = "intent-scorer-pass".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-score-detail".to_owned(),
+        label: "View quality report".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "score detail opens only from an explicit evidence action".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-score-detail.pass.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "score-detail-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-score-detail.pass",
+        "human-completion",
+        "disclosed",
+        "opening a passing score left the human completion gate active",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_intent_scorer_pass_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "intent-scorer-pass",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "reviewer-approved",
+            "intent-scorer-pass",
+        ],
+        FLOW6_DRAFT,
+        "score-detail",
+        "return",
+        "score-detail",
+        Some(FLOW6_PENDING),
+        "return-to-approval",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "intent-scorer-pass".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "reviewer-approved".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "human-completion".to_owned();
+    after.selection = "approve-completion".to_owned();
+    after.scroll_anchor = "human-completion".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.intent-scorer-return".to_owned(),
+        label: "Return to human completion".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "closing score detail restores the human completion gate unchanged".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.intent-scorer-return.pass.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.intent-scorer-return.pass",
+        "score-detail",
+        "unchanged",
+        "advisory score detail closed without completing the mission",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_open_intent_scorer_fail() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "reviewer-output",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "reviewer-output",
+        ],
+        FLOW6_DRAFT,
+        "review-outcome",
+        "score-detail",
+        "review-outcome",
+        Some(FLOW6_PENDING),
+        "return-to-review",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "review-outcome".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "intent-scorer-fail".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "score-fail".to_owned();
+    after.selection = "scope-discipline".to_owned();
+    after.scroll_anchor = "intent-scorer-fail".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-score-detail".to_owned(),
+        label: "View quality report".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "failing score detail opens only from an explicit evidence action".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-score-detail.fail.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "score-detail-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-score-detail.fail",
+        "review-outcome",
+        "disclosed",
+        "opening a failing score left review and repair routes intact",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_intent_scorer_fail_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "intent-scorer-fail",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "reviewer-output",
+            "intent-scorer-fail",
+        ],
+        FLOW6_DRAFT,
+        "score-fail",
+        "return",
+        "score-fail",
+        Some(FLOW6_PENDING),
+        "return-to-review",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "intent-scorer-fail".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "reviewer-output".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "review-outcome".to_owned();
+    after.selection = "create-fix".to_owned();
+    after.scroll_anchor = "review-outcome".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.intent-scorer-return".to_owned(),
+        label: "Return to review outcome".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "closing the failing score restores the same review outcome".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.intent-scorer-return.fail.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.intent-scorer-return.fail",
+        "score-fail",
+        "unchanged",
+        "closing the failing score did not alter the review outcome",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_intent_scorer_fail_create_fix() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "intent-scorer-fail",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "reviewer-output",
+            "intent-scorer-fail",
+        ],
+        FLOW6_DRAFT,
+        "score-fail",
+        "create-fix",
+        "score-fail",
+        Some(FLOW6_PENDING),
+        "return-to-monitor",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "intent-scorer-fail".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "workflow-monitor".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "fix-planned".to_owned();
+    after.selection = "fix-task".to_owned();
+    after.scroll_anchor = "workflow-monitor-fix".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.scorer-create-fix".to_owned(),
+        label: "Create a fix task".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "failing score opens planned fix work instead of completing the mission".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.scorer-create-fix.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "fix-planned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.scorer-create-fix",
+        "score-fail",
+        "planned",
+        "a failing score created repair work without completing the mission",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_open_concurrency_metrics() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-running",
+        "runtime-detail",
+        "mission-running",
+        Some(FLOW6_PENDING),
+        "return-to-monitor",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "mission-running".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "concurrency-metrics".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "runtime-detail".to_owned();
+    after.selection = "conflict".to_owned();
+    after.scroll_anchor = "concurrency-metrics".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-runtime-detail".to_owned(),
+        label: "View advanced detail".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "concurrency metrics open only from an explicit advanced runtime action"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-runtime-detail.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "runtime-detail-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-runtime-detail",
+        "mission-running",
+        "disclosed",
+        "opening runtime detail did not change scheduling by itself",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_concurrency_metrics_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "concurrency-metrics",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "concurrency-metrics",
+        ],
+        FLOW6_DRAFT,
+        "runtime-detail",
+        "return",
+        "runtime-detail",
+        Some(FLOW6_PENDING),
+        "return-to-monitor",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "concurrency-metrics".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "workflow-monitor".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "mission-running".to_owned();
+    after.selection = "view-progress".to_owned();
+    after.scroll_anchor = "mission-running".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.concurrency-return".to_owned(),
+        label: "Return to mission monitor".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "closing runtime detail restores the same monitor without scheduling changes"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.concurrency-return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.concurrency-return",
+        "runtime-detail",
+        "unchanged",
+        "closing concurrency detail left mission stage and counts unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_open_tool_envelope() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "verification-ladder",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "verification-ladder",
+        ],
+        FLOW6_DRAFT,
+        "validation-stages",
+        "tool-evidence",
+        "validation-stages",
+        Some(FLOW6_PENDING),
+        "return-to-validation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "verification-ladder".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "tool-envelope".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "tool-evidence".to_owned();
+    after.selection = "tool-error".to_owned();
+    after.scroll_anchor = "tool-envelope".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-tool-evidence".to_owned(),
+        label: "View tool evidence".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "tool envelopes open only through an explicit tool-evidence action".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-tool-evidence.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "tool-evidence-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-tool-evidence",
+        "validation-stages",
+        "disclosed",
+        "opening tool evidence preserved the validation origin without secrets",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_tool_envelope_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "tool-envelope",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "verification-ladder",
+            "tool-envelope",
+        ],
+        FLOW6_DRAFT,
+        "tool-evidence",
+        "return",
+        "tool-evidence",
+        Some(FLOW6_PENDING),
+        "return-to-validation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "tool-envelope".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "verification-ladder".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "validation-stages".to_owned();
+    after.selection = "held-out".to_owned();
+    after.scroll_anchor = "verification-ladder".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.tool-envelope-return".to_owned(),
+        label: "Return to validation stages".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "closing tool evidence restores the validation stages that opened it".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.tool-envelope-return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.tool-envelope-return",
+        "tool-evidence",
+        "unchanged",
+        "closing tool evidence restored validation stages without mission changes",
     );
     (before, after, action, transition, attempt, effect)
 }

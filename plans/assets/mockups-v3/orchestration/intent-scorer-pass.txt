@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Prepare the release safely and review the result.                                                                   
+                                                                                                                        
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Quality report · pass                                                                                               
+    Advisory dimensions only. This report never completes the mission.                                                  
+                                                                                                                        
+    Result · Pass · supporting dimensions are healthy                                                                   
+                                                                                                                        
+    ✓ Intent fidelity · full                                                                                            
+      The requested release outcome is present in the result.                                                           
+                                                                                                                        
+    ✓ Execution evidence · full                                                                                         
+      Checks and surface evidence were captured for review.                                                             
+                                                                                                                        
+    ● Scope discipline · partial                                                                                        
+      One cleanup note remains, still within the accepted plan.                                                         
+                                                                                                                        
+    ✓ Report honesty · full                                                                                             
+      Summary matches the submitted change set.                                                                         
+                                                                                                                        
+    A passing report still needs validation stages and human completion.                                                
+                                                                                                                        
+    This detail is advisory and cannot mark the mission complete.                                                       
+                                                                                                                        
+    [esc] Return to human completion                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

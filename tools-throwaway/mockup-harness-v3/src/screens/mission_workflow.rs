@@ -108,7 +108,13 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "workflow-launch" | "workflow-launch-blocked" | "workflow-monitor-failure"
         | "reviewer-approved" => Surface::ActionDock,
         "workflow-monitor" => Surface::ConversationShell,
-        "reviewer-output" | "team-board" => Surface::TemporaryDetailView,
+        "reviewer-output"
+        | "team-board"
+        | "verification-ladder"
+        | "intent-scorer-pass"
+        | "intent-scorer-fail"
+        | "concurrency-metrics"
+        | "tool-envelope" => Surface::TemporaryDetailView,
         _ => return Err(format!("unknown Flow 6 mission screen: {screen_id}")),
     };
     ScreenComposition::new(screen_id, surface, statusline.clone()).validate()?;
@@ -125,6 +131,15 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "team-board" => render_team_board(&mut canvas, screen_id, fixture_id)?,
         "reviewer-output" => render_reviewer_output(&mut canvas, screen_id, fixture_id)?,
         "reviewer-approved" => render_reviewer_approved(&mut canvas, screen_id, fixture_id)?,
+        "verification-ladder" => {
+            render_verification_ladder(&mut canvas, screen_id, fixture_id)?
+        }
+        "intent-scorer-pass" => render_intent_scorer_pass(&mut canvas, screen_id, fixture_id)?,
+        "intent-scorer-fail" => render_intent_scorer_fail(&mut canvas, screen_id, fixture_id)?,
+        "concurrency-metrics" => {
+            render_concurrency_metrics(&mut canvas, screen_id, fixture_id)?
+        }
+        "tool-envelope" => render_tool_envelope(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -1023,6 +1038,8 @@ fn render_workflow_monitor(
         "  Keep the risk note short before we publish.",
         TextStyle::text(),
     )?;
+    // Advanced runtime evidence stays undisclosed on the compact default;
+    // scenarios open concurrency-metrics only after an explicit request.
 
     let pairs = [
         semantic(
@@ -1946,6 +1963,19 @@ fn render_workflow_monitor_failure(
             screen_id,
             fixture_id,
             "secondary-action",
+            "view-validation-stages",
+            reference(DOCK_TOP + 4, 4, 24),
+            "summary",
+            Some(action(
+                "action.mission.view-validation-stages",
+                "Open evidence",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
             "open-evidence",
             reference(DOCK_TOP + 4, 4, 24),
             "summary",
@@ -1966,11 +1996,18 @@ fn render_workflow_monitor_failure(
             "creating a fix task records the failure as planned repair work",
         ),
         transition(
+            "action.mission.view-validation-stages",
+            screen_id,
+            "verification-ladder",
+            "direct",
+            "validation stages open only from an explicit evidence action",
+        ),
+        transition(
             "action.mission.open-evidence",
             screen_id,
-            "workflow-monitor-failure",
+            "verification-ladder",
             "direct",
-            "evidence disclosure returns to the same failure state",
+            "evidence disclosure opens the validation stages for the same failure",
         ),
     ];
     if fixture_id.contains("gate.mission.workflow-monitor-failure") {
@@ -2125,6 +2162,32 @@ fn render_reviewer_output(
             screen_id,
             fixture_id,
             "secondary-action",
+            "view-validation-stages",
+            reference(21, 4, 36),
+            "summary",
+            Some(action(
+                "action.mission.view-validation-stages",
+                "View validation summary",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "view-score-detail",
+            reference(21, 4, 36),
+            "summary",
+            Some(action(
+                "action.mission.view-score-detail",
+                "View validation summary",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
             "return-monitor",
             reference(23, 4, 36),
             "summary",
@@ -2143,6 +2206,20 @@ fn render_reviewer_output(
             "workflow-monitor",
             "direct",
             "requested changes become an explicit fix task followed by fresh validation",
+        ),
+        transition(
+            "action.mission.view-validation-stages",
+            screen_id,
+            "verification-ladder",
+            "direct",
+            "validation stages open only from an explicit evidence action",
+        ),
+        transition(
+            "action.mission.view-score-detail",
+            screen_id,
+            "intent-scorer-fail",
+            "direct",
+            "failing score detail opens only from an explicit evidence action",
         ),
         transition(
             "action.mission.review-return",
@@ -2414,6 +2491,32 @@ fn render_reviewer_approved(
                     false,
                 )),
             ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "view-score-detail",
+                reference(DOCK_TOP + 5, 4, 36),
+                "summary",
+                Some(action(
+                    "action.mission.view-score-detail",
+                    "Stay on this review",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "stay-on-review",
+                reference(DOCK_TOP + 5, 4, 36),
+                "summary",
+                Some(action(
+                    "action.mission.stay-on-review",
+                    "Stay on this review",
+                    false,
+                )),
+            ),
         ]
     };
     let transitions = if request_changes_dock {
@@ -2449,8 +2552,804 @@ fn render_reviewer_approved(
                 "direct",
                 "request changes opens an anchored reason dock on the same gate",
             ),
+            transition(
+                "action.mission.view-score-detail",
+                screen_id,
+                "intent-scorer-pass",
+                "direct",
+                "passing score detail opens only from an explicit evidence action",
+            ),
         ]
     };
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// Explicit validation stages (VAL-V3-F6-027 / 028). No L0-L4 machine labels.
+fn render_verification_ladder(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Validation stages", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Decision view for the current validation run. Mission counts stay unchanged.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(10, 4, "Origin · failure on the safe publish path", TextStyle::muted())?;
+
+    // Readable stage purpose + outcome. Failing stage is distinct.
+    canvas.write(12, 4, "✓ Deterministic checks · pass", TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        "  Format, lint, type check, and build are clean.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(15, 4, "✓ Agent-visible tests · pass", TextStyle::muted())?;
+    canvas.write(
+        16,
+        4,
+        "  The automated cases that stay on this board still pass.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(18, 4, "✗ Held-out checks · needs repair", TextStyle::text())?;
+    canvas.write(
+        19,
+        4,
+        "  One hidden assertion failed on the safe publish path.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        20,
+        4,
+        "  Current stage · repair this before review can continue.",
+        TextStyle::bright(),
+    )?;
+    canvas.write(22, 4, "○ Intent audit · pending", TextStyle::muted())?;
+    canvas.write(
+        23,
+        4,
+        "  Opens after the held-out failure is repaired.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(25, 4, "○ Process check · pending", TextStyle::muted())?;
+    canvas.write(
+        26,
+        4,
+        "  Final process evidence waits on a clean held-out pass.",
+        TextStyle::muted(),
+    )?;
+
+    canvas.write(
+        28,
+        4,
+        "[e] Open detailed evidence for the held-out failure",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        29,
+        4,
+        "[t] View tool evidence",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        31,
+        4,
+        "[esc] Return to mission failure",
+        TextStyle::accent(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "validation-stage",
+            "stage.deterministic",
+            reference(12, 4, 40),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "validation-stage",
+            "stage.held-out",
+            reference(18, 4, 40),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "validation-stage",
+            "stage.intent-audit",
+            reference(22, 4, 36),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "open-stage-evidence",
+            reference(28, 4, 52),
+            "evidence",
+            Some(action(
+                "action.mission.view-stage-evidence",
+                "Open detailed evidence",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "view-tool-evidence",
+            reference(29, 4, 32),
+            "evidence",
+            Some(action(
+                "action.mission.view-tool-evidence",
+                "View tool evidence",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "verification-ladder-return",
+            reference(31, 4, 40),
+            "focused",
+            Some(action(
+                "action.mission.verification-ladder-return",
+                "Return to mission failure",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.verification-ladder-return",
+            screen_id,
+            "workflow-monitor-failure",
+            "cancel",
+            "validation stages return to the failure that opened them",
+        ),
+        transition(
+            "action.mission.view-tool-evidence",
+            screen_id,
+            "tool-envelope",
+            "direct",
+            "tool payloads stay one disclosure deeper under validation stages",
+        ),
+        transition(
+            "action.mission.view-stage-evidence",
+            screen_id,
+            "verification-ladder",
+            "direct",
+            "nested stage evidence remains inside the validation detail",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// Advisory pass score detail (VAL-V3-F6-029 / 031). Never controls lifecycle.
+fn render_intent_scorer_pass(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Quality report · pass", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Advisory dimensions only. This report never completes the mission.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Result · Pass · supporting dimensions are healthy",
+        TextStyle::text(),
+    )?;
+    canvas.write(12, 4, "✓ Intent fidelity · full", TextStyle::text())?;
+    canvas.write(
+        13,
+        4,
+        "  The requested release outcome is present in the result.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(15, 4, "✓ Execution evidence · full", TextStyle::text())?;
+    canvas.write(
+        16,
+        4,
+        "  Checks and surface evidence were captured for review.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(18, 4, "● Scope discipline · partial", TextStyle::text())?;
+    canvas.write(
+        19,
+        4,
+        "  One cleanup note remains, still within the accepted plan.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(21, 4, "✓ Report honesty · full", TextStyle::text())?;
+    canvas.write(
+        22,
+        4,
+        "  Summary matches the submitted change set.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        24,
+        4,
+        "A passing report still needs validation stages and human completion.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        26,
+        4,
+        "This detail is advisory and cannot mark the mission complete.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        28,
+        4,
+        "[esc] Return to human completion",
+        TextStyle::accent(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "score-result",
+            "score.pass",
+            reference(10, 4, 48),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "score-dimension",
+            "dimension.intent-fidelity",
+            reference(12, 4, 36),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "score-dimension",
+            "dimension.scope-discipline",
+            reference(18, 4, 40),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "intent-scorer-return",
+            reference(28, 4, 40),
+            "evidence",
+            Some(action(
+                "action.mission.intent-scorer-return",
+                "Return to human completion",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![transition(
+        "action.mission.intent-scorer-return",
+        screen_id,
+        "reviewer-approved",
+        "cancel",
+        "closing score detail restores the human completion gate unchanged",
+    )];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// Failing score detail with repair route (VAL-V3-F6-030 / 031).
+fn render_intent_scorer_fail(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Quality report · needs repair", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Advisory only. A failing report routes to repair, not completion.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Result · Fail · one dimension blocks a safe completion claim",
+        TextStyle::text(),
+    )?;
+    canvas.write(12, 4, "✓ Intent fidelity · full", TextStyle::muted())?;
+    canvas.write(
+        13,
+        4,
+        "  Requested outcome is still present.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(15, 4, "✗ Scope discipline · failed", TextStyle::text())?;
+    canvas.write(
+        16,
+        4,
+        "  Publish-path scope still omits the open risk and rollback order.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "  Failed dimension · Scope discipline",
+        TextStyle::bright(),
+    )?;
+    canvas.write(19, 4, "● Report honesty · partial", TextStyle::muted())?;
+    canvas.write(
+        20,
+        4,
+        "  Summary notes the issue but does not resolve it.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        &format!("Suggested fix task · {FIX_TASK}"),
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        24,
+        4,
+        "This report never completes the mission. Create a fix task to continue.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        26,
+        4,
+        "› [enter] Create a fix task",
+        TextStyle::accent(),
+    )?;
+    canvas.write(
+        28,
+        4,
+        "[esc] Return to review outcome",
+        TextStyle::muted(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "score-result",
+            "score.fail",
+            reference(10, 4, 56),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "score-dimension",
+            "dimension.scope-discipline",
+            reference(15, 4, 40),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "scorer-create-fix",
+            reference(26, 4, 34),
+            "evidence",
+            Some(action(
+                "action.mission.scorer-create-fix",
+                "Create a fix task",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "intent-scorer-return",
+            reference(28, 4, 40),
+            "evidence",
+            Some(action(
+                "action.mission.intent-scorer-return",
+                "Return to review outcome",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.scorer-create-fix",
+            screen_id,
+            "workflow-monitor",
+            "direct",
+            "failing score opens planned fix work instead of completing the mission",
+        ),
+        transition(
+            "action.mission.intent-scorer-return",
+            screen_id,
+            "reviewer-output",
+            "cancel",
+            "closing the failing score restores the same review outcome",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// Exception-first runtime detail (VAL-V3-F6-032 / 033).
+fn render_concurrency_metrics(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Runtime detail", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Advanced concurrency view. Opening this does not change scheduling.",
+        TextStyle::muted(),
+    )?;
+
+    // Exceptions first: conflicts, held work, quarantine.
+    canvas.write(10, 4, "Needs attention", TextStyle::bright())?;
+    canvas.write(11, 4, "✗ Conflict on the safe publish path", TextStyle::text())?;
+    canvas.write(
+        12,
+        4,
+        "  Consequence · parallel edits wait until you pause or replan.",
+        TextStyle::text(),
+    )?;
+    canvas.write(14, 4, "● Held work · publish checklist handoff", TextStyle::text())?;
+    canvas.write(
+        15,
+        4,
+        "  Consequence · one worker is blocked until the hold is cleared.",
+        TextStyle::text(),
+    )?;
+    canvas.write(17, 4, "○ Quarantine · risky draft branch kept aside", TextStyle::text())?;
+    canvas.write(
+        18,
+        4,
+        "  Consequence · that branch will not merge until review accepts it.",
+        TextStyle::text(),
+    )?;
+
+    // Healthy throughput after exceptions.
+    canvas.write(20, 4, "Running cleanly", TextStyle::muted())?;
+    canvas.write(
+        21,
+        4,
+        "  Throughput · notes work and completed checks stay healthy.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        "  Workers ready · two quiet capacity lines collapsed.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        24,
+        4,
+        "Use pause, replan, or retry from the monitor if the hold is blocking progress.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        26,
+        4,
+        "[esc] Return to mission monitor",
+        TextStyle::accent(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "runtime-exception",
+            "conflict.publish-path",
+            reference(11, 4, 42),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "runtime-exception",
+            "held-work.checklist",
+            reference(14, 4, 48),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "runtime-exception",
+            "quarantine.draft",
+            reference(17, 4, 48),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "runtime-healthy",
+            "throughput.notes",
+            reference(21, 4, 56),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "concurrency-return",
+            reference(26, 4, 40),
+            "evidence",
+            Some(action(
+                "action.mission.concurrency-return",
+                "Return to mission monitor",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![transition(
+        "action.mission.concurrency-return",
+        screen_id,
+        "workflow-monitor",
+        "cancel",
+        "closing runtime detail restores the same monitor without scheduling changes",
+    )];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// Tool evidence with success / error / refusal (VAL-V3-F6-034 / 035).
+fn render_tool_envelope(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+    canvas.write(7, 4, "Tool evidence", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Focused diagnostics for the selected tool call. Secrets stay redacted.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Origin · validation on the safe publish path",
+        TextStyle::muted(),
+    )?;
+
+    canvas.write(12, 4, "✓ Success · list publish checklist", TextStyle::text())?;
+    canvas.write(
+        13,
+        4,
+        "  Payload · 12 checklist rows · truncated after 400 bytes …",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        14,
+        4,
+        "  Credential fields · [redacted]",
+        TextStyle::muted(),
+    )?;
+
+    canvas.write(
+        16,
+        4,
+        "✗ Execution error · verify safe publish path",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "  Outcome · command failed with a missing path marker.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        18,
+        4,
+        "  Payload · error body truncated · secrets redacted.",
+        TextStyle::muted(),
+    )?;
+
+    canvas.write(
+        20,
+        4,
+        "○ Refusal · ship without human approval",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        21,
+        4,
+        "  Outcome · refused · the tool did not run.",
+        TextStyle::text(),
+    )?;
+    canvas.write(
+        22,
+        4,
+        "  Reason · risky action needs explicit permission first.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        23,
+        4,
+        "  Payload · none · refusal carries no success body.",
+        TextStyle::muted(),
+    )?;
+
+    canvas.write(
+        25,
+        4,
+        "Raw JSON, transport fields, and secret values stay out of this view.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        27,
+        4,
+        "[esc] Return to validation stages",
+        TextStyle::accent(),
+    )?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "tool-outcome",
+            "tool.success.checklist",
+            reference(12, 4, 44),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "tool-outcome",
+            "tool.error.publish-path",
+            reference(16, 4, 48),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "tool-outcome",
+            "tool.refusal.ship",
+            reference(20, 4, 44),
+            "evidence",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "tool-envelope-return",
+            reference(27, 4, 40),
+            "evidence",
+            Some(action(
+                "action.mission.tool-envelope-return",
+                "Return to validation stages",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![transition(
+        "action.mission.tool-envelope-return",
+        screen_id,
+        "verification-ladder",
+        "cancel",
+        "closing tool evidence restores the validation stages that opened it",
+    )];
     Ok((
         pairs
             .iter()
