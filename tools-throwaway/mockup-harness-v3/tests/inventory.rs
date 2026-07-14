@@ -138,102 +138,19 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
     for (category, expected_ids) in expected {
         assert_eq!(ids_in(*category), *expected_ids);
     }
-    for screen in canonical_inventory() {
-        let expected_status = if [
-            "home",
-            "onboarding",
-            "chat-turn",
-            "chat-long-scroll",
-            "streaming",
-            "reasoning",
-            "reasoning-collapsed",
-            "tool-running",
-            "tool-success",
-            "tool-success-expanded",
-            "tool-calls",
-            "tool-task",
-            "tool-task-expanded",
-            "rich-response",
-            "shell",
-            "todo-list",
-            "compact",
-            "file-mention",
-            "composer-multiline",
-            "slash-menu",
-            "command-palette",
-            "command-palette-submenu",
-            "attachment-picker",
-            "export-picker",
-            "queue-manager",
-            "model-picker",
-            "model-picker-filtered",
-            "permission-shell",
-            "permission-file-edit",
-            "permission-deny-reason",
-            "diff-edit",
-            "diff-viewer-staging",
-            "agent-picker",
-            "skills-picker",
-            "subagent-picker",
-            "variant-picker",
-            "theme-picker",
-            "mode-switch",
-            "mode-switch-refused",
-            "session-picker",
-            "timeline",
-            "fork-picker",
-            "login",
-            "connect-provider",
-            "connect-method",
-            "connect-apikey",
-            "connect-oauth",
-            "connect-connected",
-            "connect-disconnect",
-            "mcp",
-            "turn-error",
-            "error-network",
-            "error-context",
-            "rate-limit",
-            "interrupt",
-            "toasts",
-            "checkpoint-undo",
-            "tool-failed",
-            "blocked-command",
-            "workflow-launch",
-            "workflow-launch-blocked",
-            "workflow-monitor",
-            "workflow-monitor-failure",
-            "team-board",
-            "reviewer-output",
-            "reviewer-approved",
-            "sidebar-context",
-            "sidebar-files",
-            "sidebar-lsp",
-            "sidebar-todo",
-            "sidebar-subagents",
-            "sidebar-mcp",
-            "sidebar-queue",
-            "help",
-            "review",
-            "diff-viewer",
-            "share",
-            "status",
-            "theme-gallery-dark",
-            "theme-gallery-light",
-            "empty",
-        ]
-        .contains(&screen.id)
-        {
-            ImplementationStatus::Implemented
-        } else {
-            ImplementationStatus::Unimplemented
-        };
-        assert_eq!(
-            screen.status, expected_status,
-            "{} must report its milestone implementation status",
-            screen.id
-        );
-    }
+    assert!(
+        canonical_inventory()
+            .iter()
+            .all(|screen| screen.status == ImplementationStatus::Implemented),
+        "the final gallery marks every canonical ID as implemented"
+    );
+    assert_eq!(
+        canonical_inventory()
+            .iter()
+            .filter(|screen| screen.status == ImplementationStatus::Implemented)
+            .count(),
+        86
+    );
     assert!(canonical_inventory().iter().all(|screen| matches!(
         screen.surface,
         Surface::ConversationShell
