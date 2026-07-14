@@ -90,6 +90,11 @@ pub(crate) const SHORT_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\"";
 pub(crate) const LONG_SHELL_COMMAND: &[u8] = b"printf '%s\\n' \"retry check\" && git diff -- src/net/retry_policy.rs > /tmp/retry.diff && printf '%s\\n' \"review complete\"";
 pub(crate) const UNSAFE_SHELL_COMMAND: &[u8] = b"printf 'retry\0'\n\x1b[31m";
 
+/// Exact blocked recovery shell command for Flow 5 permission round-trip.
+/// Kept byte-identical to recovery::BLOCKED_COMMAND / scenario TOOL_COMMAND.
+pub(crate) const BLOCKED_RECOVERY_SHELL_COMMAND: &[u8] =
+    b"rm -rf notes/archive && printf 'cleared\\n' >> notes/release.md";
+
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
     Vec<SemanticEvent>,
@@ -982,12 +987,16 @@ fn render_permission_shell(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
+    let recovery_blocked = fixture_id.contains("blocked-command")
+        || fixture_id.contains("recovery.blocked");
     let unsafe_bytes = fixture_id.contains("unsafe-byte");
     let return_to_choices =
         fixture_id.contains("long-return") || fixture_id.contains("final-to-return");
     let long_command = fixture_id.contains("long") && !return_to_choices;
     let out_of_scope = fixture_id.contains("persistent-scope-outside");
-    let command = if out_of_scope {
+    let command = if recovery_blocked {
+        BLOCKED_RECOVERY_SHELL_COMMAND
+    } else if out_of_scope {
         b"git diff -- src/docs/release_notes.md"
     } else if unsafe_bytes {
         UNSAFE_SHELL_COMMAND
@@ -1033,7 +1042,7 @@ fn render_permission_shell(
         format!("bytes 0..{} of {}", command.len(), command.len())
     };
 
-    permission_transcript(canvas, unsafe_bytes)?;
+    permission_transcript(canvas, unsafe_bytes, recovery_blocked)?;
     if return_to_choices {
         canvas.write(
             13,
@@ -1146,13 +1155,21 @@ fn render_permission_shell(
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Permission choices",
+        if recovery_blocked {
+            "Permission choices · approve only, then return for an explicit run"
+        } else {
+            "Permission choices"
+        },
         TextStyle::bright(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "› [enter] Allow once · run once, then open the pending edit",
+        if recovery_blocked {
+            "› [enter] Allow once · do not run yet"
+        } else {
+            "› [enter] Allow once · run once, then open the pending edit"
+        },
         TextStyle::accent(),
     )?;
     if persistent_supported {
@@ -1467,6 +1484,33 @@ fn render_permission_shell(
         }
         transitions
     };
+    let transitions = if recovery_blocked {
+        vec![
+            transition(
+                "action.permission.allow-once",
+                "permission-shell",
+                "blocked-command",
+                "direct",
+                "allow once records approval without executing and returns for one explicit run",
+            ),
+            transition(
+                "action.permission.deny",
+                "permission-shell",
+                "blocked-command",
+                "direct",
+                "denial returns to the blocked command without executing it",
+            ),
+            transition(
+                "action.permission.cancel",
+                "permission-shell",
+                "blocked-command",
+                "cancel",
+                "cancel leaves the request pending on the blocked command without execution",
+            ),
+        ]
+    } else {
+        transitions
+    };
     Ok((
         pairs
             .iter()
@@ -1601,7 +1645,45 @@ fn render_permission_resume(
     ))
 }
 
-fn permission_transcript(canvas: &mut Canvas, unsafe_bytes: bool) -> Result<(), String> {
+fn permission_transcript(
+    canvas: &mut Canvas,
+    unsafe_bytes: bool,
+    recovery_blocked: bool,
+) -> Result<(), String> {
+    if recovery_blocked {
+        canvas.write(2, 4, "Recovery · paused conversation", TextStyle::muted())?;
+        canvas.write(
+            3,
+            4,
+            "Finish the release notes without losing the current work.",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            4,
+            4,
+            "You · Summarize the remaining release notes and the still-open risks.",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            7,
+            4,
+            "Code paused · Blocked command needs your approval",
+            TextStyle::bright(),
+        )?;
+        canvas.write(
+            9,
+            4,
+            "Why Code needs it: the blocked write was held and still needs an explicit allow.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            11,
+            4,
+            "What running it will do: remove notes/archive and append a cleared marker to notes/release.md.",
+            TextStyle::text(),
+        )?;
+        return Ok(());
+    }
     canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(
         7,
@@ -2026,7 +2108,7 @@ fn render_permission_deny_reason(
             TextStyle::text(),
         )?;
     } else {
-        permission_transcript(canvas, false)?;
+        permission_transcript(canvas, false, false)?;
         canvas.write(13, 4, "Denied · command was not run", TextStyle::text())?;
         canvas.write(
             15,

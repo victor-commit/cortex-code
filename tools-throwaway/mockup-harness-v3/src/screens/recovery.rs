@@ -66,7 +66,7 @@ const TOOL_CAUSE_UNKNOWN: &str = "The outcome of this tool is unknown";
 const TOOL_CAUSE_COMPLETED: &str = "This tool already changed the file before it failed";
 const TOOL_CAUSE_POLICY: &str = "Docs search is blocked by the project policy";
 const TOOL_CAUSE_IDEMPOTENT: &str = "The lookup failed before any change was made";
-const BLOCKED_COMMAND: &str =
+pub(crate) const BLOCKED_COMMAND: &str =
     "rm -rf notes/archive && printf 'cleared\\n' >> notes/release.md";
 const BLOCKED_POLICY_CAUSE: &str = "The current work style does not allow write commands";
 const BLOCKED_PERMISSION_CAUSE: &str = "This command needs approval before it can run";

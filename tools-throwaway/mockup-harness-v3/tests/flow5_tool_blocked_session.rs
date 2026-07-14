@@ -296,7 +296,7 @@ fn blocked_command_states_one_policy_cause() {
 
 #[test]
 fn blocked_command_routes_through_approval_or_work_style_and_returns() {
-    // VAL-V3-F5-020
+    // VAL-V3-F5-020 + VAL-V3-F5-048 dock identity
     let permission = replay_case("blocked-command-request-approval", 1)
         .expect("permission route");
     assert_eq!(permission.before.screen_id, "blocked-command");
@@ -311,6 +311,35 @@ fn blocked_command_routes_through_approval_or_work_style_and_returns() {
     assert_eq!(
         permission.before.requested_command,
         permission.after.requested_command
+    );
+    // Approval dock after-state must paint the blocked recovery command and
+    // consequence, not the Flow 2 printf retry-check permission fixture.
+    let open_txt = permission.audit.render_txt();
+    assert!(
+        open_txt.contains(BLOCKED_COMMAND) || open_txt.contains("rm -rf notes/archive"),
+        "blocked-command-request-approval must paint the blocked recovery command in the permission dock: {open_txt}"
+    );
+    assert!(
+        !open_txt.contains("printf '%s\\n' \"retry check\"")
+            && !open_txt.contains("Check the retry path before we merge"),
+        "approval dock must not paint the unrelated Flow 2 retry-check command/task: {open_txt}"
+    );
+    assert!(
+        open_txt.contains(RECOVERY_ORIGIN) || open_txt.contains(RECOVERY_TASK),
+        "approval dock keeps recovery origin/task identity"
+    );
+    assert!(
+        open_txt.contains("notes/archive") || open_txt.contains("release"),
+        "approval dock consequence must stay bound to the blocked recovery write"
+    );
+    assert!(
+        permission.permission.is_none()
+            || permission
+                .permission
+                .as_ref()
+                .map(|evidence| evidence.invocation_count == 0)
+                .unwrap_or(true),
+        "zero execution until explicit allow"
     );
 
     let permission_return = replay_case("blocked-command-approval-return", 1)
@@ -327,6 +356,10 @@ fn blocked_command_routes_through_approval_or_work_style_and_returns() {
         "awaiting-explicit-run"
     );
     assert!(permission_return.audit.render_txt().contains(BLOCKED_COMMAND));
+    assert_eq!(
+        permission_return.after.requested_command, BLOCKED_COMMAND,
+        "return preserves requested_command identity"
+    );
 
     let work_style = replay_case("blocked-command-change-work-style", 1)
         .expect("configuration route");

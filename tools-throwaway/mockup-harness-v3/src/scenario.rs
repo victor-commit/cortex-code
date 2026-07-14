@@ -2598,7 +2598,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                 "tool-failed.policy".to_owned()
             }
             ("blocked-command-request-approval", "permission-shell") => {
-                "gate.input-and-approval.permission-shell".to_owned()
+                "recovery.blocked-command.permission-shell".to_owned()
             }
             ("blocked-command-approval-return", "blocked-command") => {
                 "blocked-command.after-approval".to_owned()

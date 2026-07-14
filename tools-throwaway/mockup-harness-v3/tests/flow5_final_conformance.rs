@@ -712,6 +712,16 @@ fn approval_configuration_and_connection_round_trips_preserve_recovery() {
         open.before.requested_command,
         open.after.requested_command
     );
+    let open_txt = open.audit.render_txt();
+    assert!(
+        open_txt.contains("rm -rf notes/archive"),
+        "approval dock must show the blocked recovery command: {open_txt}"
+    );
+    assert!(
+        !open_txt.contains("printf '%s\\n' \"retry check\"")
+            && !open_txt.contains("Check the retry path before we merge"),
+        "approval dock mismark: Flow 2 retry-check paint must not appear: {open_txt}"
+    );
     let draft = open
         .preserved_field_hashes
         .get("draft")
