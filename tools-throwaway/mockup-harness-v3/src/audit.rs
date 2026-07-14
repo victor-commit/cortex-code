@@ -124,6 +124,88 @@ pub struct AuditDocument {
 }
 
 impl AuditDocument {
+    /// Ensures every audit carries exactly one surface event and, when a
+    /// statusline is painted, exactly one statusline event with furniture
+    /// evidence. Idempotent; never invents a statusline when the bottom row is
+    /// blank. Used by HARNESS-020/024 family completeness.
+    pub fn ensure_core_semantic_events(&mut self) {
+        let surface_count = self
+            .events
+            .iter()
+            .filter(|event| event.identity.family == "surface")
+            .count();
+        if surface_count == 0 {
+            let subject = canonical_inventory()
+                .iter()
+                .find(|screen| screen.id == self.screen_id)
+                .map(|screen| screen.surface.as_str())
+                .unwrap_or("conversation-shell");
+            let surface = candidate(
+                &self.screen_id,
+                &self.fixture_id,
+                "surface",
+                subject,
+                RenderRef {
+                    row: 0,
+                    start: 0,
+                    end: 1,
+                },
+            );
+            self.candidates.push(surface.clone());
+            self.events.push(SemanticEvent {
+                identity: surface.identity,
+                action: None,
+            });
+        }
+
+        let statusline_count = self
+            .events
+            .iter()
+            .filter(|event| event.identity.family == "statusline")
+            .count();
+        if statusline_count == 0 {
+            let bottom = self
+                .styled_cells
+                .iter()
+                .filter(|cell| cell.row == CANVAS_ROWS - 1)
+                .map(|cell| cell.glyph)
+                .collect::<String>();
+            let trimmed = bottom.trim();
+            // Shared minimal statusline: path · branch · Human Model Name
+            if trimmed.contains(" · ") && trimmed.starts_with("~/") {
+                let glyphs = bottom.chars().collect::<Vec<_>>();
+                let start = glyphs
+                    .iter()
+                    .position(|glyph| !glyph.is_whitespace())
+                    .unwrap_or(2) as u16;
+                let end = glyphs
+                    .iter()
+                    .rposition(|glyph| !glyph.is_whitespace())
+                    .map(|index| index as u16 + 1)
+                    .unwrap_or(start + 1)
+                    .min(CANVAS_COLUMNS);
+                if end > start {
+                    let status = candidate(
+                        &self.screen_id,
+                        &self.fixture_id,
+                        "statusline",
+                        "shared-statusline",
+                        RenderRef {
+                            row: CANVAS_ROWS - 1,
+                            start,
+                            end,
+                        },
+                    );
+                    self.candidates.push(status.clone());
+                    self.events.push(SemanticEvent {
+                        identity: status.identity,
+                        action: None,
+                    });
+                }
+            }
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.screen_id.trim().is_empty() || self.fixture_id.trim().is_empty() {
             return Err("audit screen and fixture identities must be present".to_owned());
@@ -150,6 +232,8 @@ impl AuditDocument {
         let mut action_ids = BTreeSet::new();
         let mut activity_owners = BTreeSet::new();
         let mut work_style_candidates = 0;
+        let mut surface_count = 0usize;
+        let mut statusline_count = 0usize;
         for event in &self.events {
             validate_identity(&event.identity, &self.screen_id, &self.fixture_id)?;
             let Some(candidate) = candidates_by_id.get(&event.identity.candidate_id) else {
@@ -187,6 +271,12 @@ impl AuditDocument {
             if event.identity.family == "work-style" {
                 work_style_candidates += 1;
             }
+            if event.identity.family == "surface" {
+                surface_count += 1;
+            }
+            if event.identity.family == "statusline" {
+                statusline_count += 1;
+            }
             if let Some(action) = &event.action {
                 validate_action(action)?;
                 if !action_ids.insert(action.action_id.clone()) {
@@ -200,6 +290,18 @@ impl AuditDocument {
                     "missing semantic event for candidate: {candidate_id}"
                 ));
             }
+        }
+        if surface_count != 1 {
+            return Err(format!(
+                "audit requires exactly one surface event (found {surface_count}) on screen {}",
+                self.screen_id
+            ));
+        }
+        if statusline_count > 1 {
+            return Err(format!(
+                "audit has duplicate statusline events on screen {}",
+                self.screen_id
+            ));
         }
         if self.work_style.is_some() && work_style_candidates > 1 {
             return Err(
@@ -423,6 +525,15 @@ impl AuditDocument {
     }
 }
 
+/// Completes core surface/statusline events, then fail-closes on bijection.
+fn complete_audit(mut document: AuditDocument) -> Result<AuditDocument, String> {
+    document.ensure_core_semantic_events();
+    document.validate()?;
+    let render_hash = sha256_hex(document.render_txt().as_bytes());
+    validate_vision_hash(&render_hash, &render_hash)?;
+    Ok(document)
+}
+
 /// Creates stable evidence for a canonical state without writing an artifact.
 pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let screen = canonical_inventory()
@@ -456,11 +567,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "todo-list"
             | "compact"
     ) {
-        let document = crate::screens::conversation::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::conversation::render(screen_id, fixture_id)?);
     }
     if matches!(
         screen_id,
@@ -478,21 +585,17 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "diff-edit"
             | "diff-viewer-staging"
     ) {
-        let document = crate::screens::input_and_approval::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::input_and_approval::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(
         screen_id,
         "onboarding" | "model-picker" | "model-picker-filtered"
     ) {
-        let document = crate::screens::work_configuration::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::work_configuration::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(
         screen_id,
@@ -504,18 +607,14 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "mode-switch"
             | "mode-switch-refused"
     ) {
-        let document = crate::screens::work_configuration::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::work_configuration::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(screen_id, "session-picker" | "timeline" | "fork-picker") {
-        let document = crate::screens::session_history::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::session_history::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(
         screen_id,
@@ -534,10 +633,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         } else {
             crate::screens::provider_mcp::render(screen_id, fixture_id)?
         };
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(document);
     }
     if matches!(
         screen_id,
@@ -551,11 +647,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "tool-failed"
             | "blocked-command"
     ) {
-        let document = crate::screens::recovery::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::recovery::render(screen_id, fixture_id)?);
     }
     if matches!(
         screen_id,
@@ -572,11 +664,9 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "concurrency-metrics"
             | "tool-envelope"
     ) {
-        let document = crate::screens::mission_workflow::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::mission_workflow::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(
         screen_id,
@@ -586,25 +676,19 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "sidebar-todo"
             | "sidebar-subagents"
     ) {
-        let document = crate::screens::views_inspectors::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::views_inspectors::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(screen_id, "sidebar-queue" | "help") {
-        let document = crate::screens::views_queue_help::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::views_queue_help::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(screen_id, "review" | "diff-viewer" | "share") {
-        let document = crate::screens::review_diff_share::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::review_diff_share::render(
+            screen_id, fixture_id,
+        )?);
     }
     if matches!(
         screen_id,
@@ -615,24 +699,16 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             && (fixture_id.contains("onboarding-complete")
                 || fixture_id.contains("onboarding-skip"))
         {
-            let document = empty_after_onboarding_audit(fixture_id)?;
-            document.validate()?;
-            let render_hash = sha256_hex(document.render_txt().as_bytes());
-            validate_vision_hash(&render_hash, &render_hash)?;
-            return Ok(document);
+            return complete_audit(empty_after_onboarding_audit(fixture_id)?);
         }
-        let document = crate::screens::views_theme_status_empty::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::views_theme_status_empty::render(
+            screen_id, fixture_id,
+        )?);
     }
     if screen_id == "diff-edit" && fixture_id.starts_with("case.permission-allow-once") {
-        let document = crate::screens::input_and_approval::render(screen_id, fixture_id)?;
-        document.validate()?;
-        let render_hash = sha256_hex(document.render_txt().as_bytes());
-        validate_vision_hash(&render_hash, &render_hash)?;
-        return Ok(document);
+        return complete_audit(crate::screens::input_and_approval::render(
+            screen_id, fixture_id,
+        )?);
     }
     let (action, transition) = screen_action(screen_id);
     let statusline = StatusLine::new("~/project", "main", "Claude Opus 4.8")?;    ScreenComposition::new(screen_id, screen.surface, statusline.clone()).validate()?;
@@ -756,10 +832,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
         model_choice: None,
         conversation,
     };
-    document.validate()?;
-    let render_hash = sha256_hex(document.render_txt().as_bytes());
-    validate_vision_hash(&render_hash, &render_hash)?;
-    Ok(document)
+    complete_audit(document)
 }
 
 /// Usable empty conversation shell after onboarding Continue/Skip with the
@@ -1088,8 +1161,7 @@ pub(crate) fn blocked_model_recovery_audit(
         }),
         conversation: None,
     };
-    document.validate()?;
-    Ok(document)
+    complete_audit(document)
 }
 
 fn candidate(

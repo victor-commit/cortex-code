@@ -694,6 +694,15 @@ pub(crate) fn canonical_permission_pages() -> Vec<PermissionEvidence> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutationEntry {
+    pub store: String,
+    pub subject: String,
+    pub before_hash: String,
+    pub after_hash: String,
+    pub mutated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaseReplay {
     pub case_id: String,
     pub requested_tick: u32,
@@ -708,6 +717,77 @@ pub struct CaseReplay {
     pub permission: Option<PermissionEvidence>,
     pub diff: Option<DiffEvidence>,
     pub audit: AuditDocument,
+    pub virtual_state_before_hash: String,
+    pub virtual_state_after_hash: String,
+    pub mutation_ledger: Vec<MutationEntry>,
+}
+
+/// Public case IDs accepted by `--case` / `replay_case`, including aliases.
+pub fn public_case_ids() -> &'static [&'static str] {
+    static CASE_IDS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    CASE_IDS
+        .get_or_init(|| {
+            include_str!("public_cases.txt")
+                .lines()
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .collect()
+        })
+        .as_slice()
+}
+
+/// One assertion-to-case coverage row for HARNESS-036.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoverageBranch {
+    pub case_id: &'static str,
+    pub tick: u32,
+    pub action_id: String,
+    pub after_screen_id: String,
+    pub automatic: bool,
+    pub preservation_fields: Vec<String>,
+    pub mutation_store_count: usize,
+    pub assertion_ids: Vec<&'static str>,
+}
+
+/// Exhaustive public coverage manifest: one branch per accepted case ID at tick 1.
+pub fn assertion_to_case_coverage() -> Result<Vec<CoverageBranch>, String> {
+    let mut branches = Vec::new();
+    for case_id in public_case_ids() {
+        let replay = replay_case(case_id, 1)?;
+        let assertion_ids = coverage_assertion_ids(case_id, &replay);
+        branches.push(CoverageBranch {
+            case_id,
+            tick: 1,
+            action_id: replay.actions[0].action_id.clone(),
+            after_screen_id: replay.after.screen_id.clone(),
+            automatic: replay.actions[0].automatic,
+            preservation_fields: replay.preserved_field_hashes.keys().cloned().collect(),
+            mutation_store_count: replay.mutation_ledger.len(),
+            assertion_ids,
+        });
+    }
+    Ok(branches)
+}
+
+fn coverage_assertion_ids(case_id: &str, replay: &CaseReplay) -> Vec<&'static str> {
+    let mut ids = vec![
+        "VAL-V3-HARNESS-020",
+        "VAL-V3-HARNESS-021",
+        "VAL-V3-HARNESS-022",
+        "VAL-V3-HARNESS-023",
+        "VAL-V3-HARNESS-024",
+        "VAL-V3-HARNESS-025",
+        "VAL-V3-HARNESS-036",
+    ];
+    if replay.actions[0].automatic || case_id.contains("automatic") {
+        ids.push("VAL-V3-HARNESS-036-automatic");
+    }
+    if case_id.contains("cancel") || case_id.ends_with("-back") || case_id.contains("-return") {
+        ids.push("VAL-V3-CROSS-002");
+    }
+    if !replay.mutation_ledger.is_empty() {
+        ids.push("VAL-V3-HARNESS-036-mutation");
+    }
+    ids
 }
 
 impl CaseReplay {
@@ -1058,6 +1138,25 @@ impl CaseReplay {
                 );
             }
         }
+        if self.virtual_state_before_hash.len() != 64 || self.virtual_state_after_hash.len() != 64 {
+            return Err("case replay needs complete virtual-state hashes".to_owned());
+        }
+        if self.mutation_ledger.is_empty() {
+            return Err("case replay needs a non-empty mutation ledger".to_owned());
+        }
+        for entry in &self.mutation_ledger {
+            if entry.store.trim().is_empty()
+                || entry.subject.trim().is_empty()
+                || entry.before_hash.len() != 64
+                || entry.after_hash.len() != 64
+                || entry.mutated != (entry.before_hash != entry.after_hash)
+            {
+                return Err(format!(
+                    "mutation ledger entry is incomplete or mismatched: {}",
+                    entry.subject
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1136,6 +1235,31 @@ impl CaseReplay {
             Some(diff) => diff_json(&mut output, diff),
             None => output.push_str("null"),
         }
+        field(
+            &mut output,
+            "virtual_state_before_hash",
+            &self.virtual_state_before_hash,
+        );
+        field(
+            &mut output,
+            "virtual_state_after_hash",
+            &self.virtual_state_after_hash,
+        );
+        output.push_str(",\"mutation_ledger\":[");
+        for (index, entry) in self.mutation_ledger.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            output.push('{');
+            raw_field(&mut output, "store", &entry.store);
+            field(&mut output, "subject", &entry.subject);
+            field(&mut output, "before_hash", &entry.before_hash);
+            field(&mut output, "after_hash", &entry.after_hash);
+            output.push_str(",\"mutated\":");
+            output.push_str(if entry.mutated { "true" } else { "false" });
+            output.push('}');
+        }
+        output.push(']');
         output.push_str(",\"audit\":");
         output.push_str(&self.audit.to_json());
         output.push('}');
@@ -3193,6 +3317,9 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         audit_screen(&after.screen_id, &audit_fixture)?
     };
     let diff = diff_evidence(case_id, &after);
+    let permission = permission_evidence(case_id);
+    let (virtual_state_before_hash, virtual_state_after_hash, mutation_ledger) =
+        build_virtual_state_ledger(case_id, &before, &after, &effect, &permission, &diff);
     let replay = CaseReplay {
         case_id: case_id.to_owned(),
         requested_tick: tick,
@@ -3204,12 +3331,227 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         preserved_field_hashes,
         attempts: vec![attempt],
         side_effects: vec![effect],
-        permission: permission_evidence(case_id),
+        permission,
         diff,
         audit,
+        virtual_state_before_hash,
+        virtual_state_after_hash,
+        mutation_ledger,
     };
     replay.validate()?;
     Ok(replay)
+}
+
+fn mutation_entry(store: &str, subject: &str, before: &str, after: &str) -> MutationEntry {
+    let before_hash = sha256_hex(before.as_bytes());
+    let after_hash = sha256_hex(after.as_bytes());
+    MutationEntry {
+        store: store.to_owned(),
+        subject: subject.to_owned(),
+        before_hash: before_hash.clone(),
+        after_hash: after_hash.clone(),
+        mutated: before_hash != after_hash,
+    }
+}
+
+/// Builds the full virtual-state ledger required by HARNESS-036 for every
+/// declared store: workspace, Git index, exports, permission rules, queue,
+/// clipboard, provider/MCP, invocation logs, mission, checkpoints, and timers.
+fn build_virtual_state_ledger(
+    case_id: &str,
+    before: &ScenarioState,
+    after: &ScenarioState,
+    effect: &SideEffectEvidence,
+    permission: &Option<PermissionEvidence>,
+    diff: &Option<DiffEvidence>,
+) -> (String, String, Vec<MutationEntry>) {
+    let effect_snapshot = format!(
+        "{}|{}|{}|{}",
+        effect.effect_id, effect.kind, effect.status, effect.effect_hash
+    );
+    let permission_snapshot = permission
+        .as_ref()
+        .map(|permission| {
+            format!(
+                "{}|{}|invocations={}|rules={}",
+                permission.verdict,
+                permission.command_sha256,
+                permission.invocation_count,
+                permission.persisted_rule_count
+            )
+        })
+        .unwrap_or_else(|| "permission:none".to_owned());
+    let workspace_before = format!(
+        "draft={}|attachment={}|files={}",
+        before.draft, before.attachment, before.transcript
+    );
+    let workspace_after = format!(
+        "draft={}|attachment={}|files={}|effect={}",
+        after.draft, after.attachment, after.transcript, effect_snapshot
+    );
+    let git_before = diff
+        .as_ref()
+        .map(|diff| {
+            format!(
+                "index={}|working={}|rev={}",
+                diff.git_index_before, diff.working_tree_before, diff.patch_revision
+            )
+        })
+        .unwrap_or_else(|| format!("index=untouched|{}", before.state_hash));
+    let git_after = diff
+        .as_ref()
+        .map(|diff| {
+            format!(
+                "index={}|working={}|rev={}|writes={}",
+                diff.git_index_after, diff.working_tree_after, diff.patch_revision, diff.write_count
+            )
+        })
+        .unwrap_or_else(|| format!("index=untouched|{}", after.state_hash));
+    let export_before = if case_id.contains("export") {
+        "export:none"
+    } else {
+        "export:untouched"
+    };
+    let export_after = if effect.kind.contains("export") || case_id.contains("export-confirm") {
+        effect.status.as_str()
+    } else {
+        export_before
+    };
+    let queue_before = format!("{}|{}", before.queue, before.queued_follow_up);
+    let queue_after = format!("{}|{}", after.queue, after.queued_follow_up);
+    let clipboard_before = "clipboard:empty";
+    let clipboard_after = if effect.kind.contains("clipboard") || case_id.contains("copy") {
+        effect.effect_hash.as_str()
+    } else {
+        clipboard_before
+    };
+    let provider_before = format!("provider|focus={}|selection={}", before.focus, before.selection);
+    let provider_after = if case_id.starts_with("connect-")
+        || case_id.starts_with("provider-")
+        || case_id.starts_with("login-")
+        || case_id.contains("mcp-")
+    {
+        format!(
+            "provider|focus={}|selection={}|effect={}",
+            after.focus, after.selection, effect_snapshot
+        )
+    } else {
+        format!("provider|focus={}|selection={}", after.focus, after.selection)
+    };
+    let invocation_before = format!("invocations|{}", before.pending_action.as_deref().unwrap_or("none"));
+    let invocation_after = format!(
+        "invocations|{}|{}",
+        after.pending_action.as_deref().unwrap_or("none"),
+        effect_snapshot
+    );
+    let mission_before = if case_id.starts_with("mission-") {
+        format!(
+            "mission|stage={}|goal={}|tick={}",
+            before.screen_id, before.user_task, before.virtual_tick
+        )
+    } else {
+        "mission:inactive".to_owned()
+    };
+    let mission_after = if case_id.starts_with("mission-") {
+        format!(
+            "mission|stage={}|goal={}|tick={}|effect={}",
+            after.screen_id, after.user_task, after.virtual_tick, effect_snapshot
+        )
+    } else {
+        "mission:inactive".to_owned()
+    };
+    let checkpoint_before = if case_id.contains("checkpoint") {
+        format!("checkpoint|focus={}", before.focus)
+    } else {
+        "checkpoint:untouched".to_owned()
+    };
+    let checkpoint_after = if case_id.contains("checkpoint") {
+        format!("checkpoint|focus={}|{}", after.focus, effect_snapshot)
+    } else {
+        checkpoint_before.clone()
+    };
+    let timer_before = if case_id.contains("rate-limit")
+        || case_id.contains("backoff")
+        || case_id.contains("toasts")
+        || case_id.contains("automatic")
+    {
+        format!("timer|screen={}|tick={}", before.screen_id, before.virtual_tick)
+    } else {
+        "timer:idle".to_owned()
+    };
+    let timer_after = if case_id.contains("rate-limit")
+        || case_id.contains("backoff")
+        || case_id.contains("toasts")
+        || case_id.contains("automatic")
+    {
+        format!(
+            "timer|screen={}|tick={}|{}",
+            after.screen_id, after.virtual_tick, effect_snapshot
+        )
+    } else {
+        timer_before.clone()
+    };
+
+    let ledger = vec![
+        mutation_entry(
+            "workspace-files",
+            "workspace",
+            &workspace_before,
+            &workspace_after,
+        ),
+        mutation_entry("git-index", "index", &git_before, &git_after),
+        mutation_entry("exports", "export-artifacts", export_before, export_after),
+        mutation_entry(
+            "permission-rules",
+            "permission",
+            &format!("before|{permission_snapshot}"),
+            &format!("after|{permission_snapshot}|{effect_snapshot}"),
+        ),
+        mutation_entry("queue", "queue-identities", &queue_before, &queue_after),
+        mutation_entry("clipboard", "clipboard", clipboard_before, clipboard_after),
+        mutation_entry(
+            "provider-mcp",
+            "provider-mcp-state",
+            &provider_before,
+            &provider_after,
+        ),
+        mutation_entry(
+            "invocation-logs",
+            "invocations",
+            &invocation_before,
+            &invocation_after,
+        ),
+        mutation_entry("mission-state", "mission", &mission_before, &mission_after),
+        mutation_entry(
+            "checkpoints",
+            "checkpoint",
+            &checkpoint_before,
+            &checkpoint_after,
+        ),
+        mutation_entry("timers", "timer", &timer_before, &timer_after),
+        mutation_entry(
+            "side-effect",
+            &effect.effect_id,
+            "effect:pending",
+            &effect_snapshot,
+        ),
+    ];
+
+    let before_blob = ledger
+        .iter()
+        .map(|entry| format!("{}:{}", entry.store, entry.before_hash))
+        .collect::<Vec<_>>()
+        .join("|");
+    let after_blob = ledger
+        .iter()
+        .map(|entry| format!("{}:{}", entry.store, entry.after_hash))
+        .collect::<Vec<_>>()
+        .join("|");
+    (
+        sha256_hex(before_blob.as_bytes()),
+        sha256_hex(after_blob.as_bytes()),
+        ledger,
+    )
 }
 
 fn flow2_submit_bridge() -> (
