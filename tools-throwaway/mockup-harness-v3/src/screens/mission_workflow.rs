@@ -88,6 +88,15 @@ const MISSION_SUBJECT: &str = "mission.release.1";
 const PENDING_LAUNCH: &str = "pending.mission.launch";
 const FIX_SUBJECT: &str = "task.fix.safe-publish";
 const VALIDATION_SUBJECT: &str = "validation.release.2";
+const SAFE_BOUNDARY_ID: &str = "boundary.after-task.note-update";
+const INVOCATION_ID: &str = "invocation.mission.release.1";
+const COMPLETED_TASK_ID: &str = "task.review-notes";
+const REPLAN_ADDED_TASK: &str = "Document the owner handoff checklist";
+const REPLAN_REMOVED_TASK: &str = "Update the next-step note after fixes";
+const REPLAN_REPLACED_FROM: &str = "Check the safe publish path";
+const REPLAN_REPLACED_TO: &str = "Recheck the safe publish path after the path evidence";
+const REPLAN_DEFERRED_TASK: &str = "Align the publish checklist order";
+const STOPPED_REMAINING: &str = "Remaining work was not run · abandoned on stop";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -104,9 +113,11 @@ enum LaunchVariant {
 
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
+    let lower_fixture = fixture_id.to_ascii_lowercase();
     let surface = match screen_id {
         "workflow-launch" | "workflow-launch-blocked" | "workflow-monitor-failure"
         | "reviewer-approved" => Surface::ActionDock,
+        "workflow-monitor" if monitor_uses_action_dock(&lower_fixture) => Surface::ActionDock,
         "workflow-monitor" => Surface::ConversationShell,
         "reviewer-output"
         | "team-board"
@@ -184,6 +195,183 @@ fn render_proposal(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     write_conversation_header(canvas)?;
+    let lower = fixture_id.to_ascii_lowercase();
+    let replan = lower.contains("replan");
+
+    if replan {
+        canvas.write(10, 4, "Mission proposal · revised plan", TextStyle::muted())?;
+        canvas.write(12, 4, MISSION_GOAL, TextStyle::bright())?;
+        canvas.write(13, 4, MISSION_OUTCOME, TextStyle::text())?;
+        canvas.write(15, 4, "Completed kept", TextStyle::bright())?;
+        canvas.write(16, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
+        canvas.write(18, 4, "Plan changes", TextStyle::bright())?;
+        canvas.write(
+            19,
+            4,
+            &format!("  + 1 added · {REPLAN_ADDED_TASK}"),
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            20,
+            4,
+            &format!("  - 1 removed · {REPLAN_REMOVED_TASK}"),
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            21,
+            4,
+            &format!("  ~ 1 replaced · {REPLAN_REPLACED_FROM} → {REPLAN_REPLACED_TO}"),
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            22,
+            4,
+            &format!("  … 1 deferred · {REPLAN_DEFERRED_TASK}"),
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            24,
+            4,
+            "Completed tasks stay outside mutation counts. Accept runs fresh preflight first.",
+            TextStyle::muted(),
+        )?;
+
+        write_dock_border(canvas)?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Accept the revised plan?",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Accept applies exact deltas, then automatic preflight before any resume.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Accept plan",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "  [esc] Keep discussing",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "No execution starts until preflight finishes.",
+            TextStyle::muted(),
+        )?;
+
+        let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-proposal",
+                PROPOSAL_SUBJECT,
+                reference(12, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-goal",
+                PROPOSAL_SUBJECT,
+                reference(12, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "task-plan",
+                "task.replan.release",
+                reference(18, 4, 48),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "replan-counts",
+                "replan.deltas.1-1-1-1",
+                reference(19, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "completed-work",
+                COMPLETED_TASK_ID,
+                reference(16, 4, 40),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "accept-plan",
+                reference(DOCK_TOP + 3, 4, 26),
+                "summary",
+                Some(action("action.mission.accept-plan", "Accept plan", false)),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "keep-discussing",
+                reference(DOCK_TOP + 4, 4, 28),
+                "summary",
+                Some(action(
+                    "action.mission.proposal-cancel",
+                    "Keep discussing",
+                    false,
+                )),
+            ),
+        ];
+        let transitions = vec![
+            transition(
+                "action.mission.accept-plan",
+                screen_id,
+                "workflow-launch",
+                "automatic",
+                "accepting the revised plan runs automatic preflight before execution resumes",
+            ),
+            transition(
+                "action.mission.proposal-cancel",
+                screen_id,
+                "chat-turn",
+                "cancel",
+                "leaving the replan proposal keeps the draft conversation ready to revise",
+            ),
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
     canvas.write(10, 4, "Mission proposal", TextStyle::muted())?;
     canvas.write(12, 4, MISSION_GOAL, TextStyle::bright())?;
     canvas.write(13, 4, MISSION_OUTCOME, TextStyle::text())?;
@@ -364,7 +552,7 @@ fn render_preflight_running(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  No Start mission action yet",
+        "  Launch decision stays closed until checks finish",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -752,6 +940,31 @@ fn render_workflow_launch_blocked(
     ))
 }
 
+fn monitor_uses_action_dock(lower: &str) -> bool {
+    lower.contains("intervene")
+        || lower.contains("pause-confirm")
+        || lower.contains("pause_confirm")
+        || lower.contains("pause-open")
+        || lower.contains("pause_open")
+        || lower.contains("stop-confirm")
+        || lower.contains("stop_confirm")
+        || lower.contains("stop-open")
+        || lower.contains("stop_open")
+        || lower.contains(".paused")
+        || lower.contains("monitor.paused")
+        || lower.contains("monitor-paused")
+        || lower.contains(".stopped")
+        || lower.contains("monitor.stopped")
+        || lower.contains("monitor-stopped")
+        || lower.contains("restart-paused")
+        || lower.contains("restart-stopped")
+        || lower.contains("restart-running")
+        || lower.contains("restart-blocked")
+        || lower.contains("restart-validating")
+        || lower.contains("restart-reviewing")
+        || lower.contains("restart-awaiting")
+}
+
 fn render_workflow_monitor(
     canvas: &mut Canvas,
     screen_id: &str,
@@ -760,9 +973,21 @@ fn render_workflow_monitor(
     write_conversation_header(canvas)?;
     let lower = fixture_id.to_ascii_lowercase();
     let expanded = lower.contains("progress");
-    let validating = lower.contains("validating");
+    let validating = lower.contains("validating") && !lower.contains("restart-validating");
     let fix_planned = lower.contains("fix-planned") || lower.contains("fix_planned");
     let fix_working = lower.contains("fix-working") || lower.contains("fix_working");
+
+    // Intervention and lifecycle docks (VAL-V3-F6-016/037/040/054/055).
+    if lower.contains("intervene")
+        || lower.contains("pause")
+        || lower.contains("stop")
+        || lower.contains("paused")
+        || lower.contains("stopped")
+        || lower.contains("resume")
+        || lower.contains("restart-")
+    {
+        return render_monitor_lifecycle(canvas, screen_id, fixture_id, &lower);
+    }
 
     if validating {
         // Automatic validation stage: zero primary actions (VAL-V3-F6-052).
@@ -1038,6 +1263,8 @@ fn render_workflow_monitor(
         "  Keep the risk note short before we publish.",
         TextStyle::text(),
     )?;
+    // Secondary intervention entry stays subordinate to View progress (VAL-V3-F6-016).
+    canvas.write(21, 4, "[i] Intervene", TextStyle::muted())?;
     // Advanced runtime evidence stays undisclosed on the compact default;
     // scenarios open concurrency-metrics only after an explicit request.
 
@@ -1091,15 +1318,1091 @@ fn render_workflow_monitor(
                 false,
             )),
         ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "open-intervene",
+            reference(21, 4, 18),
+            "summary",
+            Some(action(
+                "action.mission.open-intervene",
+                "Intervene",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.view-progress",
+            screen_id,
+            "workflow-monitor",
+            "direct",
+            "progress disclosure returns to the same compact monitor",
+        ),
+        transition(
+            "action.mission.open-intervene",
+            screen_id,
+            "workflow-monitor",
+            "direct",
+            "intervene opens a focused consequence-aware dock under the healthy monitor",
+        ),
+    ];
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// Pause, intervene, stop, resume, restart, and stopped inspection docks.
+fn render_monitor_lifecycle(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+    lower: &str,
+) -> Result<ScreenEvidence, String> {
+    let paused = lower.contains("paused")
+        || lower.contains("restart-paused")
+        || (lower.contains("pause")
+            && !lower.contains("pause-open")
+            && !lower.contains("pause_open")
+            && !lower.contains("pause-confirm")
+            && !lower.contains("pause_confirm")
+            && !lower.contains("resume")
+            && !lower.contains("intervene"));
+    let pause_open = lower.contains("pause-open") || lower.contains("pause_open");
+    let pause_confirm = lower.contains("pause-confirm") || lower.contains("pause_confirm");
+    let stopped = lower.contains("stopped") || lower.contains("restart-stopped");
+    let stop_open = lower.contains("stop-open") || lower.contains("stop_open");
+    let stop_confirm = lower.contains("stop-confirm") || lower.contains("stop_confirm");
+    let restart_running = lower.contains("restart-running");
+    let restart_blocked = lower.contains("restart-blocked");
+    let restart_validating = lower.contains("restart-validating");
+    let restart_reviewing = lower.contains("restart-reviewing");
+    let restart_awaiting = lower.contains("restart-awaiting");
+    let resume_running =
+        lower.contains("resumed") || lower.contains("after-resume") || lower.contains("resume");
+
+    if restart_reviewing {
+        write_mission_summary(canvas, 10, "Review", 2, 1, None)?;
+        canvas.write(
+            14,
+            4,
+            "Restored reviewing stage for this mission. No auto-advance.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(16, 4, "› composer ready", TextStyle::muted())?;
+        canvas.write(17, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        return lifecycle_passive(
+            screen_id,
+            fixture_id,
+            "stage.reviewing",
+            "Review",
+            "mission restored at review without auto-advance",
+        );
+    }
+    if restart_awaiting {
+        write_mission_summary(canvas, 10, "Ready for completion", 3, 0, None)?;
+        canvas.write(
+            14,
+            4,
+            "Restored awaiting human completion. Approval required.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(16, 4, "› composer ready", TextStyle::muted())?;
+        canvas.write(17, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        return lifecycle_passive(
+            screen_id,
+            fixture_id,
+            "stage.awaiting-human",
+            "Ready for completion",
+            "mission restored at human completion without auto-approval",
+        );
+    }
+    if restart_validating {
+        write_mission_summary(canvas, 10, "Validating", 1, 1, None)?;
+        canvas.write(
+            13,
+            4,
+            "● Fresh validation is running on the repaired result.",
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            14,
+            4,
+            "Restored validating stage. No auto-advance past validation.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(16, 4, "› composer ready", TextStyle::muted())?;
+        canvas.write(17, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        return lifecycle_passive(
+            screen_id,
+            fixture_id,
+            "stage.validating",
+            "Validating",
+            "mission restored mid-validation without replaying finished work",
+        );
+    }
+    if restart_blocked {
+        write_mission_summary(
+            canvas,
+            10,
+            "Needs attention",
+            1,
+            2,
+            Some(FAILURE_CAUSE),
+        )?;
+        canvas.write(14, 4, "Needs attention", TextStyle::bright())?;
+        canvas.write(15, 4, &format!("  ✗ {TASK_3}"), TextStyle::text())?;
+        canvas.write(
+            16,
+            4,
+            "Restored blocked stage with the same cause and completed work.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
+        canvas.write(19, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        return lifecycle_passive(
+            screen_id,
+            fixture_id,
+            "stage.blocked",
+            "Needs attention",
+            "mission restored at blocked stage without duplicate repair",
+        );
+    }
+    if restart_running || (resume_running && !paused && !pause_open && !pause_confirm) {
+        let card = MissionCard::new(MISSION_GOAL, "Running", 1, 2, None, "View progress");
+        write_component(canvas, 10, 4, &card)?;
+        canvas.write(
+            15,
+            4,
+            if resume_running && !restart_running {
+                "Resumed once from the saved safe boundary. Finished work was not rerun."
+            } else {
+                "Restored running stage. Mission identity and counts unchanged."
+            },
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            16,
+            4,
+            &format!("Safe boundary · {SAFE_BOUNDARY_ID}"),
+            TextStyle::muted(),
+        )?;
+        canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
+        canvas.write(19, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        canvas.write(21, 4, "[i] Intervene", TextStyle::muted())?;
+        let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-card",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "progress-stage",
+                "stage.running",
+                reference(11, 4, 36),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "safe-boundary",
+                SAFE_BOUNDARY_ID,
+                reference(16, 4, 48),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "invocation",
+                INVOCATION_ID,
+                reference(15, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "view-progress",
+                reference(12, 4, 28),
+                "summary",
+                Some(action(
+                    "action.mission.view-progress",
+                    "View progress",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "open-intervene",
+                reference(21, 4, 18),
+                "summary",
+                Some(action(
+                    "action.mission.open-intervene",
+                    "Intervene",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "restart-restore",
+                "mission.restart",
+                reference(15, 4, 56),
+                "summary",
+                Some(action(
+                    "action.mission.restart-restore",
+                    "Restore mission",
+                    true,
+                )),
+            ),
+        ];
+        let transitions = vec![
+            transition(
+                "action.mission.view-progress",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "progress disclosure returns to the same compact monitor",
+            ),
+            transition(
+                "action.mission.open-intervene",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "intervene opens a focused consequence-aware dock",
+            ),
+            transition(
+                "action.mission.restart-restore",
+                screen_id,
+                screen_id,
+                "direct",
+                "session restart restored running without duplicating mission work or auto-advancing",
+            ),
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
+    if stopped || stop_confirm {
+        write_mission_summary(canvas, 10, "Stopped", 1, 2, None)?;
+        canvas.write(14, 4, "Stopped", TextStyle::bright())?;
+        canvas.write(
+            15,
+            4,
+            STOPPED_REMAINING,
+            TextStyle::text(),
+        )?;
+        canvas.write(
+            16,
+            4,
+            &format!("Preserved · completed work and evidence · {TASK_1}"),
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            17,
+            4,
+            "No Resume. Only Replan may create a new proposed continuation.",
+            TextStyle::muted(),
+        )?;
+        write_dock_border(canvas)?;
+        dock_line(canvas, DOCK_TOP + 1, "Mission stopped", TextStyle::bright())?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Inspect preserved work or return. Restart never resumes stopped work.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Return to conversation",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "  [d] Open detail",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "  [r] Replan",
+            TextStyle::muted(),
+        )?;
+        let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-card",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "progress-stage",
+                "stage.stopped",
+                reference(11, 4, 36),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "stopped-state",
+                "mission.stopped",
+                reference(15, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "completed-work",
+                COMPLETED_TASK_ID,
+                reference(16, 4, 52),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "invocation",
+                INVOCATION_ID,
+                reference(16, 4, 52),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "stopped-return",
+                reference(DOCK_TOP + 3, 4, 40),
+                "summary",
+                Some(action(
+                    "action.mission.stopped-return",
+                    "Return to conversation",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "open-detail",
+                reference(DOCK_TOP + 4, 4, 22),
+                "summary",
+                Some(action(
+                    "action.mission.open-stopped-detail",
+                    "Open detail",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "replan",
+                reference(DOCK_TOP + 5, 4, 18),
+                "summary",
+                Some(action("action.mission.replan", "Replan", false)),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "restart-restore",
+                "mission.restart",
+                reference(15, 4, 56),
+                "summary",
+                Some(action(
+                    "action.mission.restart-restore",
+                    "Restore mission",
+                    true,
+                )),
+            ),
+        ];
+        let transitions = vec![
+            transition(
+                "action.mission.stopped-return",
+                screen_id,
+                "chat-turn",
+                "direct",
+                "returning from stopped restores the originating conversation composer",
+            ),
+            transition(
+                "action.mission.open-stopped-detail",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "stopped detail stays inspectable without execution",
+            ),
+            transition(
+                "action.mission.replan",
+                screen_id,
+                "workflow-launch",
+                "direct",
+                "replan from stopped opens a new proposal and never auto-executes",
+            ),
+            transition(
+                "action.mission.restart-restore",
+                screen_id,
+                screen_id,
+                "direct",
+                "session restart restored stopped without auto-resume",
+            ),
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
+    if stop_open {
+        write_mission_summary(canvas, 10, "Running", 1, 2, None)?;
+        canvas.write(
+            14,
+            4,
+            "Stopping abandons remaining tasks after the last completed result.",
+            TextStyle::muted(),
+        )?;
+        write_dock_border(canvas)?;
+        dock_line(canvas, DOCK_TOP + 1, "Stop this mission?", TextStyle::bright())?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Preserved: completed work, evidence, and conversation. Remaining work is abandoned.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Stop mission",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "  [esc] Cancel · keep running",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "Restart never resumes stopped work automatically.",
+            TextStyle::muted(),
+        )?;
+        let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-card",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "stop-mission",
+                reference(DOCK_TOP + 3, 4, 28),
+                "summary",
+                Some(action("action.mission.stop-confirm", "Stop mission", false)),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "cancel-stop",
+                reference(DOCK_TOP + 4, 4, 36),
+                "summary",
+                Some(action("action.mission.stop-cancel", "Cancel", false)),
+            ),
+        ];
+        let transitions = vec![
+            transition(
+                "action.mission.stop-confirm",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "confirming stop produces a persistent inspectable Stopped state",
+            ),
+            transition(
+                "action.mission.stop-cancel",
+                screen_id,
+                "workflow-monitor",
+                "cancel",
+                "cancel restores the prior running monitor without abandoning work",
+            ),
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
+    if pause_open || pause_confirm {
+        write_mission_summary(canvas, 10, "Running", 1, 2, None)?;
+        canvas.write(
+            14,
+            4,
+            "Current task may finish. New work waits at the next safe boundary.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            15,
+            4,
+            &format!("Safe boundary · {SAFE_BOUNDARY_ID}"),
+            TextStyle::muted(),
+        )?;
+        write_dock_border(canvas)?;
+        dock_line(canvas, DOCK_TOP + 1, "Pause this mission?", TextStyle::bright())?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Pause at a safe boundary after the current task finishes. Completed work stays preserved.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Pause mission",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "  [esc] Cancel · keep running",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "Resume later continues once from this boundary.",
+            TextStyle::muted(),
+        )?;
+        let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-card",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "safe-boundary",
+                SAFE_BOUNDARY_ID,
+                reference(15, 4, 48),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "pause-mission",
+                reference(DOCK_TOP + 3, 4, 30),
+                "summary",
+                Some(action(
+                    "action.mission.pause-confirm",
+                    "Pause mission",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "cancel-pause",
+                reference(DOCK_TOP + 4, 4, 36),
+                "summary",
+                Some(action("action.mission.pause-cancel", "Cancel", false)),
+            ),
+        ];
+        let transitions = vec![
+            transition(
+                "action.mission.pause-confirm",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "confirming pause persists a safe-boundary paused stage",
+            ),
+            transition(
+                "action.mission.pause-cancel",
+                screen_id,
+                "workflow-monitor",
+                "cancel",
+                "cancel restores the running monitor without pausing",
+            ),
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
+    // Default: intervene chooser or paused shell.
+    let stage = if paused || lower.contains("restart-paused") {
+        "Paused"
+    } else {
+        "Running"
+    };
+    write_mission_summary(canvas, 10, stage, 1, 2, None)?;
+    canvas.write(
+        14,
+        4,
+        if stage == "Paused" {
+            "Paused at a safe boundary. Resume continues from this point once."
+        } else {
+            "Choose one intervention. Consequences stay focused and reversible when cancelled."
+        },
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        15,
+        4,
+        &format!("Safe boundary · {SAFE_BOUNDARY_ID}"),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        &format!("Completed kept · {TASK_1}"),
+        TextStyle::muted(),
+    )?;
+
+    write_dock_border(canvas)?;
+    if stage == "Paused" {
+        dock_line(canvas, DOCK_TOP + 1, "Mission paused", TextStyle::bright())?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Resume continues once from the saved safe boundary. Finished work is not rerun.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Resume",
+            TextStyle::accent(),
+        )?;
+        dock_line(canvas, DOCK_TOP + 4, "  [d] Replan", TextStyle::muted())?;
+        dock_line(canvas, DOCK_TOP + 5, "  [s] Stop", TextStyle::muted())?;
+        let pairs = lifecycle_paused_pairs(screen_id, fixture_id);
+        let transitions = vec![
+            transition(
+                "action.mission.resume",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "resume transitions paused to running exactly once from the safe boundary",
+            ),
+            transition(
+                "action.mission.replan",
+                screen_id,
+                "workflow-launch",
+                "direct",
+                "replan leaves paused monitoring for a revised proposal then preflight",
+            ),
+            transition(
+                "action.mission.stop-open",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "stop opens a consequence confirmation before abandoning remaining work",
+            ),
+            transition(
+                "action.mission.restart-restore",
+                screen_id,
+                screen_id,
+                "direct",
+                "session restart restored paused without duplicating mission work or auto-advancing",
+            ),
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
+    // Intervene dock: Pause focused by default (one primary).
+    dock_line(canvas, DOCK_TOP + 1, "Intervene in this mission", TextStyle::bright())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 2,
+        "Pause at the next safe boundary. Replan and Stop stay secondary.",
+        TextStyle::text(),
+    )?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        "› [enter] Pause",
+        TextStyle::accent(),
+    )?;
+    dock_line(canvas, DOCK_TOP + 4, "  [d] Replan", TextStyle::muted())?;
+    dock_line(canvas, DOCK_TOP + 5, "  [s] Stop · [esc] Cancel", TextStyle::muted())?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "safe-boundary",
+            SAFE_BOUNDARY_ID,
+            reference(15, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "pause-open",
+            reference(DOCK_TOP + 3, 4, 20),
+            "summary",
+            Some(action("action.mission.pause-open", "Pause", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "replan",
+            reference(DOCK_TOP + 4, 4, 18),
+            "summary",
+            Some(action("action.mission.replan", "Replan", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "stop-open",
+            reference(DOCK_TOP + 5, 4, 16),
+            "summary",
+            Some(action("action.mission.stop-open", "Stop", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "intervene-cancel",
+            reference(DOCK_TOP + 5, 4, 40),
+            "summary",
+            Some(action(
+                "action.mission.intervene-cancel",
+                "Cancel",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.pause-open",
+            screen_id,
+            "workflow-monitor",
+            "direct",
+            "pause opens a confirmation dock describing the safe boundary",
+        ),
+        transition(
+            "action.mission.replan",
+            screen_id,
+            "workflow-launch",
+            "direct",
+            "replan opens a revised conversational proposal with exact count deltas",
+        ),
+        transition(
+            "action.mission.stop-open",
+            screen_id,
+            "workflow-monitor",
+            "direct",
+            "stop opens a confirmation dock naming irreversible remaining-work abandonment",
+        ),
+        transition(
+            "action.mission.intervene-cancel",
+            screen_id,
+            "workflow-monitor",
+            "cancel",
+            "cancel restores the healthy monitor with View progress primary",
+        ),
+    ];
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn lifecycle_paused_pairs(
+    screen_id: &str,
+    fixture_id: &str,
+) -> [(SemanticCandidate, SemanticEvent); 9] {
+    [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "progress-stage",
+            "stage.paused",
+            reference(11, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "safe-boundary",
+            SAFE_BOUNDARY_ID,
+            reference(15, 4, 48),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "invocation",
+            INVOCATION_ID,
+            reference(14, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "resume",
+            reference(DOCK_TOP + 3, 4, 22),
+            "summary",
+            Some(action("action.mission.resume", "Resume", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "replan",
+            reference(DOCK_TOP + 4, 4, 18),
+            "summary",
+            Some(action("action.mission.replan", "Replan", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "stop-open",
+            reference(DOCK_TOP + 5, 4, 16),
+            "summary",
+            Some(action("action.mission.stop-open", "Stop", false)),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "restart-restore",
+            "mission.restart",
+            reference(14, 4, 56),
+            "summary",
+            Some(action(
+                "action.mission.restart-restore",
+                "Restore mission",
+                true,
+            )),
+        ),
+    ]
+}
+
+fn lifecycle_passive(
+    screen_id: &str,
+    fixture_id: &str,
+    stage_id: &str,
+    _stage_label: &str,
+    path: &str,
+) -> Result<ScreenEvidence, String> {
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "progress-stage",
+            stage_id,
+            reference(11, 4, 40),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "invocation",
+            INVOCATION_ID,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "completed-work",
+            COMPLETED_TASK_ID,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "restart-restore",
+            "mission.restart",
+            reference(10, 4, 56),
+            "summary",
+            Some(action(
+                "action.mission.restart-restore",
+                "Restore mission",
+                true,
+            )),
+        ),
     ];
     let transitions = vec![transition(
-        "action.mission.view-progress",
+        "action.mission.restart-restore",
         screen_id,
-        "workflow-monitor",
+        screen_id,
         "direct",
-        "progress disclosure returns to the same compact monitor",
+        path,
     )];
-
     Ok((
         pairs
             .iter()
@@ -1822,6 +3125,16 @@ fn render_workflow_monitor_failure(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     write_conversation_header(canvas)?;
+    let lower = fixture_id.to_ascii_lowercase();
+    let missing_input = lower.contains("missing-input") || lower.contains("missing_input");
+    let retry_eligible = lower.contains("retry-eligible") || lower.contains("retry_eligible");
+
+    let cause = if missing_input {
+        MISSING_INPUT
+    } else {
+        FAILURE_CAUSE
+    };
+
     // Compact card fields only; primary action lives in the dock.
     write_mission_summary(
         canvas,
@@ -1829,7 +3142,7 @@ fn render_workflow_monitor_failure(
         "Needs attention",
         1,
         2,
-        Some(FAILURE_CAUSE),
+        Some(cause),
     )?;
     canvas.write(
         14,
@@ -1846,7 +3159,7 @@ fn render_workflow_monitor_failure(
     canvas.write(
         16,
         4,
-        &format!("    {FAILURE_CAUSE}"),
+        &format!("    {cause}"),
         TextStyle::text(),
     )?;
     canvas.write(
@@ -1864,152 +3177,395 @@ fn render_workflow_monitor_failure(
     canvas.write(
         21,
         4,
-        "Completed work stays preserved. Create a fix task to repair.",
+        if retry_eligible {
+            "Retry is eligible for this task. Validation will rerun for the affected scope."
+        } else if missing_input {
+            "Missing input blocks retry. Provide the note before repair can continue."
+        } else {
+            "Completed work stays preserved. Create a fix task to repair."
+        },
         TextStyle::muted(),
     )?;
 
     write_dock_border(canvas)?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 1,
-        "Repair the validation failure",
-        TextStyle::bright(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 2,
-        "Create planned fix work from this failure and re-run validation.",
-        TextStyle::text(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 3,
-        "› [enter] Create a fix task",
-        TextStyle::accent(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 4,
-        "  [d] Open evidence",
-        TextStyle::muted(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "  [esc] Resume conversation",
-        TextStyle::muted(),
-    )?;
+    if retry_eligible {
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Retry eligible failed work",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            &format!("Retry · {TASK_3}. Fresh validation will rerun for this scope."),
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Retry task",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "  [d] Create a fix task",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "  [esc] Resume conversation",
+            TextStyle::muted(),
+        )?;
+    } else if missing_input {
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Missing input blocks repair",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Add the missing checklist note. Retry is not offered until input arrives.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Add missing input",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "  [d] Open evidence",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "  [esc] Resume conversation",
+            TextStyle::muted(),
+        )?;
+    } else {
+        dock_line(
+            canvas,
+            DOCK_TOP + 1,
+            "Repair the validation failure",
+            TextStyle::bright(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 2,
+            "Create planned fix work from this failure and re-run validation.",
+            TextStyle::text(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 3,
+            "› [enter] Create a fix task",
+            TextStyle::accent(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            "  [d] Open evidence",
+            TextStyle::muted(),
+        )?;
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            "  [esc] Resume conversation",
+            TextStyle::muted(),
+        )?;
+    }
 
-    let pairs = [
-        semantic(
-            screen_id,
-            fixture_id,
-            "origin",
-            "mission-conversation",
-            reference(2, 4, 34),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "mission-card",
-            MISSION_SUBJECT,
-            reference(10, 4, 56),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "mission-goal",
-            MISSION_SUBJECT,
-            reference(10, 4, 56),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "blocker",
-            "blocker.validation-failed",
-            reference(12, 4, 64),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "failure",
-            "failure.publish-path",
-            reference(16, 4, 64),
-            "summary",
-            None,
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "primary-action",
-            "create-fix-task",
-            reference(DOCK_TOP + 3, 4, 34),
-            "summary",
-            Some(action(
+    let pairs = if retry_eligible {
+        vec![
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-card",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "blocker",
+                "blocker.validation-failed",
+                reference(12, 4, 64),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "failure",
+                "failure.publish-path",
+                reference(16, 4, 64),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "retry-scope",
+                "task.check-publish",
+                reference(DOCK_TOP + 2, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "retry-task",
+                reference(DOCK_TOP + 3, 4, 28),
+                "summary",
+                Some(action("action.mission.retry-task", "Retry task", false)),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "create-fix-task",
+                reference(DOCK_TOP + 4, 4, 30),
+                "summary",
+                Some(action(
+                    "action.mission.create-fix-task",
+                    "Create a fix task",
+                    false,
+                )),
+            ),
+        ]
+    } else if missing_input {
+        vec![
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-card",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "blocker",
+                "blocker.missing-input",
+                reference(12, 4, 64),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "failure",
+                "failure.missing-input",
+                reference(16, 4, 64),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "add-missing-input",
+                reference(DOCK_TOP + 3, 4, 34),
+                "summary",
+                Some(action(
+                    "action.mission.add-missing-input",
+                    "Add missing input",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "open-evidence",
+                reference(DOCK_TOP + 4, 4, 24),
+                "summary",
+                Some(action(
+                    "action.mission.open-evidence",
+                    "Open evidence",
+                    false,
+                )),
+            ),
+        ]
+    } else {
+        vec![
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-card",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "mission-goal",
+                MISSION_SUBJECT,
+                reference(10, 4, 56),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "blocker",
+                "blocker.validation-failed",
+                reference(12, 4, 64),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "failure",
+                "failure.publish-path",
+                reference(16, 4, 64),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "create-fix-task",
+                reference(DOCK_TOP + 3, 4, 34),
+                "summary",
+                Some(action(
+                    "action.mission.create-fix-task",
+                    "Create a fix task",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "view-validation-stages",
+                reference(DOCK_TOP + 4, 4, 24),
+                "summary",
+                Some(action(
+                    "action.mission.view-validation-stages",
+                    "Open evidence",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "open-evidence",
+                reference(DOCK_TOP + 4, 4, 24),
+                "summary",
+                Some(action(
+                    "action.mission.open-evidence",
+                    "Open evidence",
+                    false,
+                )),
+            ),
+        ]
+    };
+    let mut pairs = pairs;
+    let mut transitions = if retry_eligible {
+        vec![
+            transition(
+                "action.mission.retry-task",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "retry triggers fresh scoped execution and validation for the eligible task only",
+            ),
+            transition(
                 "action.mission.create-fix-task",
-                "Create a fix task",
-                false,
-            )),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "secondary-action",
-            "view-validation-stages",
-            reference(DOCK_TOP + 4, 4, 24),
-            "summary",
-            Some(action(
-                "action.mission.view-validation-stages",
-                "Open evidence",
-                false,
-            )),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "secondary-action",
-            "open-evidence",
-            reference(DOCK_TOP + 4, 4, 24),
-            "summary",
-            Some(action(
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "creating a fix task records the failure as planned repair work",
+            ),
+        ]
+    } else if missing_input {
+        vec![
+            transition(
+                "action.mission.add-missing-input",
+                screen_id,
+                "workflow-launch-blocked",
+                "direct",
+                "missing input resolution stays blocked until the checklist note is provided",
+            ),
+            transition(
                 "action.mission.open-evidence",
-                "Open evidence",
-                false,
-            )),
-        ),
-    ];
-    let mut pairs = pairs.to_vec();
-    let mut transitions = vec![
-        transition(
-            "action.mission.create-fix-task",
-            screen_id,
-            "workflow-monitor",
-            "direct",
-            "creating a fix task records the failure as planned repair work",
-        ),
-        transition(
-            "action.mission.view-validation-stages",
-            screen_id,
-            "verification-ladder",
-            "direct",
-            "validation stages open only from an explicit evidence action",
-        ),
-        transition(
-            "action.mission.open-evidence",
-            screen_id,
-            "verification-ladder",
-            "direct",
-            "evidence disclosure opens the validation stages for the same failure",
-        ),
-    ];
+                screen_id,
+                "verification-ladder",
+                "direct",
+                "evidence disclosure opens the validation stages for the same failure",
+            ),
+        ]
+    } else {
+        vec![
+            transition(
+                "action.mission.create-fix-task",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "creating a fix task records the failure as planned repair work",
+            ),
+            transition(
+                "action.mission.view-validation-stages",
+                screen_id,
+                "verification-ladder",
+                "direct",
+                "validation stages open only from an explicit evidence action",
+            ),
+            transition(
+                "action.mission.open-evidence",
+                screen_id,
+                "verification-ladder",
+                "direct",
+                "evidence disclosure opens the validation stages for the same failure",
+            ),
+        ]
+    };
     if fixture_id.contains("gate.mission.workflow-monitor-failure") {
         pairs.push(semantic(
             screen_id,
@@ -3554,8 +5110,16 @@ fn write_mission_summary(
 
 fn launch_variant(fixture_id: &str) -> LaunchVariant {
     let lower = fixture_id.to_ascii_lowercase();
-    if lower.contains("proposal") {
-        LaunchVariant::Proposal
+    if lower.contains("proposal") || lower.contains("replan") {
+        // Replan lands on a conversational proposal before preflight.
+        if lower.contains("preflight-running")
+            || lower.contains("preflight_running")
+            || lower.contains("preflight-run")
+        {
+            LaunchVariant::PreflightRunning
+        } else {
+            LaunchVariant::Proposal
+        }
     } else if lower.contains("preflight-running")
         || lower.contains("preflight_running")
         || lower.contains("preflight-run")

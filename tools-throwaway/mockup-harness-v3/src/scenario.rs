@@ -906,7 +906,18 @@ impl CaseReplay {
                         || self.attempts[0].outcome == "advanced-open"
                         || self.attempts[0].outcome == "group-expanded"
                         || self.attempts[0].outcome == "group-collapsed"
-                        || self.attempts[0].outcome == "returned"))
+                        || self.attempts[0].outcome == "returned"
+                        || self.attempts[0].outcome == "intervene-open"
+                        || self.attempts[0].outcome == "pause-open"
+                        || self.attempts[0].outcome == "paused"
+                        || self.attempts[0].outcome == "resumed-once"
+                        || self.attempts[0].outcome == "replan-open"
+                        || self.attempts[0].outcome == "preflight-running"
+                        || self.attempts[0].outcome == "retry-validating"
+                        || self.attempts[0].outcome == "stop-open"
+                        || self.attempts[0].outcome == "stopped"
+                        || self.attempts[0].outcome == "restored-stopped"
+                        || self.attempts[0].outcome.starts_with("restored-")))
                 && !(self.case_id.starts_with("tool-failed-")
                     && (self.attempts[0].count == 0
                         || self.attempts[0].outcome == "none"
@@ -1427,6 +1438,27 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-request-changes-cancel" => mission_request_changes_cancel(),
         "mission-approve-completion" => mission_approve_completion(),
         "mission-fix-loop-rerepair" => mission_fix_loop_rerepair(),
+        "mission-open-intervene" => mission_open_intervene(),
+        "mission-intervene-cancel" => mission_intervene_cancel(),
+        "mission-pause-open" => mission_pause_open(),
+        "mission-pause-confirm" => mission_pause_confirm(),
+        "mission-pause-cancel" => mission_pause_cancel(),
+        "mission-resume" => mission_resume(),
+        "mission-replan-open" => mission_replan_open(),
+        "mission-replan-accept" => mission_replan_accept(),
+        "mission-retry-eligible" => mission_retry_eligible(),
+        "mission-stop-open" => mission_stop_open(),
+        "mission-stop-confirm" => mission_stop_confirm(),
+        "mission-stop-cancel" => mission_stop_cancel(),
+        "mission-stopped-return" => mission_stopped_return(),
+        "mission-stopped-replan" => mission_stopped_replan(),
+        "mission-restart-running" => mission_restart_stage("running"),
+        "mission-restart-paused" => mission_restart_stage("paused"),
+        "mission-restart-blocked" => mission_restart_stage("blocked"),
+        "mission-restart-validating" => mission_restart_stage("validating"),
+        "mission-restart-reviewing" => mission_restart_stage("reviewing"),
+        "mission-restart-awaiting-human" => mission_restart_stage("awaiting-human"),
+        "mission-restart-stopped" => mission_restart_stage("stopped"),
         "login-choose-provider" => login_choose_provider(),
         "connect-method-oauth" => connect_method_oauth(),
         "connect-oauth-finish" => connect_oauth_finish(),
@@ -1768,6 +1800,135 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
                 after: sha256_hex(after.user_task.as_bytes()),
             },
         );
+    }
+    if case_id.starts_with("mission-")
+        && matches!(
+            case_id,
+            "mission-open-intervene"
+                | "mission-intervene-cancel"
+                | "mission-pause-open"
+                | "mission-pause-confirm"
+                | "mission-pause-cancel"
+                | "mission-resume"
+                | "mission-replan-open"
+                | "mission-replan-accept"
+                | "mission-retry-eligible"
+                | "mission-stop-open"
+                | "mission-stop-confirm"
+                | "mission-stop-cancel"
+                | "mission-stopped-return"
+                | "mission-stopped-replan"
+                | "mission-restart-running"
+                | "mission-restart-paused"
+                | "mission-restart-blocked"
+                | "mission-restart-validating"
+                | "mission-restart-reviewing"
+                | "mission-restart-awaiting-human"
+                | "mission-restart-stopped"
+        )
+    {
+        let (stage_before, stage_after) = match case_id {
+            "mission-pause-confirm" => ("running", "paused"),
+            "mission-resume" => ("paused", "running"),
+            "mission-stop-confirm" => ("running", "stopped"),
+            "mission-replan-accept" => ("replan", "preflight"),
+            "mission-retry-eligible" => ("blocked", "validating"),
+            "mission-replan-open" | "mission-stopped-replan" => ("running", "replan"),
+            "mission-restart-paused" => ("paused", "paused"),
+            "mission-restart-stopped" | "mission-stopped-return" => ("stopped", "stopped"),
+            "mission-restart-blocked" => ("blocked", "blocked"),
+            "mission-restart-validating" => ("validating", "validating"),
+            "mission-restart-reviewing" => ("reviewing", "reviewing"),
+            "mission-restart-awaiting-human" => ("awaiting-human", "awaiting-human"),
+            "mission-restart-running"
+            | "mission-open-intervene"
+            | "mission-intervene-cancel"
+            | "mission-pause-open"
+            | "mission-pause-cancel"
+            | "mission-stop-open"
+            | "mission-stop-cancel" => ("running", "running"),
+            _ => ("running", "running"),
+        };
+        preserved_field_hashes.insert(
+            "safe_boundary".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(FLOW6_SAFE_BOUNDARY.as_bytes()),
+                after: sha256_hex(FLOW6_SAFE_BOUNDARY.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "invocation_identity".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(FLOW6_INVOCATION.as_bytes()),
+                after: sha256_hex(FLOW6_INVOCATION.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "completed_work".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(FLOW6_COMPLETED_WORK.as_bytes()),
+                after: sha256_hex(FLOW6_COMPLETED_WORK.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "mission_stage".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(stage_before.as_bytes()),
+                after: sha256_hex(stage_after.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "mission_entity_count".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(FLOW6_ENTITY_COUNT.as_bytes()),
+                after: sha256_hex(FLOW6_ENTITY_COUNT.as_bytes()),
+            },
+        );
+        preserved_field_hashes.insert(
+            "completed_task_ids".to_owned(),
+            PreservedFieldHash {
+                before: sha256_hex(FLOW6_COMPLETED_TASK_IDS.as_bytes()),
+                after: sha256_hex(FLOW6_COMPLETED_TASK_IDS.as_bytes()),
+            },
+        );
+        if matches!(case_id, "mission-replan-open" | "mission-replan-accept" | "mission-stopped-replan")
+        {
+            preserved_field_hashes.insert(
+                "replan_added".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(b"0"),
+                    after: sha256_hex(b"1"),
+                },
+            );
+            preserved_field_hashes.insert(
+                "replan_removed".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(b"0"),
+                    after: sha256_hex(b"1"),
+                },
+            );
+            preserved_field_hashes.insert(
+                "replan_replaced".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(b"0"),
+                    after: sha256_hex(b"1"),
+                },
+            );
+            preserved_field_hashes.insert(
+                "replan_deferred".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(b"0"),
+                    after: sha256_hex(b"1"),
+                },
+            );
+            preserved_field_hashes.insert(
+                "task_identity_set".to_owned(),
+                PreservedFieldHash {
+                    before: sha256_hex(FLOW6_BEFORE_TASKS.as_bytes()),
+                    after: sha256_hex(FLOW6_AFTER_TASKS.as_bytes()),
+                },
+            );
+        }
     }
     match case_id {
         "checkpoint-undo-success" => insert_checkpoint_file_hashes(
@@ -2717,6 +2878,27 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mission-request-changes-cancel"
             | "mission-approve-completion"
             | "mission-fix-loop-rerepair"
+            | "mission-open-intervene"
+            | "mission-intervene-cancel"
+            | "mission-pause-open"
+            | "mission-pause-confirm"
+            | "mission-pause-cancel"
+            | "mission-resume"
+            | "mission-replan-open"
+            | "mission-replan-accept"
+            | "mission-retry-eligible"
+            | "mission-stop-open"
+            | "mission-stop-confirm"
+            | "mission-stop-cancel"
+            | "mission-stopped-return"
+            | "mission-stopped-replan"
+            | "mission-restart-running"
+            | "mission-restart-paused"
+            | "mission-restart-blocked"
+            | "mission-restart-validating"
+            | "mission-restart-reviewing"
+            | "mission-restart-awaiting-human"
+            | "mission-restart-stopped"
             | "mission-monitor-to-failure-bridge"
             | "mission-failure-to-review-bridge"
             | "mission-review-to-approved-bridge"
@@ -2830,6 +3012,55 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             }
             ("mission-review-to-approved-bridge", "reviewer-approved") => {
                 "gate.mission.reviewer-approved".to_owned()
+            }
+            ("mission-open-intervene", "workflow-monitor") => {
+                "workflow-monitor.intervene".to_owned()
+            }
+            ("mission-intervene-cancel", "workflow-monitor")
+            | ("mission-pause-cancel", "workflow-monitor")
+            | ("mission-stop-cancel", "workflow-monitor") => {
+                "gate.mission.workflow-monitor".to_owned()
+            }
+            ("mission-pause-open", "workflow-monitor") => {
+                "workflow-monitor.pause-open".to_owned()
+            }
+            ("mission-pause-confirm", "workflow-monitor")
+            | ("mission-restart-paused", "workflow-monitor") => {
+                "workflow-monitor.paused".to_owned()
+            }
+            ("mission-resume", "workflow-monitor") => "workflow-monitor.resumed".to_owned(),
+            ("mission-replan-open", "workflow-launch")
+            | ("mission-stopped-replan", "workflow-launch") => {
+                "workflow-launch.replan-proposal".to_owned()
+            }
+            ("mission-replan-accept", "workflow-launch") => {
+                "workflow-launch.preflight-running".to_owned()
+            }
+            ("mission-retry-eligible", "workflow-monitor") => {
+                "workflow-monitor.validating".to_owned()
+            }
+            ("mission-stop-open", "workflow-monitor") => "workflow-monitor.stop-open".to_owned(),
+            ("mission-stop-confirm", "workflow-monitor")
+            | ("mission-restart-stopped", "workflow-monitor") => {
+                "workflow-monitor.stopped".to_owned()
+            }
+            ("mission-stopped-return", "chat-turn") => {
+                "case.mission.complete.after.chat-turn.tick.1".to_owned()
+            }
+            ("mission-restart-running", "workflow-monitor") => {
+                "workflow-monitor.restart-running".to_owned()
+            }
+            ("mission-restart-blocked", "workflow-monitor") => {
+                "workflow-monitor.restart-blocked".to_owned()
+            }
+            ("mission-restart-validating", "workflow-monitor") => {
+                "workflow-monitor.restart-validating".to_owned()
+            }
+            ("mission-restart-reviewing", "workflow-monitor") => {
+                "workflow-monitor.restart-reviewing".to_owned()
+            }
+            ("mission-restart-awaiting-human", "workflow-monitor") => {
+                "workflow-monitor.restart-awaiting-human".to_owned()
             }
             (_, other) => format!("case.{case_id}.after.{other}.tick.{tick}"),
         }
@@ -3476,6 +3707,15 @@ const FLOW6_ORIGIN: &str = "Mission · current conversation";
 const FLOW6_DRAFT: &str = "Keep the risk note short before we publish.";
 const FLOW6_PENDING: &str = "pending.mission.launch";
 const FLOW6_SUBMITTED: &str = "Turn the release work into a mission and walk me through it.";
+const FLOW6_SAFE_BOUNDARY: &str = "boundary.after-task.note-update";
+const FLOW6_INVOCATION: &str = "invocation.mission.release.1";
+const FLOW6_COMPLETED_WORK: &str = "completed.task.review-notes|content=release-notes-reviewed";
+const FLOW6_ENTITY_COUNT: &str = "missions=1|tasks=3|invocations=1|validations=1|reviews=0";
+const FLOW6_BEFORE_TASKS: &str =
+    "task.review-notes|task.next-step-note|task.check-publish";
+const FLOW6_AFTER_TASKS: &str =
+    "task.review-notes|task.owner-handoff|task.recheck-publish|task.align-checklist.deferred";
+const FLOW6_COMPLETED_TASK_IDS: &str = "task.review-notes";
 fn apply_flow6_identity(state: &mut ScenarioState) {
     state.conversation_id = "conversation.mission".to_owned();
     state.transcript_id = "transcript.mission".to_owned();
@@ -6052,6 +6292,862 @@ fn mission_fix_loop_rerepair() -> (
         "mission-validation",
         "failed",
         "revalidation failed again; goal, completed work, and fix identity remained stable",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn flow6_running_monitor(selection: &str, focus: &str, tick: u32) -> ScenarioState {
+    let mut state = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-running",
+        selection,
+        focus,
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        tick,
+    );
+    apply_flow6_identity(&mut state);
+    state
+}
+
+fn mission_open_intervene() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("view-progress", "mission-monitor", 0);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "pause".to_owned();
+    after.focus = "mission-intervene".to_owned();
+    after.scroll_anchor = "mission-intervene".to_owned();
+    after.state_hash = state_hash(&after);
+    before.state_hash = state_hash(&before);
+    let action = ActionEvidence {
+        action_id: "action.mission.open-intervene".to_owned(),
+        label: "Intervene".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "intervene opens a focused consequence-aware dock under the healthy monitor"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.intervene.open.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "intervene-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.intervene-open",
+        "mission-intervene",
+        "dock-open",
+        "intervention dock offered Pause primary with Replan and Stop secondary",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_intervene_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("pause", "mission-intervene", 0);
+    before.scroll_anchor = "mission-intervene".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = flow6_running_monitor("view-progress", "mission-monitor", 1);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.intervene-cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the healthy monitor with View progress primary".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.intervene.cancel.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.intervene-cancel",
+        "mission-intervene",
+        "cancelled",
+        "cancel left running stage unchanged and restored View progress",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_pause_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("pause", "mission-intervene", 0);
+    before.scroll_anchor = "mission-intervene".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "pause-confirm".to_owned();
+    after.focus = "mission-pause".to_owned();
+    after.scroll_anchor = "mission-pause".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.pause-open".to_owned(),
+        label: "Pause".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "pause opens a confirmation dock describing the safe boundary".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.pause.open.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "pause-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.pause-open",
+        "mission-pause",
+        "confirm-open",
+        &format!("pause confirmation named safe boundary {FLOW6_SAFE_BOUNDARY}"),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_pause_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("pause-confirm", "mission-pause", 0);
+    before.scroll_anchor = "mission-pause".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = flow6_running_monitor("resume", "mission-paused", 1);
+    after.scroll_anchor = "mission-paused".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.pause-confirm".to_owned(),
+        label: "Pause mission".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirming pause persists a safe-boundary paused stage".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.pause.confirm.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "paused".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.paused",
+        "mission-pause",
+        "paused",
+        &format!(
+            "mission paused at {FLOW6_SAFE_BOUNDARY}; completed work {FLOW6_COMPLETED_WORK} preserved"
+        ),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_pause_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("pause-confirm", "mission-pause", 0);
+    before.scroll_anchor = "mission-pause".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = flow6_running_monitor("view-progress", "mission-monitor", 1);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.pause-cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the running monitor without pausing".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.pause.cancel.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.pause-cancel",
+        "mission-pause",
+        "cancelled",
+        "pause cancelled; running stage and completed work unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_resume() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("resume", "mission-paused", 0);
+    before.scroll_anchor = "mission-paused".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = flow6_running_monitor("view-progress", "mission-running", 1);
+    after.scroll_anchor = "mission-running".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.resume".to_owned(),
+        label: "Resume".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "resume transitions paused to running exactly once from the safe boundary".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.resume.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "resumed-once".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.resumed-once",
+        "mission-resume",
+        "running",
+        &format!(
+            "resumed once from {FLOW6_SAFE_BOUNDARY}; finished work not rerun; invocation {FLOW6_INVOCATION}"
+        ),
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_replan_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("replan", "mission-intervene", 0);
+    before.scroll_anchor = "mission-intervene".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "workflow-launch",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "workflow-launch",
+        ],
+        FLOW6_DRAFT,
+        "mission-replan",
+        "accept-plan",
+        "mission-replan",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "accept-plan".to_owned();
+    after.focus = "mission-replan".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-launch".to_owned(),
+        "workflow-monitor".to_owned(),
+        "workflow-launch".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.replan".to_owned(),
+        label: "Replan".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "replan opens a revised conversational proposal with exact count deltas".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.replan.open.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "replan-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.replan-open",
+        "mission-replan",
+        "proposal",
+        "replan reported 1 added, 1 removed, 1 replaced, 1 deferred without double-counting completed",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_replan_accept() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-launch",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-launch",
+        ],
+        FLOW6_DRAFT,
+        "mission-replan",
+        "accept-plan",
+        "mission-replan",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-launch",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-launch",
+        ],
+        FLOW6_DRAFT,
+        "mission-preflight",
+        "preflight",
+        "mission-preflight",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "preflight".to_owned();
+    after.focus = "mission-preflight".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.accept-plan".to_owned(),
+        label: "Accept plan".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "automatic".to_owned(),
+        path: "accepting the revised plan runs automatic preflight before execution resumes"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.replan.preflight.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "preflight-running".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.replan-preflight",
+        "mission-preflight",
+        "running",
+        "revised plan accepted; automatic preflight started; completed work preserved",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_retry_eligible() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor-failure",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+        ],
+        FLOW6_DRAFT,
+        "mission-failure",
+        "retry-task",
+        "mission-retry",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    let mut after = state(
+        "workflow-monitor",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "workflow-monitor",
+        ],
+        FLOW6_DRAFT,
+        "mission-validating",
+        "validating",
+        "mission-validating",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.selection = "validating".to_owned();
+    after.focus = "mission-validating".to_owned();
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "workflow-monitor-failure".to_owned(),
+        "workflow-monitor".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.retry-task".to_owned(),
+        label: "Retry task".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "retry triggers fresh scoped execution and validation for the eligible task only"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.retry.publish-path.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "retry-validating".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.retry-scoped",
+        "mission-retry",
+        "validating",
+        "retry affected only Check the safe publish path; completed work preserved; validation fresh",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_stop_open() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("stop", "mission-intervene", 0);
+    before.scroll_anchor = "mission-intervene".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.selection = "stop-confirm".to_owned();
+    after.focus = "mission-stop".to_owned();
+    after.scroll_anchor = "mission-stop".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.stop-open".to_owned(),
+        label: "Stop".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "stop opens a confirmation dock naming irreversible remaining-work abandonment"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.stop.open.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "stop-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.stop-open",
+        "mission-stop",
+        "confirm-open",
+        "stop confirmation stated preserved completed work and abandoned remaining work",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_stop_confirm() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("stop-confirm", "mission-stop", 0);
+    before.scroll_anchor = "mission-stop".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = flow6_running_monitor("stopped-return", "mission-stopped", 1);
+    after.scroll_anchor = "mission-stopped".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.stop-confirm".to_owned(),
+        label: "Stop mission".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "confirming stop produces a persistent inspectable Stopped state".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.stop.confirm.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "stopped".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.stopped",
+        "mission-stop",
+        "stopped",
+        "mission stopped; completed work and evidence preserved; remaining work not run",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_stop_cancel() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("stop-confirm", "mission-stop", 0);
+    before.scroll_anchor = "mission-stop".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = flow6_running_monitor("view-progress", "mission-monitor", 1);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.stop-cancel".to_owned(),
+        label: "Cancel".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "cancel restores the prior running monitor without abandoning work".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.stop.cancel.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "cancelled".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.stop-cancel",
+        "mission-stop",
+        "cancelled",
+        "stop cancelled; previous stage and completed work unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_stopped_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("stopped-return", "mission-stopped", 0);
+    before.scroll_anchor = "mission-stopped".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "composer",
+        "composer",
+        "composer",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.pending_action = None;
+    after.state_hash = state_hash(&after);
+    // Preserve origin stack equality across return per CaseReplay rules.
+    after.origin_stack = before.origin_stack.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.stopped-return".to_owned(),
+        label: "Return to conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "returning from stopped restores the originating conversation composer".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.stopped.return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.stopped-return",
+        "mission-stop",
+        "returned",
+        "stopped state retained; conversation composer restored without auto resume",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_stopped_replan() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = flow6_running_monitor("replan", "mission-stopped", 0);
+    before.scroll_anchor = "mission-stopped".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "workflow-launch",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-launch",
+        ],
+        FLOW6_DRAFT,
+        "mission-replan",
+        "accept-plan",
+        "mission-replan",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.origin_stack = vec![
+        "chat-turn".to_owned(),
+        "workflow-monitor".to_owned(),
+        "workflow-launch".to_owned(),
+    ];
+    before.origin_stack = after.origin_stack.clone();
+    before.state_hash = state_hash(&before);
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.replan".to_owned(),
+        label: "Replan".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "replan from stopped opens a new proposal and never auto-executes".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.stopped.replan.1".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 1,
+        outcome: "replan-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.stopped-replan",
+        "mission-replan",
+        "proposal",
+        "stopped mission opened a new proposed continuation without execution",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_restart_stage(
+    stage: &str,
+) -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let (screen, selection, focus, scroll) = match stage {
+        "running" => (
+            "workflow-monitor",
+            "view-progress",
+            "mission-monitor",
+            "mission-running",
+        ),
+        "paused" => (
+            "workflow-monitor",
+            "resume",
+            "mission-paused",
+            "mission-paused",
+        ),
+        "blocked" => (
+            "workflow-monitor",
+            "create-fix-task",
+            "mission-blocked",
+            "mission-blocked",
+        ),
+        "validating" => (
+            "workflow-monitor",
+            "validating",
+            "mission-validating",
+            "mission-validating",
+        ),
+        "reviewing" => (
+            "workflow-monitor",
+            "review",
+            "mission-reviewing",
+            "mission-reviewing",
+        ),
+        "awaiting-human" => (
+            "workflow-monitor",
+            "approve-completion",
+            "mission-awaiting-human",
+            "mission-awaiting-human",
+        ),
+        "stopped" => (
+            "workflow-monitor",
+            "stopped-return",
+            "mission-stopped",
+            "mission-stopped",
+        ),
+        other => panic!("unknown mission restart stage: {other}"),
+    };
+    let mut before = state(
+        screen,
+        vec!["chat-turn", "workflow-monitor"],
+        FLOW6_DRAFT,
+        scroll,
+        selection,
+        focus,
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = scroll.to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    // Restart restores same stage and identities; no auto-advance.
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.restart-restore".to_owned(),
+        label: "Restore mission".to_owned(),
+        enabled: true,
+        automatic: true,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: format!(
+            "session restart restored {stage} without duplicating mission work or auto-advancing"
+        ),
+    };
+    let outcome = if stage == "stopped" {
+        "restored-stopped".to_owned()
+    } else {
+        format!("restored-{stage}")
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: format!("attempt.mission.restart.{stage}.0"),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome,
+    };
+    let effect = simulated_effect(
+        &format!("effect.mission.restart-{stage}"),
+        "mission-resume",
+        "restored",
+        &format!(
+            "restored {stage} with invocation {FLOW6_INVOCATION}; completed work preserved; no duplicates"
+        ),
     );
     (before, after, action, transition, attempt, effect)
 }
