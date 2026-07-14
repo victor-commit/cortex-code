@@ -20,7 +20,7 @@
       Keep the risk note short before we publish.                                                                       
                                                                                                                         
     [i] Intervene                                                                                                       
-                                                                                                                        
+    [a] View advanced detail                                                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         

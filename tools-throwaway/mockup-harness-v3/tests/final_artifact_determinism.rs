@@ -821,23 +821,43 @@ fn owned_cleanup_refuses_unknown_and_outside_paths() {
 
 #[test]
 fn all_and_implemented_selectors_agree_in_final_gallery() {
+    // VAL-V3-HARNESS-008: capture independent ownership snapshots after each
+    // selector. Reading the gallery only after both runs would make equality
+    // vacuous (identical post-all filesystem state) and hide subset/no-op
+    // divergences from --implemented.
     let _lock = renderer_test_lock();
     assert!(canonical_inventory()
         .iter()
         .all(|screen| screen.status == ImplementationStatus::Implemented));
 
     let implemented = run(&["--implemented"]);
-    assert!(implemented.status.success());
-    let all = run(&["--all"]);
-    assert!(all.status.success());
-
+    assert!(
+        implemented.status.success(),
+        "--implemented must succeed; stderr={}",
+        String::from_utf8_lossy(&implemented.stderr)
+    );
     let after_implemented = ownership_manifest_paths(&gallery_root());
+    assert_eq!(
+        after_implemented.len(),
+        172,
+        "--implemented must own exactly 86 TXT + 86 PNG paths"
+    );
+
+    let all = run(&["--all"]);
+    assert!(
+        all.status.success(),
+        "--all must succeed; stderr={}",
+        String::from_utf8_lossy(&all.stderr)
+    );
     let after_all = ownership_manifest_paths(&gallery_root());
-    assert_eq!(after_implemented.len(), 172);
-    assert_eq!(after_all.len(), 172);
+    assert_eq!(
+        after_all.len(),
+        172,
+        "--all must own exactly 86 TXT + 86 PNG paths"
+    );
     assert_eq!(
         after_implemented, after_all,
-        "final --implemented set equals the 86-ID --all set"
+        "final --implemented path→SHA ownership must equal the 86-ID --all set"
     );
 }
 

@@ -20,9 +20,9 @@
     Checklist and deeper evidence stay collapsed until you open them.                                                   
                                                                                                                         
     [d] View validation summary                                                                                         
+    [q] View quality report                                                                                             
                                                                                                                         
     [esc] Return to mission monitor                                                                                     
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

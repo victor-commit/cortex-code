@@ -32,38 +32,35 @@ fn gallery_root() -> PathBuf {
     PathBuf::from("/projects/cortex-code/plans/assets/mockups-v3")
 }
 
-fn expected_category_counts() -> BTreeMap<&'static str, usize> {
-    [
-        ("session", 21usize),
-        ("input", 20),
-        ("views", 16),
-        ("auth", 7),
-        ("states", 8),
-        ("orchestration", 14),
-    ]
-    .into_iter()
-    .collect()
+/// Path→SHA ownership map from the gallery renderer manifest.
+/// Independent snapshots after each selector prove VAL-V3-HARNESS-008 set equality
+/// without vacuous dual-read of a single final filesystem state.
+fn ownership_manifest_paths(root: &Path) -> BTreeMap<String, String> {
+    let path = root.join(".renderer-manifest-v1");
+    let body = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("ownership manifest missing at {}: {error}", path.display()));
+    let mut lines = body.lines();
+    assert_eq!(
+        lines.next(),
+        Some("mockup-harness-v3-render-manifest-v1"),
+        "ownership header for {}",
+        root.display()
+    );
+    let mut map = BTreeMap::new();
+    for line in lines {
+        let (relative, hash) = line
+            .split_once('\t')
+            .unwrap_or_else(|| panic!("invalid ownership line: {line}"));
+        assert_eq!(hash.len(), 64, "hash width for {relative}");
+        assert!(
+            map.insert(relative.to_owned(), hash.to_owned()).is_none(),
+            "duplicate ownership path {relative}"
+        );
+    }
+    map
 }
 
-#[test]
-fn implemented_and_all_selectors_publish_the_complete_86_state_gallery() {
-    let _test_lock = renderer_test_lock();
-    assert_eq!(canonical_inventory().len(), 86);
-    assert!(canonical_inventory()
-        .iter()
-        .all(|screen| screen.status == ImplementationStatus::Implemented));
-
-    for selector in [["--implemented"], ["--all"]] {
-        let output = run(&selector);
-        assert!(
-            output.status.success(),
-            "{selector:?} must succeed for the final 86-state gallery; stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.stdout.is_empty(), "{selector:?} must write no stdout");
-        assert!(output.stderr.is_empty(), "{selector:?} must write no stderr");
-    }
-
+fn assert_complete_86_inventory_on_disk() {
     let mut counts = BTreeMap::<String, usize>::new();
     for screen in canonical_inventory() {
         let category = screen.category.as_str();
@@ -89,6 +86,73 @@ fn implemented_and_all_selectors_publish_the_complete_86_state_gallery() {
             "category {category} pair count must match the registry"
         );
     }
+}
+
+fn expected_category_counts() -> BTreeMap<&'static str, usize> {
+    [
+        ("session", 21usize),
+        ("input", 20),
+        ("views", 16),
+        ("auth", 7),
+        ("states", 8),
+        ("orchestration", 14),
+    ]
+    .into_iter()
+    .collect()
+}
+
+#[test]
+fn implemented_and_all_selectors_publish_the_complete_86_state_gallery() {
+    // VAL-V3-HARNESS-008: snapshot membership independently after --implemented
+    // and after --all. Comparing only a post-both inventory is vacuous.
+    let _test_lock = renderer_test_lock();
+    assert_eq!(canonical_inventory().len(), 86);
+    assert!(canonical_inventory()
+        .iter()
+        .all(|screen| screen.status == ImplementationStatus::Implemented));
+
+    let implemented = run(&["--implemented"]);
+    assert!(
+        implemented.status.success(),
+        "--implemented must succeed for the final 86-state gallery; stderr={}",
+        String::from_utf8_lossy(&implemented.stderr)
+    );
+    assert!(
+        implemented.stdout.is_empty(),
+        "--implemented must write no stdout"
+    );
+    assert!(
+        implemented.stderr.is_empty(),
+        "--implemented must write no stderr"
+    );
+    let after_implemented = ownership_manifest_paths(&gallery_root());
+    assert_eq!(
+        after_implemented.len(),
+        172,
+        "--implemented ownership must list exactly 86 TXT + 86 PNG paths"
+    );
+    assert_complete_86_inventory_on_disk();
+
+    let all = run(&["--all"]);
+    assert!(
+        all.status.success(),
+        "--all must succeed for the final 86-state gallery; stderr={}",
+        String::from_utf8_lossy(&all.stderr)
+    );
+    assert!(all.stdout.is_empty(), "--all must write no stdout");
+    assert!(all.stderr.is_empty(), "--all must write no stderr");
+    let after_all = ownership_manifest_paths(&gallery_root());
+    assert_eq!(
+        after_all.len(),
+        172,
+        "--all ownership must list exactly 86 TXT + 86 PNG paths"
+    );
+    assert_complete_86_inventory_on_disk();
+
+    assert_eq!(
+        after_implemented, after_all,
+        "post--implemented path→SHA ownership must equal post--all ownership"
+    );
 }
 
 #[test]
