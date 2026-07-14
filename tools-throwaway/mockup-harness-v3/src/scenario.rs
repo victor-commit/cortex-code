@@ -2779,6 +2779,13 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "flow2-queue-manager-conflict".to_owned()
     } else if case_id == "queue-refresh" {
         "flow2-queue-manager-refresh".to_owned()
+    } else if case_id == "sidebar-queue-manage-apply" {
+        // Public after-state must paint the applied reorder (item-2 [next]), not
+        // the default opened sidebar bytes that still mark item-1 as next.
+        "views.sidebar.queue.applied".to_owned()
+    } else if case_id == "sidebar-queue-manage-cancel" {
+        // Cancel returns the default sidebar ownership with item-1 still next.
+        "views.sidebar.queue".to_owned()
     } else if case_id == "permission-file-edit-persistent-scope-outside" {
         "flow2-permission-file-edit-outside".to_owned()
     } else if case_id == "permission-file-edit-deny" {

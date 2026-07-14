@@ -209,6 +209,31 @@ fn sidebar_queue_and_manager_share_identities_and_reconcile_round_trips() {
     );
     assert_eq!(apply.actions[0].action_id, "action.queue-manager.apply");
 
+    // VAL-V3-F2-046: public --case after-state paint must mirror after.queue next marker.
+    // Audit already reorders item-2 first; stale default sidebar bytes are a real fail.
+    let apply_paint = apply.audit.render_txt();
+    assert!(
+        apply_paint.contains("queue-item-2") && apply_paint.contains("[next]"),
+        "sidebar-queue-manage-apply paint must show item-2 as [next] after apply"
+    );
+    let item2_next = apply_paint
+        .lines()
+        .any(|line| line.contains("queue-item-2") && line.contains("[next]"));
+    let item1_still_next = apply_paint
+        .lines()
+        .any(|line| line.contains("queue-item-1") && line.contains("[next]"));
+    assert!(
+        item2_next && !item1_still_next,
+        "apply after-state must mark only item-2 [next], not retain default item-1 [next]\n{apply_paint}"
+    );
+    assert!(
+        apply.audit.fixture_id.contains("applied")
+            || apply.audit.fixture_id.contains("after-apply")
+            || apply.audit.fixture_id.contains("manage-apply"),
+        "apply after-state fixture must own the applied queue order: {}",
+        apply.audit.fixture_id
+    );
+
     let cancel = replay_case("sidebar-queue-manage-cancel", 1).expect("manage cancel");
     cancel
         .validate()
