@@ -563,6 +563,7 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             | "workflow-launch-blocked"
             | "workflow-monitor"
             | "workflow-monitor-failure"
+            | "team-board"
             | "reviewer-output"
             | "reviewer-approved"
     ) {

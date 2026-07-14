@@ -203,6 +203,7 @@ fn canonical_inventory_has_the_exact_stable_category_membership() {
             "workflow-launch-blocked",
             "workflow-monitor",
             "workflow-monitor-failure",
+            "team-board",
             "reviewer-output",
             "reviewer-approved",
             "sidebar-context",

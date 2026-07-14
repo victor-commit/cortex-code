@@ -126,13 +126,13 @@ fn implemented_selector_publishes_all_current_pilot_artifacts() {
 #[test]
 fn every_render_selector_preflights_missing_renderers_before_writing() {
     let _test_lock = renderer_test_lock();
-    // Next unimplemented inventory gap after toasts is the first orchestration detail.
-    assert_registry_failure(&["--all"], "team-board");
+    // Next unimplemented inventory gap is the first remaining orchestration detail.
+    assert_registry_failure(&["--all"], "verification-ladder");
     // `orchestration` still has unimplemented screens; stream order surfaces the first
     // inventory gap for that category rather than writing partial artifacts.
-    assert_registry_failure(&["orchestration"], "team-board");
+    assert_registry_failure(&["orchestration"], "verification-ladder");
 
-    let path = "/projects/cortex-code/plans/assets/mockups-v3/orchestration/team-board.txt";
+    let path = "/projects/cortex-code/plans/assets/mockups-v3/orchestration/verification-ladder.txt";
     assert!(
         !Path::new(path).exists(),
         "preflight must finish before any artifact is written: {path}"
@@ -254,7 +254,7 @@ fn invalid_full_render_keeps_the_last_complete_canonical_publication() {
     assert_eq!(rejected.status.code(), Some(3));
     assert!(rejected.stdout.is_empty());
     assert!(String::from_utf8_lossy(&rejected.stderr)
-        .contains("canonical ID has no implemented renderer: team-board"));
+        .contains("canonical ID has no implemented renderer: verification-ladder"));
     assert_eq!(
         fs::read(output_root.join(".renderer-manifest-v1"))
             .expect("a rejected selector must retain the complete gallery"),

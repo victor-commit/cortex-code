@@ -38,6 +38,47 @@ const TASK_3: &str = "Check the safe publish path";
 const FIX_TASK: &str = "Repair the safe publish path checks";
 const DEP_LINE: &str = "Depends on · review notes and next-step note";
 const FAILURE_CAUSE: &str = "Publish path validation failed the safe release checks";
+/// Default bound for tasks shown per progress group (VAL-V3-F6-056).
+const PROGRESS_BOUND: usize = 3;
+const PROGRESS_NEEDS_VISIBLE: [&str; 3] = [
+    "Check the safe publish path",
+    "Confirm rollback wording",
+    "Resolve blocked publish gate",
+];
+const PROGRESS_NEEDS_FULL: [&str; 6] = [
+    "Check the safe publish path",
+    "Confirm rollback wording",
+    "Resolve blocked publish gate",
+    "Reopen failed path evidence",
+    "Note remaining security hold",
+    "Clear stale approval on the path",
+];
+const PROGRESS_WORKING_VISIBLE: [&str; 3] = [
+    "Update the next-step note after fixes",
+    "Draft the remaining risk callouts",
+    "Align the publish checklist order",
+];
+const PROGRESS_WORKING_FULL: [&str; 6] = [
+    "Update the next-step note after fixes",
+    "Draft the remaining risk callouts",
+    "Align the publish checklist order",
+    "Prepare the release summary blurb",
+    "Document the owner handoff",
+    "Tighten the final soft-landing copy",
+];
+const PROGRESS_COMPLETED_VISIBLE: [&str; 3] = [
+    "Review the release notes for open risks",
+    "Collect the known open questions",
+    "Tag the reviewed checklist items",
+];
+const PROGRESS_COMPLETED_FULL: [&str; 6] = [
+    "Review the release notes for open risks",
+    "Collect the known open questions",
+    "Tag the reviewed checklist items",
+    "Archive the accepted planning note",
+    "Close the preflight review thread",
+    "Record the healthy start snapshot",
+];
 const REVIEW_REASON_CHANGES: &str =
     "Next-step note still omits the open risk and rollback order";
 const REVIEW_REASON_APPROVED: &str = "Final validation passed on the post-repair revision";
@@ -67,7 +108,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "workflow-launch" | "workflow-launch-blocked" | "workflow-monitor-failure"
         | "reviewer-approved" => Surface::ActionDock,
         "workflow-monitor" => Surface::ConversationShell,
-        "reviewer-output" => Surface::TemporaryDetailView,
+        "reviewer-output" | "team-board" => Surface::TemporaryDetailView,
         _ => return Err(format!("unknown Flow 6 mission screen: {screen_id}")),
     };
     ScreenComposition::new(screen_id, surface, statusline.clone()).validate()?;
@@ -81,6 +122,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         "workflow-monitor-failure" => {
             render_workflow_monitor_failure(&mut canvas, screen_id, fixture_id)?
         }
+        "team-board" => render_team_board(&mut canvas, screen_id, fixture_id)?,
         "reviewer-output" => render_reviewer_output(&mut canvas, screen_id, fixture_id)?,
         "reviewer-approved" => render_reviewer_approved(&mut canvas, screen_id, fixture_id)?,
         _ => unreachable!(),
@@ -945,36 +987,42 @@ fn render_workflow_monitor(
         ));
     }
 
+    let attention = lower.contains("attention");
+    let bounded = lower.contains("bounded");
+    let expand_working = lower.contains("expand-working") || lower.contains("expand_working");
+
+    if expanded || attention || bounded || expand_working {
+        return render_progress_disclosure(
+            canvas,
+            screen_id,
+            fixture_id,
+            attention,
+            bounded,
+            expand_working,
+        );
+    }
+
     let card = MissionCard::new(MISSION_GOAL, "Running", 1, 2, None, "View progress");
     write_component(canvas, 10, 4, &card)?;
-    if expanded {
-        // Healthy expanded progress omits the empty Needs attention group.
-        canvas.write(15, 4, "Working", TextStyle::bright())?;
-        canvas.write(16, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
-        canvas.write(18, 4, "Recently completed", TextStyle::bright())?;
-        canvas.write(19, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
-        canvas.write(21, 4, "[esc] Collapse progress", TextStyle::muted())?;
-    } else {
-        canvas.write(
-            15,
-            4,
-            "Progress stays calm until you ask for a task summary.",
-            TextStyle::muted(),
-        )?;
-        canvas.write(
-            16,
-            4,
-            "No blocker. Open progress only when you need the details.",
-            TextStyle::muted(),
-        )?;
-        canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(
-            19,
-            4,
-            "  Keep the risk note short before we publish.",
-            TextStyle::text(),
-        )?;
-    }
+    canvas.write(
+        15,
+        4,
+        "Progress stays calm until you ask for a task summary.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        16,
+        4,
+        "No blocker. Open progress only when you need the details.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
+    canvas.write(
+        19,
+        4,
+        "  Keep the risk note short before we publish.",
+        TextStyle::text(),
+    )?;
 
     let pairs = [
         semantic(
@@ -1035,6 +1083,712 @@ fn render_workflow_monitor(
         "progress disclosure returns to the same compact monitor",
     )];
 
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+/// First progress disclosure: human task groups only (VAL-V3-F6-013/014/056).
+fn render_progress_disclosure(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+    attention: bool,
+    bounded: bool,
+    expand_working: bool,
+) -> Result<ScreenEvidence, String> {
+    let completed = 1usize;
+    let remaining = if attention { 3usize } else { 2usize };
+    let card = MissionCard::new(
+        MISSION_GOAL,
+        "Running",
+        completed,
+        remaining,
+        None,
+        "View progress",
+    );
+    write_component(canvas, 10, 4, &card)?;
+
+    let mut row: u16 = 15;
+    if expand_working {
+        // Local one-group expansion only (VAL-V3-F6-056).
+        canvas.write(row, 4, "Working · expanded", TextStyle::bright())?;
+        row += 1;
+        for task in PROGRESS_WORKING_FULL {
+            canvas.write(row, 4, &format!("  ● {task}"), TextStyle::text())?;
+            row += 1;
+        }
+        canvas.write(row, 4, "Needs attention", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "  … still bounded below", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "Recently completed", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
+        row += 2;
+        canvas.write(row, 4, "[esc] Back · restore bounded groups", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+    } else if bounded {
+        // Bound each group and publish exact omitted counts.
+        canvas.write(row, 4, "Needs attention", TextStyle::bright())?;
+        row += 1;
+        for task in PROGRESS_NEEDS_VISIBLE.iter().take(PROGRESS_BOUND) {
+            canvas.write(row, 4, &format!("  ✗ {task}"), TextStyle::text())?;
+            row += 1;
+        }
+        let needs_omitted = PROGRESS_NEEDS_FULL.len().saturating_sub(PROGRESS_BOUND);
+        canvas.write(
+            row,
+            4,
+            &format!("  … {needs_omitted} more · [e] Expand Needs attention"),
+            TextStyle::muted(),
+        )?;
+        row += 2;
+
+        canvas.write(row, 4, "Working", TextStyle::bright())?;
+        row += 1;
+        for task in PROGRESS_WORKING_VISIBLE.iter().take(PROGRESS_BOUND) {
+            canvas.write(row, 4, &format!("  ● {task}"), TextStyle::text())?;
+            row += 1;
+        }
+        let working_omitted = PROGRESS_WORKING_FULL.len().saturating_sub(PROGRESS_BOUND);
+        canvas.write(
+            row,
+            4,
+            &format!("  … {working_omitted} more · [x] Expand Working"),
+            TextStyle::muted(),
+        )?;
+        row += 2;
+
+        canvas.write(row, 4, "Recently completed", TextStyle::bright())?;
+        row += 1;
+        for task in PROGRESS_COMPLETED_VISIBLE.iter().take(PROGRESS_BOUND) {
+            canvas.write(row, 4, &format!("  ✓ {task}"), TextStyle::muted())?;
+            row += 1;
+        }
+        let completed_omitted = PROGRESS_COMPLETED_FULL
+            .len()
+            .saturating_sub(PROGRESS_BOUND);
+        canvas.write(
+            row,
+            4,
+            &format!("  … {completed_omitted} more · [c] Expand Recently completed"),
+            TextStyle::muted(),
+        )?;
+        row += 2;
+        canvas.write(row, 4, "[esc] Collapse progress", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "[t] Open team board", TextStyle::muted())?;
+    } else if attention {
+        // Exception-first ordered groups with Needs attention non-empty.
+        canvas.write(row, 4, "Needs attention", TextStyle::bright())?;
+        row += 1;
+        canvas.write(row, 4, &format!("  ✗ {TASK_3}"), TextStyle::text())?;
+        row += 1;
+        canvas.write(row, 4, &format!("    {FAILURE_CAUSE}"), TextStyle::muted())?;
+        row += 2;
+        canvas.write(row, 4, "Working", TextStyle::bright())?;
+        row += 1;
+        canvas.write(row, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
+        row += 2;
+        canvas.write(row, 4, "Recently completed", TextStyle::bright())?;
+        row += 1;
+        canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
+        row += 2;
+        canvas.write(row, 4, "[esc] Collapse progress", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "[t] Open team board", TextStyle::muted())?;
+    } else {
+        // Healthy first disclosure: omit empty Needs attention group (VAL-V3-F6-013).
+        canvas.write(row, 4, "Working", TextStyle::bright())?;
+        row += 1;
+        canvas.write(row, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
+        row += 2;
+        canvas.write(row, 4, "Recently completed", TextStyle::bright())?;
+        row += 1;
+        canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
+        row += 2;
+        canvas.write(row, 4, "[esc] Collapse progress", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+        row += 1;
+        canvas.write(row, 4, "[t] Open team board", TextStyle::muted())?;
+    }
+
+    let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-card",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "mission-goal",
+            MISSION_SUBJECT,
+            reference(10, 4, 56),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "progress-stage",
+            if expand_working {
+                "stage.running.progress.expand-working"
+            } else if bounded {
+                "stage.running.progress.bounded"
+            } else if attention {
+                "stage.running.progress.attention"
+            } else {
+                "stage.running.progress"
+            },
+            reference(11, 4, 36),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "progress-group",
+            if attention || bounded {
+                "group.needs-attention"
+            } else {
+                "group.working"
+            },
+            reference(15, 4, 28),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            if expand_working {
+                "collapse-group"
+            } else {
+                "collapse-progress"
+            },
+            reference(12, 4, 28),
+            "summary",
+            Some(action(
+                if expand_working {
+                    "action.mission.progress-collapse-group"
+                } else {
+                    "action.mission.collapse-progress"
+                },
+                if expand_working {
+                    "Back"
+                } else {
+                    "Collapse progress"
+                },
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "view-workers",
+            reference(21, 4, 24),
+            "summary",
+            Some(action(
+                "action.mission.view-workers",
+                "View workers",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "open-team-board",
+            reference(22, 4, 28),
+            "summary",
+            Some(action(
+                "action.mission.open-team-board",
+                "Open team board",
+                false,
+            )),
+        ),
+    ];
+    if bounded && !expand_working {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "progress-bound",
+            "omitted.working.3",
+            reference(20, 4, 40),
+            "summary",
+            Some(action(
+                "action.mission.progress-expand-group",
+                "Expand Working",
+                false,
+            )),
+        ));
+    }
+
+    let mut transitions = vec![
+        transition(
+            "action.mission.collapse-progress",
+            screen_id,
+            "workflow-monitor",
+            "cancel",
+            "progress disclosure returns to the same compact monitor",
+        ),
+        transition(
+            "action.mission.view-workers",
+            screen_id,
+            "team-board",
+            "direct",
+            "workers open only from explicit progress or board disclosure",
+        ),
+        transition(
+            "action.mission.open-team-board",
+            screen_id,
+            "team-board",
+            "direct",
+            "team board opens only after explicit worker or task detail",
+        ),
+    ];
+    if bounded && !expand_working {
+        transitions.push(transition(
+            "action.mission.progress-expand-group",
+            screen_id,
+            "workflow-monitor",
+            "direct",
+            "one progress group expands locally without opening workers or advanced evidence",
+        ));
+    }
+    if expand_working {
+        // Primary already emits progress-collapse-group; keep only that collapse edge.
+        transitions.retain(|t| t.action_id != "action.mission.collapse-progress");
+        transitions.push(transition(
+            "action.mission.progress-collapse-group",
+            screen_id,
+            "workflow-monitor",
+            "cancel",
+            "Back restores the same group, selection, and monitor state",
+        ));
+    }
+
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
+    ))
+}
+
+fn render_team_board(
+    canvas: &mut Canvas,
+    screen_id: &str,
+    fixture_id: &str,
+) -> Result<ScreenEvidence, String> {
+    let lower = fixture_id.to_ascii_lowercase();
+    let advanced = lower.contains("advanced");
+    let workers = lower.contains("workers") || lower.contains("worker");
+
+    // Stable mission origin remains visible in the temporary detail header.
+    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
+    canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
+
+    if advanced {
+        canvas.write(7, 4, "Team board · advanced detail", TextStyle::bright())?;
+        canvas.write(
+            8,
+            4,
+            "Scheduling and environment detail. Work state is unchanged.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(10, 4, &format!("Task · {TASK_3}"), TextStyle::text())?;
+        canvas.write(11, 4, "Wave · release-checks-2", TextStyle::muted())?;
+        canvas.write(12, 4, "Branch · release/safe-path", TextStyle::muted())?;
+        canvas.write(
+            13,
+            4,
+            "Worktree · ~/project/.worktrees/release-safe",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            14,
+            4,
+            "Contract · acceptance-contract.release.safe-path",
+            TextStyle::muted(),
+        )?;
+        canvas.write(16, 4, &format!("Task · {TASK_2}"), TextStyle::text())?;
+        canvas.write(17, 4, "Wave · notes-align-1", TextStyle::muted())?;
+        canvas.write(18, 4, "Branch · release/next-step", TextStyle::muted())?;
+        canvas.write(
+            19,
+            4,
+            "Worktree · ~/project/.worktrees/notes-align",
+            TextStyle::muted(),
+        )?;
+        canvas.write(
+            20,
+            4,
+            "Contract · acceptance-contract.release.next-step",
+            TextStyle::muted(),
+        )?;
+        canvas.write(23, 4, "[esc] Return to team board", TextStyle::accent())?;
+
+        let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "board-advanced",
+                "team-board.advanced",
+                reference(7, 4, 36),
+                "evidence",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "board-task",
+                "task.publish-path",
+                reference(10, 4, 40),
+                "evidence",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "team-board-advanced-return",
+                reference(23, 4, 36),
+                "evidence",
+                Some(action(
+                    "action.mission.team-board-advanced-return",
+                    "Return to team board",
+                    false,
+                )),
+            ),
+        ];
+        let transitions = vec![transition(
+            "action.mission.team-board-advanced-return",
+            screen_id,
+            "team-board",
+            "cancel",
+            "advanced internals collapse back to the human ownership board",
+        )];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
+    if workers {
+        canvas.write(7, 4, "Workers", TextStyle::bright())?;
+        canvas.write(
+            8,
+            4,
+            "Explicit ownership summary. Mission state is unchanged.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(10, 4, "● Notes specialist · working", TextStyle::text())?;
+        canvas.write(11, 4, &format!("  Task · {TASK_2}"), TextStyle::muted())?;
+        canvas.write(13, 4, "✗ Release reviewer · needs attention", TextStyle::text())?;
+        canvas.write(14, 4, &format!("  Task · {TASK_3}"), TextStyle::muted())?;
+        canvas.write(16, 4, "✓ Docs lead · recently completed", TextStyle::muted())?;
+        canvas.write(17, 4, &format!("  Task · {TASK_1}"), TextStyle::muted())?;
+        canvas.write(20, 4, "[esc] Return to mission monitor", TextStyle::accent())?;
+        canvas.write(21, 4, "[t] Open team board", TextStyle::muted())?;
+
+        let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "origin",
+                "mission-conversation",
+                reference(2, 4, 34),
+                "summary",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "worker-detail",
+                "workers.summary",
+                reference(7, 4, 20),
+                "focused",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "board-task",
+                "task.next-step",
+                reference(10, 4, 36),
+                "focused",
+                None,
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "primary-action",
+                "workers-return",
+                reference(20, 4, 36),
+                "focused",
+                Some(action(
+                    "action.mission.workers-return",
+                    "Return to mission monitor",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "open-team-board",
+                reference(21, 4, 28),
+                "focused",
+                Some(action(
+                    "action.mission.open-team-board",
+                    "Open team board",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "team-board-return",
+                reference(20, 4, 36),
+                "focused",
+                Some(action(
+                    "action.mission.team-board-return",
+                    "Return to mission monitor",
+                    false,
+                )),
+            ),
+        ];
+        let transitions = vec![
+            transition(
+                "action.mission.workers-return",
+                screen_id,
+                "workflow-monitor",
+                "cancel",
+                "worker detail returns to the same monitor without mission changes",
+            ),
+            transition(
+                "action.mission.open-team-board",
+                screen_id,
+                "team-board",
+                "direct",
+                "workers can open the general ownership board",
+            ),
+            transition(
+                "action.mission.team-board-return",
+                screen_id,
+                "workflow-monitor",
+                "cancel",
+                "leaving the board restores the same monitor state without changing work",
+            ),
+        ];
+        return Ok((
+            pairs
+                .iter()
+                .map(|(candidate, _)| candidate.clone())
+                .collect(),
+            pairs.iter().map(|(_, event)| event.clone()).collect(),
+            transitions,
+        ));
+    }
+
+    // First board level: human task, dependency, owner, readable state (VAL-V3-F6-021).
+    canvas.write(7, 4, "Team board", TextStyle::bright())?;
+    canvas.write(
+        8,
+        4,
+        "Shows ownership and assignments for the current mission.",
+        TextStyle::muted(),
+    )?;
+    canvas.write(10, 4, "Needs attention", TextStyle::bright())?;
+    canvas.write(11, 4, &format!("  ✗ {TASK_3}"), TextStyle::text())?;
+    canvas.write(12, 4, "    Depends on · next-step note and review", TextStyle::muted())?;
+    canvas.write(13, 4, "    Owner · Release reviewer · blocked", TextStyle::text())?;
+    canvas.write(15, 4, "Working", TextStyle::bright())?;
+    canvas.write(16, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
+    canvas.write(17, 4, "    Depends on · release notes review", TextStyle::muted())?;
+    canvas.write(18, 4, "    Owner · Notes specialist · working", TextStyle::text())?;
+    canvas.write(20, 4, "Recently completed", TextStyle::bright())?;
+    canvas.write(21, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
+    canvas.write(22, 4, "    Depends on · none", TextStyle::muted())?;
+    canvas.write(23, 4, "    Owner · Docs lead · complete", TextStyle::muted())?;
+    canvas.write(25, 4, "[d] View advanced detail", TextStyle::muted())?;
+    canvas.write(26, 4, "[w] View workers", TextStyle::muted())?;
+    canvas.write(28, 4, "[esc] Return to mission monitor", TextStyle::accent())?;
+
+    let pairs = [
+        semantic(
+            screen_id,
+            fixture_id,
+            "origin",
+            "mission-conversation",
+            reference(2, 4, 34),
+            "summary",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "team-board",
+            "team-board.ownership",
+            reference(7, 4, 24),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "board-task",
+            "task.publish-path",
+            reference(11, 4, 40),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "board-task",
+            "task.next-step",
+            reference(16, 4, 40),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "board-task",
+            "task.release-notes",
+            reference(21, 4, 40),
+            "focused",
+            None,
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "team-board-return",
+            reference(28, 4, 40),
+            "focused",
+            Some(action(
+                "action.mission.team-board-return",
+                "Return to mission monitor",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "team-board-advanced",
+            reference(25, 4, 32),
+            "focused",
+            Some(action(
+                "action.mission.team-board-advanced",
+                "View advanced detail",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "view-workers",
+            reference(26, 4, 24),
+            "focused",
+            Some(action(
+                "action.mission.view-workers",
+                "View workers",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "open-team-board",
+            reference(7, 4, 20),
+            "focused",
+            Some(action(
+                "action.mission.open-team-board",
+                "Open team board",
+                false,
+            )),
+        ),
+    ];
+    let transitions = vec![
+        transition(
+            "action.mission.team-board-return",
+            screen_id,
+            "workflow-monitor",
+            "cancel",
+            "leaving the board restores the same monitor state without changing work",
+        ),
+        transition(
+            "action.mission.team-board-advanced",
+            screen_id,
+            "team-board",
+            "direct",
+            "waves, branches, worktrees, and contracts open only as a second detail level",
+        ),
+        transition(
+            "action.mission.view-workers",
+            screen_id,
+            "team-board",
+            "direct",
+            "worker identity remains a focused detail under the board",
+        ),
+        transition(
+            "action.mission.open-team-board",
+            screen_id,
+            screen_id,
+            "direct",
+            "team board remains reachable as an explicit ownership detail route",
+        ),
+    ];
     Ok((
         pairs
             .iter()

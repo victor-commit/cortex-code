@@ -900,7 +900,13 @@ impl CaseReplay {
                         || self.attempts[0].outcome == "launch-ready"
                         || self.attempts[0].outcome == "still-blocked"
                         || self.attempts[0].outcome == "started"
-                        || self.attempts[0].outcome == "progress-open"))
+                        || self.attempts[0].outcome == "progress-open"
+                        || self.attempts[0].outcome == "team-board-open"
+                        || self.attempts[0].outcome == "workers-open"
+                        || self.attempts[0].outcome == "advanced-open"
+                        || self.attempts[0].outcome == "group-expanded"
+                        || self.attempts[0].outcome == "group-collapsed"
+                        || self.attempts[0].outcome == "returned"))
                 && !(self.case_id.starts_with("tool-failed-")
                     && (self.attempts[0].count == 0
                         || self.attempts[0].outcome == "none"
@@ -1388,6 +1394,13 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-launch-cancel" => mission_launch_cancel(),
         "mission-blocked-cancel" => mission_blocked_cancel(),
         "mission-view-progress" => mission_view_progress(),
+        "mission-open-team-board" => mission_open_team_board(),
+        "mission-team-board-return" => mission_team_board_return(),
+        "mission-view-workers" => mission_view_workers(),
+        "mission-team-board-advanced" => mission_team_board_advanced(),
+        "mission-team-board-advanced-return" => mission_team_board_advanced_return(),
+        "mission-progress-expand-working" => mission_progress_expand_working(),
+        "mission-progress-collapse-group" => mission_progress_collapse_group(),
         "mission-create-fix-task" => mission_create_fix_task(),
         "mission-fix-working" => mission_fix_working(),
         "mission-fix-validating" => mission_fix_validating(),
@@ -2658,6 +2671,13 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mission-launch-cancel"
             | "mission-blocked-cancel"
             | "mission-view-progress"
+            | "mission-open-team-board"
+            | "mission-team-board-return"
+            | "mission-view-workers"
+            | "mission-team-board-advanced"
+            | "mission-team-board-advanced-return"
+            | "mission-progress-expand-working"
+            | "mission-progress-collapse-group"
             | "mission-create-fix-task"
             | "mission-fix-working"
             | "mission-fix-validating"
@@ -2689,8 +2709,28 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("mission-launch-cancel", "chat-turn") | ("mission-blocked-cancel", "chat-turn") => {
                 "case.mission.cancel.after.chat-turn.tick.1".to_owned()
             }
+            ("mission-view-progress", "workflow-monitor")
+                if after.focus.contains("progress") || after.selection.contains("progress") =>
+            {
+                "workflow-monitor.progress".to_owned()
+            }
             ("mission-view-progress", "workflow-monitor") => {
+                "workflow-monitor.progress".to_owned()
+            }
+            ("mission-open-team-board", "team-board")
+            | ("mission-team-board-advanced-return", "team-board") => {
+                "orchestration.team-board".to_owned()
+            }
+            ("mission-view-workers", "team-board") => "team-board.workers".to_owned(),
+            ("mission-team-board-advanced", "team-board") => "team-board.advanced".to_owned(),
+            ("mission-team-board-return", "workflow-monitor") => {
                 "gate.mission.workflow-monitor".to_owned()
+            }
+            ("mission-progress-expand-working", "workflow-monitor") => {
+                "workflow-monitor.progress.expand-working".to_owned()
+            }
+            ("mission-progress-collapse-group", "workflow-monitor") => {
+                "workflow-monitor.progress.bounded".to_owned()
             }
             ("mission-create-fix-task", "workflow-monitor")
             | ("mission-review-create-fix", "workflow-monitor")
@@ -3832,8 +3872,9 @@ fn mission_view_progress() -> (
     apply_flow6_identity(&mut before);
     let mut after = before.clone();
     after.virtual_tick = 1;
-    after.focus = "mission-monitor".to_owned();
-    after.selection = "view-progress".to_owned();
+    after.focus = "mission-progress".to_owned();
+    after.selection = "progress-summary".to_owned();
+    after.scroll_anchor = "mission-progress".to_owned();
     after.state_hash = state_hash(&after);
     let action = ActionEvidence {
         action_id: "action.mission.view-progress".to_owned(),
@@ -3859,6 +3900,420 @@ fn mission_view_progress() -> (
         "mission-monitor",
         "disclosed",
         "opening progress kept the mission identity and compact default state",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_open_team_board() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-progress",
+        "open-team-board",
+        "mission-progress",
+        Some(FLOW6_PENDING),
+        "return-to-monitor",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "mission-progress".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "team-board".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "team-board".to_owned();
+    after.selection = "team-board".to_owned();
+    after.scroll_anchor = "team-board".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.open-team-board".to_owned(),
+        label: "Open team board".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "team board opens only after explicit worker or task detail".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.open-team-board.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "team-board-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.open-team-board",
+        "mission-monitor",
+        "disclosed",
+        "opening the team board preserved the running mission identity",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_team_board_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "team-board",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "team-board",
+        ],
+        FLOW6_DRAFT,
+        "team-board",
+        "team-board-return",
+        "team-board",
+        Some(FLOW6_PENDING),
+        "return-to-monitor",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "team-board".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "workflow-monitor".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "mission-monitor".to_owned();
+    after.selection = "view-progress".to_owned();
+    after.scroll_anchor = "mission-running".to_owned();
+    after.return_policy = "return-to-conversation".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.team-board-return".to_owned(),
+        label: "Return to mission monitor".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "leaving the board restores the same monitor state without changing work"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.team-board-return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.team-board-return",
+        "team-board",
+        "unchanged",
+        "returning from the board left mission counts and stage unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_view_workers() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-progress",
+        "view-workers",
+        "mission-progress",
+        Some(FLOW6_PENDING),
+        "return-to-monitor",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "mission-progress".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.screen_id = "team-board".to_owned();
+    after.virtual_tick = 1;
+    after.focus = "workers".to_owned();
+    after.selection = "workers".to_owned();
+    after.scroll_anchor = "team-board-workers".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.view-workers".to_owned(),
+        label: "View workers".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "workers open only from explicit progress or board disclosure".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.view-workers.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "workers-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.view-workers",
+        "mission-progress",
+        "disclosed",
+        "worker identity opens only after explicit disclosure and leaves work unchanged",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_team_board_advanced() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "team-board",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "team-board",
+        ],
+        FLOW6_DRAFT,
+        "team-board",
+        "advanced",
+        "team-board",
+        Some(FLOW6_PENDING),
+        "return-to-board",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "team-board".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "team-board-advanced".to_owned();
+    after.selection = "advanced".to_owned();
+    after.scroll_anchor = "team-board-advanced".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.team-board-advanced".to_owned(),
+        label: "View advanced detail".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "waves, branches, worktrees, and contracts open only as a second detail level"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.team-board-advanced.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "advanced-open".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.team-board-advanced",
+        "team-board",
+        "disclosed",
+        "advanced internals disclosed without changing owned work",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_team_board_advanced_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "team-board",
+        vec![
+            "chat-turn",
+            "workflow-launch",
+            "workflow-monitor",
+            "team-board",
+        ],
+        FLOW6_DRAFT,
+        "team-board-advanced",
+        "advanced-return",
+        "team-board-advanced",
+        Some(FLOW6_PENDING),
+        "return-to-board",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "team-board-advanced".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "team-board".to_owned();
+    after.selection = "team-board".to_owned();
+    after.scroll_anchor = "team-board".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.team-board-advanced-return".to_owned(),
+        label: "Return to team board".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "advanced internals collapse back to the human ownership board".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.team-board-advanced-return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.team-board-advanced-return",
+        "team-board-advanced",
+        "unchanged",
+        "closing advanced detail restored the ownership board without work changes",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_progress_expand_working() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-progress-bounded",
+        "working",
+        "mission-progress-bounded",
+        Some(FLOW6_PENDING),
+        "return-to-progress",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "mission-progress-bounded".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mission-progress-expand-working".to_owned();
+    after.selection = "working".to_owned();
+    after.scroll_anchor = "mission-progress-expand-working".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.progress-expand-group".to_owned(),
+        label: "Expand Working".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "direct".to_owned(),
+        path: "one progress group expands locally without opening workers or advanced evidence"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.progress-expand-working.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "group-expanded".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.progress-expand-working",
+        "mission-progress-bounded",
+        "disclosed",
+        "one group expanded while sibling groups and mission state stayed intact",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+fn mission_progress_collapse_group() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor",
+        vec!["chat-turn", "workflow-launch", "workflow-monitor"],
+        FLOW6_DRAFT,
+        "mission-progress-expand-working",
+        "working",
+        "mission-progress-expand-working",
+        Some(FLOW6_PENDING),
+        "return-to-progress",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "mission-progress-expand-working".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = before.clone();
+    after.virtual_tick = 1;
+    after.focus = "mission-progress-bounded".to_owned();
+    after.selection = "working".to_owned();
+    after.scroll_anchor = "mission-progress-bounded".to_owned();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.progress-collapse-group".to_owned(),
+        label: "Back".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "Back restores the same group, selection, and monitor state".to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.progress-collapse-group.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "group-collapsed".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.progress-collapse-group",
+        "mission-progress-expand-working",
+        "restored",
+        "Back restored the bounded progress groups and monitor state",
     );
     (before, after, action, transition, attempt, effect)
 }

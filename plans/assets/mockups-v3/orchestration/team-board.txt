@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+    Mission · current conversation                                                                                      
+    Prepare the release safely and review the result.                                                                   
+                                                                                                                        
+    You · Turn the release work into a mission and walk me through it.                                                  
+                                                                                                                        
+    Team board                                                                                                          
+    Shows ownership and assignments for the current mission.                                                            
+                                                                                                                        
+    Needs attention                                                                                                     
+      ✗ Check the safe publish path                                                                                     
+        Depends on · next-step note and review                                                                          
+        Owner · Release reviewer · blocked                                                                              
+                                                                                                                        
+    Working                                                                                                             
+      ● Update the next-step note after fixes                                                                           
+        Depends on · release notes review                                                                               
+        Owner · Notes specialist · working                                                                              
+                                                                                                                        
+    Recently completed                                                                                                  
+      ✓ Review the release notes for open risks                                                                         
+        Depends on · none                                                                                               
+        Owner · Docs lead · complete                                                                                    
+                                                                                                                        
+    [d] View advanced detail                                                                                            
+    [w] View workers                                                                                                    
+                                                                                                                        
+    [esc] Return to mission monitor                                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ~/project · main · Claude Opus 4.8                                                                                    

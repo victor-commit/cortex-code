@@ -101,6 +101,7 @@ const IMPLEMENTED_RENDERERS: &[&str] = &[
     "workflow-launch-blocked",
     "workflow-monitor",
     "workflow-monitor-failure",
+    "team-board",
     "reviewer-output",
     "reviewer-approved",
     "sidebar-context",
