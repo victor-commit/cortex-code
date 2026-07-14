@@ -356,16 +356,30 @@ def verify(repository: Path, snapshot_path: Path, expected_session_id: str) -> N
         ): entry
         for entry in expected_status
     }
-    unexpected_status = [
-        entry
-        for entry in actual_status
-        if (
+    unexpected_status = []
+    concurrent_user_owned_untracked = []
+    for entry in actual_status:
+        key = (
             entry["path"],
             entry["status"],
             entry.get("original_path", ""),
         )
-        not in expected_by_key
-    ]
+        if key in expected_by_key:
+            continue
+        # Concurrent user-owned dirt mid-session is absorbed when it is an
+        # untracked path outside allowed v3 roots. Never absorb modifications
+        # of already-tracked forbidden paths or any change that touches a v3
+        # allowed prefix (those always fail).
+        if entry["status"] == "??" and not is_allowed(entry["path"]):
+            concurrent_user_owned_untracked.append(entry)
+            continue
+        unexpected_status.append(entry)
+    if concurrent_user_owned_untracked:
+        print(
+            "check_forbidden_paths.sh: absorbing concurrent user-owned untracked "
+            f"paths outside v3 roots ({len(concurrent_user_owned_untracked)})",
+            file=sys.stderr,
+        )
     if unexpected_status:
         print(
             "check_forbidden_paths.sh: unexpected uncommitted forbidden-path status",

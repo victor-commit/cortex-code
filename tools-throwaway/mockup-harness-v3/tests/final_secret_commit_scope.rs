@@ -17,14 +17,38 @@ const REPOSITORY: &str = "/projects/cortex-code";
 const MISSION_DIRECTORY: &str = "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc";
 
 fn session_id() -> String {
-    env::var("V3_ISOLATION_SESSION_ID").unwrap_or_else(|_| {
-        // Prefer the active worker session recorded by start_session_snapshot.sh.
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(".isolation_state/current-session");
-        std::fs::read_to_string(path)
-            .map(|s| s.trim().to_owned())
-            .expect("V3_ISOLATION_SESSION_ID or current-session must exist")
-    })
+    if let Ok(id) = env::var("V3_ISOLATION_SESSION_ID") {
+        let id = id.trim().to_owned();
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    // Mission-owned active session from start_session_snapshot.sh, via the
+    // runtime settings directory (FACTORY_RUNTIME_SETTINGS_PATH).
+    let candidates = [
+        env::var("FACTORY_RUNTIME_SETTINGS_PATH")
+            .ok()
+            .map(|settings| {
+                PathBuf::from(settings)
+                    .parent()
+                    .map(|parent| parent.join("isolation-guard-v3/current-session"))
+                    .unwrap_or_else(|| PathBuf::from("isolation-guard-v3/current-session"))
+            }),
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".isolation_state/current-session")),
+        Some(
+            PathBuf::from("/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc")
+                .join("isolation-guard-v3/current-session"),
+        ),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if let Ok(raw) = std::fs::read_to_string(&candidate) {
+            let id = raw.trim().to_owned();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+    }
+    panic!("V3_ISOLATION_SESSION_ID or isolation-guard-v3/current-session must exist");
 }
 
 #[test]
