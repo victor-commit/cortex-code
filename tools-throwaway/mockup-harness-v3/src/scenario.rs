@@ -148,6 +148,9 @@ pub struct DiffStageState {
     pub hunk_states: [String; 2],
     pub focused_hunk: String,
     pub apply_failed: bool,
+    /// True after an explicit Refresh and review rebuilt a new patch revision
+    /// that is ready for Finish again (VAL-V3-F2-060).
+    pub refreshed: bool,
 }
 
 /// The deterministic file bytes used by every public diff-application replay.
@@ -411,27 +414,37 @@ pub(crate) fn validated_diff_hunks_for_render() -> Result<Vec<DiffHunkEvidence>,
 /// Rendering consumes this projection so a replay and its TXT/PNG evidence
 /// cannot drift apart through a second set of hard-coded staging labels.
 pub(crate) fn diff_stage_state(case_id: &str) -> DiffStageState {
-    let (hunk_states, focused_hunk, apply_failed) = match case_id {
-        "staging-include-hunk" => (["Included", "Included"], "hunk.retry-test", false),
-        "staging-exclude-hunk" => (["Excluded", "Pending"], "hunk.retry-guard", false),
+    let (hunk_states, focused_hunk, apply_failed, refreshed) = match case_id {
+        "staging-include-hunk" => (["Included", "Included"], "hunk.retry-test", false, false),
+        "staging-exclude-hunk" => (["Excluded", "Pending"], "hunk.retry-guard", false, false),
         "staging-include-all" | "include-all" | "apply-all" | "diff-apply-all" => {
-            (["Included", "Included"], "hunk.retry-guard", false)
+            (["Included", "Included"], "hunk.retry-guard", false, false)
         }
-        "diff-review" | "hunk.retry-test" => (["Included", "Pending"], "hunk.retry-test", false),
-        "include" => (["Included", "Included"], "hunk.retry-test", false),
-        "exclude" => (["Excluded", "Pending"], "hunk.retry-guard", false),
+        "diff-review" | "hunk.retry-test" => {
+            (["Included", "Pending"], "hunk.retry-test", false, false)
+        }
+        "include" => (["Included", "Included"], "hunk.retry-test", false, false),
+        "exclude" => (["Excluded", "Pending"], "hunk.retry-guard", false, false),
         "staging-apply-partial-failure"
         | "staging-apply-failure"
         | "staging-finish-failed"
         | "staging-partial-apply-failure"
         | "staging-partial-failure"
-        | "apply-partial-failure" => (["Included", "Pending"], "hunk.retry-guard", true),
-        _ => (["Included", "Pending"], "hunk.retry-guard", false),
+        | "apply-partial-failure" => (["Included", "Pending"], "hunk.retry-guard", true, false),
+        // Refresh keeps the unchanged Included/Excluded content hashes and only
+        // marks changed/new hunks Pending (here the test hunk drifts to Pending).
+        "staging-refresh"
+        | "staging-refresh-and-review"
+        | "refresh-and-review"
+        | "apply-partial-refresh"
+        | "refresh" => (["Included", "Pending"], "hunk.retry-guard", false, true),
+        _ => (["Included", "Pending"], "hunk.retry-guard", false, false),
     };
     DiffStageState {
         hunk_states: hunk_states.map(str::to_owned),
         focused_hunk: focused_hunk.to_owned(),
         apply_failed,
+        refreshed,
     }
 }
 
@@ -467,6 +480,10 @@ pub(crate) fn diff_evidence_for_fixture(fixture_id: &str) -> Option<DiffEvidence
         | "staging-partial-apply-failure"
         | "staging-partial-failure"
         | "apply-partial-failure" => staging_apply_partial_failure().1,
+        "staging-refresh"
+        | "staging-refresh-and-review"
+        | "refresh-and-review"
+        | "apply-partial-refresh" => staging_refresh_and_review().1,
         _ if case_id.starts_with("staging-") => staging_state("initial", 1),
         _ => return None,
     };
@@ -1015,10 +1032,29 @@ impl CaseReplay {
                     | "apply-partial-failure"
             ) && (self.after.screen_id != "diff-viewer-staging"
                 || self.transitions[0].to_screen_id != "diff-viewer-staging"
-                || self.side_effects[0].status != "apply-failed-no-write")
+                || self.side_effects[0].status != "apply-failed-no-write"
+                || diff.write_count != 0
+                || diff.working_tree_before != diff.working_tree_after)
             {
                 return Err(
                     "stale diff apply must remain open and report one no-write failure".to_owned(),
+                );
+            }
+            if matches!(
+                self.case_id.as_str(),
+                "staging-refresh"
+                    | "staging-refresh-and-review"
+                    | "refresh-and-review"
+                    | "apply-partial-refresh"
+            ) && (self.after.screen_id != "diff-viewer-staging"
+                || self.transitions[0].to_screen_id != "diff-viewer-staging"
+                || self.side_effects[0].status != "refreshed-no-write"
+                || diff.write_count != 0
+                || diff.patch_revision != "patch-retry-19"
+                || diff.working_tree_before != diff.working_tree_after)
+            {
+                return Err(
+                    "refresh must reopen staging with a new revision and zero writes".to_owned(),
                 );
             }
         }
@@ -1224,6 +1260,10 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         | "staging-partial-apply-failure"
         | "staging-partial-failure"
         | "apply-partial-failure" => staging_apply_partial_failure(),
+        "staging-refresh"
+        | "staging-refresh-and-review"
+        | "refresh-and-review"
+        | "apply-partial-refresh" => staging_refresh_and_review(),
         "staging-cancel" | "staging-back" => staging_cancel(),
         "onboarding-complete" => onboarding_complete(),
         "onboarding-skip" => onboarding_skip(),
@@ -3107,6 +3147,14 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "apply-partial-failure"
     ) {
         "case.staging-apply-partial-failure.tick.1".to_owned()
+    } else if matches!(
+        case_id,
+        "staging-refresh"
+            | "staging-refresh-and-review"
+            | "refresh-and-review"
+            | "apply-partial-refresh"
+    ) {
+        "case.staging-refresh.tick.1".to_owned()
     } else if case_id == "queue-conflict" {
         "flow2-queue-manager-conflict".to_owned()
     } else if case_id == "queue-refresh" {
@@ -23360,6 +23408,34 @@ fn staging_apply_partial_failure() -> (
     (before, after, action, transition, attempt, effect)
 }
 
+fn staging_refresh_and_review() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let before = staging_state("apply-partial-failure", 0);
+    let after = staging_state("refresh", 1);
+    let action = diff_action("action.staging.refresh", "Refresh and review");
+    let transition = diff_transition(
+        &action,
+        &before,
+        &after,
+        "direct",
+        "Refresh writes nothing, creates patch-retry-19, keeps unchanged selections, and returns to explicit staging review",
+    );
+    let attempt = diff_attempt("attempt.staging.refresh.1", "refreshed-no-write", 0);
+    let effect = simulated_effect(
+        "effect.staging.refresh",
+        "patch-review",
+        "refreshed-no-write",
+        "refresh rebuilt the pending patch without mutating the workspace; Finish remains blocked until the new review",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
 fn staging_finish() -> (
     ScenarioState,
     ScenarioState,
@@ -23678,8 +23754,10 @@ fn validate_state(state: &ScenarioState) -> Result<(), String> {
 }
 
 fn validate_diff(diff: &DiffEvidence) -> Result<(), String> {
-    if diff.patch_revision != "patch-retry-18"
-        || diff.file_path != "src/net/retry_policy.rs"
+    if !matches!(
+        diff.patch_revision.as_str(),
+        "patch-retry-18" | "patch-retry-19"
+    ) || diff.file_path != "src/net/retry_policy.rs"
         || diff.hunks.len() != 2
         || diff.hunks[0].hunk_id != "hunk.retry-guard"
         || diff.hunks[1].hunk_id != "hunk.retry-test"
@@ -23961,6 +24039,10 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
             | "staging-partial-apply-failure"
             | "staging-partial-failure"
             | "apply-partial-failure"
+            | "staging-refresh"
+            | "staging-refresh-and-review"
+            | "refresh-and-review"
+            | "apply-partial-refresh"
             | "staging-cancel"
             | "staging-back"
             | "permission-file-edit-allow-once"
@@ -23980,6 +24062,13 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
             | "staging-apply-failure"
             | "staging-partial-failure"
             | "apply-partial-failure"
+    );
+    let refreshed = matches!(
+        case_id,
+        "staging-refresh"
+            | "staging-refresh-and-review"
+            | "refresh-and-review"
+            | "apply-partial-refresh"
     );
     let applied_hunks = match case_id {
         "diff-apply-all"
@@ -24021,7 +24110,11 @@ fn diff_evidence(case_id: &str, after: &ScenarioState) -> Option<DiffEvidence> {
     };
     let git_index = sha256_hex(diff_index_fixture_bytes());
     Some(DiffEvidence {
-        patch_revision: "patch-retry-18".to_owned(),
+        patch_revision: if refreshed {
+            "patch-retry-19".to_owned()
+        } else {
+            "patch-retry-18".to_owned()
+        },
         file_path: "src/net/retry_policy.rs".to_owned(),
         hunks,
         focused_hunk,

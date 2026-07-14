@@ -14,6 +14,11 @@ const STAGING_ACTIONS: [(&str, &str); 4] = [
     ("action.staging.cancel", "Cancel"),
 ];
 
+const STALE_STAGING_ACTIONS: [(&str, &str); 2] = [
+    ("action.staging.refresh", "Refresh and review"),
+    ("action.staging.cancel", "Cancel"),
+];
+
 // Historical fixture identity for src/net/retry_policy.rs buried payloads.
 const RETRY_GUARD_CONTENT_HASH: &str =
     "5ce43b2c003fa210c5b162b2189b98bde598b6251f0d60e2ba165bcdd9d637ed";
@@ -132,11 +137,7 @@ fn staging_chrome_action_render_refs_match_visible_label_geometry() {
 
 #[test]
 fn staging_action_geometry_survives_include_all_and_apply_failure_variants() {
-    for fixture in [
-        "flow2-staging",
-        "case.staging-include-all.tick.1",
-        "case.staging-apply-partial-failure.tick.1",
-    ] {
+    for fixture in ["flow2-staging", "case.staging-include-all.tick.1"] {
         let audit = audit_screen("diff-viewer-staging", fixture)
             .unwrap_or_else(|error| panic!("staging fixture {fixture} must render: {error}"));
         let chrome_row = audit
@@ -159,6 +160,40 @@ fn staging_action_geometry_survives_include_all_and_apply_failure_variants() {
             );
         }
     }
+
+    // Stale finish is fail-closed with Refresh and review as the only primary.
+    let stale = audit_screen(
+        "diff-viewer-staging",
+        "case.staging-apply-partial-failure.tick.1",
+    )
+    .expect("stale staging fixture must render");
+    let chrome_row = stale
+        .render_txt()
+        .lines()
+        .position(|row| row.contains("Refresh and review") && row.contains("[esc] Cancel"))
+        .expect("stale staging chrome must expose Refresh and review") as u16;
+    for (action_id, label) in STALE_STAGING_ACTIONS {
+        let event = action_event(&stale, action_id);
+        let reference = &event.identity.render_refs[0];
+        assert_eq!(
+            reference.row, chrome_row,
+            "stale/{action_id} must follow chrome row {chrome_row}"
+        );
+        let fragment = cell_slice(&stale, reference.row, reference.start, reference.end);
+        assert!(
+            fragment.contains(label),
+            "stale/{action_id} geometry must cover {label:?}, got {fragment:?}"
+        );
+    }
+    assert!(
+        stale
+            .events
+            .iter()
+            .filter(|event| event.identity.family == "primary-action")
+            .count()
+            == 1,
+        "stale staging has exactly one primary action"
+    );
 }
 
 #[test]

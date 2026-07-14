@@ -242,4 +242,50 @@ fn apply_evidence_uses_exact_file_hashes_and_atomic_failure_preserves_bytes() {
     );
     assert_eq!(failed_diff.git_index_before, failed_diff.git_index_after);
     assert_eq!(failed.side_effects[0].status, "apply-failed-no-write");
+    assert_eq!(failed_diff.patch_revision, "patch-retry-18");
+    let failed_text = failed.audit.render_txt();
+    assert!(
+        failed_text.contains("Workspace changed after review")
+            || failed_text.contains("stale")
+            || failed_text.contains("Refresh and review"),
+        "stale apply states one plain-English cause: {failed_text}"
+    );
+    assert!(failed_text.contains("Refresh and review"));
+    assert_eq!(
+        failed
+            .audit
+            .events
+            .iter()
+            .filter(|event| event.identity.family == "primary-action")
+            .filter_map(|event| event.action.as_ref().map(|action| action.label.as_str()))
+            .collect::<Vec<_>>(),
+        vec!["Refresh and review"]
+    );
+
+    let refreshed =
+        replay_case("staging-refresh", 1).expect("refresh after stale finish must be replayable");
+    refreshed.validate().expect("refresh replay validates");
+    let refreshed_diff = refreshed.diff.as_ref().unwrap();
+    assert_eq!(refreshed.after.screen_id, "diff-viewer-staging");
+    assert_eq!(refreshed_diff.write_count, 0);
+    assert_eq!(
+        refreshed_diff.working_tree_before,
+        refreshed_diff.working_tree_after
+    );
+    assert_eq!(
+        refreshed_diff.git_index_before,
+        refreshed_diff.git_index_after
+    );
+    assert_eq!(refreshed_diff.patch_revision, "patch-retry-19");
+    assert_eq!(refreshed.side_effects[0].status, "refreshed-no-write");
+    assert_eq!(refreshed_diff.hunks[0].state, "Included");
+    assert_eq!(refreshed_diff.hunks[1].state, "Pending");
+    let refreshed_text = refreshed.audit.render_txt();
+    assert!(refreshed_text.contains("revision: patch-retry-19"));
+    assert!(refreshed_text.contains("[enter] Finish"));
+    assert!(refreshed_text.contains("Refreshed review"));
+    assert!(
+        !refreshed_text.contains("Refresh and review"),
+        "after refresh, Finish is available again for a fresh review"
+    );
 }

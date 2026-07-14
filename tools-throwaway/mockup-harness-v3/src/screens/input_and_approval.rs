@@ -665,10 +665,15 @@ fn render_diff_staging(
         "From pending edit in the paused retry conversation",
         TextStyle::muted(),
     )?;
+    let patch_revision = if stage.refreshed {
+        "patch-retry-19"
+    } else {
+        "patch-retry-18"
+    };
     canvas.write(
         9,
         4,
-        "File: src/net/retry_policy.rs · revision: patch-retry-18",
+        &format!("File: src/net/retry_policy.rs · revision: {patch_revision}"),
         TextStyle::text(),
     )?;
     canvas.write(
@@ -779,24 +784,26 @@ fn render_diff_staging(
         23,
         4,
         if stage.apply_failed {
-            "Finish stopped before writing: the patch is stale and no partial change was made."
+            "Workspace changed after review. No hunks were written. Refresh and review to continue."
+        } else if stage.refreshed {
+            "Refreshed review · unchanged Included/Excluded kept · Finish writes only after this review."
         } else {
             "No file is written until Finish."
         },
         TextStyle::muted(),
     )?;
-    canvas.write(
-        25,
-        4,
-        "[i] Include  [x] Exclude  [a] Include all  [e] Edit  ·  [enter] Finish  [esc] Cancel",
-        TextStyle::bright(),
-    )?;
-    let pairs = [
+    let chrome = if stage.apply_failed {
+        "[enter] Refresh and review  ·  [esc] Cancel"
+    } else {
+        "[i] Include  [x] Exclude  [a] Include all  [e] Edit  ·  [enter] Finish  [esc] Cancel"
+    };
+    canvas.write(25, 4, chrome, TextStyle::bright())?;
+    let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
             "detail-origin",
-            "pending.edit.patch-retry-18",
+            &format!("pending.edit.{patch_revision}"),
             reference(6, 4, 60),
             "summary",
             None,
@@ -822,6 +829,71 @@ fn render_diff_staging(
         semantic(
             screen_id,
             fixture_id,
+            "focused-hunk",
+            &stage.focused_hunk,
+            reference(10, 4, 70),
+            "focused",
+            None,
+        ),
+    ];
+    if stage.apply_failed {
+        // Hunk rows remain visible for context, without local include/exclude while
+        // the patch is stale (mutations resume only after Refresh and review).
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-guard",
+            reference(10, 4, 70),
+            if stage.focused_hunk == "hunk.retry-guard" {
+                "focused"
+            } else {
+                "summary"
+            },
+            None,
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "hunk",
+            "hunk.retry-test",
+            reference(17, 4, 70),
+            if stage.focused_hunk == "hunk.retry-test" {
+                "focused"
+            } else {
+                "summary"
+            },
+            None,
+        ));
+        // Stale finish is fail-closed: Finish stays unavailable until an explicit refresh.
+        // Chrome: "[enter] Refresh and review  ·  [esc] Cancel"
+        // col:     4...................................... / 39...
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "primary-action",
+            "refresh-and-review",
+            reference(25, 12, 30),
+            "focused",
+            Some(action(
+                "action.staging.refresh",
+                "Refresh and review",
+                false,
+            )),
+        ));
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "cancel-action",
+            "return-pending-edit",
+            reference(25, 41, 47),
+            "summary",
+            Some(action("action.staging.cancel", "Cancel", false)),
+        ));
+    } else {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
             "hunk",
             "hunk.retry-guard",
             reference(10, 4, 70),
@@ -839,17 +911,8 @@ fn render_diff_staging(
                 },
                 false,
             )),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "focused-hunk",
-            &stage.focused_hunk,
-            reference(10, 4, 70),
-            "focused",
-            None,
-        ),
-        semantic(
+        ));
+        pairs.push(semantic(
             screen_id,
             fixture_id,
             "hunk",
@@ -869,10 +932,10 @@ fn render_diff_staging(
                 },
                 false,
             )),
-        ),
+        ));
         // Staging chrome is a single shifted row: keep each action anchor on the
         // true visible label span after multiline hunk bodies expand upward layout.
-        semantic(
+        pairs.push(semantic(
             screen_id,
             fixture_id,
             "include-all-action",
@@ -880,8 +943,8 @@ fn render_diff_staging(
             reference(25, 34, 45),
             "summary",
             Some(action("action.staging.include-all", "Include all", false)),
-        ),
-        semantic(
+        ));
+        pairs.push(semantic(
             screen_id,
             fixture_id,
             "edit-action",
@@ -889,8 +952,8 @@ fn render_diff_staging(
             reference(25, 51, 55),
             "summary",
             Some(action("action.staging.edit", "Edit", false)),
-        ),
-        semantic(
+        ));
+        pairs.push(semantic(
             screen_id,
             fixture_id,
             "primary-action",
@@ -898,8 +961,8 @@ fn render_diff_staging(
             reference(25, 68, 74),
             "focused",
             Some(action("action.staging.finish", "Finish", false)),
-        ),
-        semantic(
+        ));
+        pairs.push(semantic(
             screen_id,
             fixture_id,
             "cancel-action",
@@ -907,40 +970,38 @@ fn render_diff_staging(
             reference(25, 82, 88),
             "summary",
             Some(action("action.staging.cancel", "Cancel", false)),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "statusline",
-            "shared-statusline",
-            reference(CANVAS_ROWS - 1, 2, 38),
-            "summary",
-            None,
-        ),
-    ];
-    let finish_transition = if stage.apply_failed {
-        transition(
-            "action.staging.finish",
-            "diff-viewer-staging",
-            "diff-viewer-staging",
-            "direct",
-            "Finish stopped before writing because the patch is stale; the review remains open",
-        )
+        ));
+    }
+    pairs.push(semantic(
+        screen_id,
+        fixture_id,
+        "statusline",
+        "shared-statusline",
+        reference(CANVAS_ROWS - 1, 2, 38),
+        "summary",
+        None,
+    ));
+    let transitions = if stage.apply_failed {
+        // Stale workspace: only Refresh and review (primary) and Cancel remain.
+        // The refused Finish attempt is recorded on the scenario side-effect path
+        // that landed here; the after-state must not re-announce Finish as live.
+        vec![
+            transition(
+                "action.staging.refresh",
+                "diff-viewer-staging",
+                "diff-viewer-staging",
+                "direct",
+                "Refresh writes nothing, builds a new patch revision, and reopens staging review",
+            ),
+            transition(
+                "action.staging.cancel",
+                "diff-viewer-staging",
+                "diff-edit",
+                "cancel",
+                "Cancel applies none and returns one level to the unchanged pending edit",
+            ),
+        ]
     } else {
-        transition(
-            "action.staging.finish",
-            "diff-viewer-staging",
-            "chat-turn",
-            "direct",
-            "Finish applies only included hunks atomically and resumes the paused activity",
-        )
-    };
-    Ok((
-        pairs
-            .iter()
-            .map(|(candidate, _)| candidate.clone())
-            .collect(),
-        pairs.iter().map(|(_, event)| event.clone()).collect(),
         vec![
             transition(
                 "action.staging.include-hunk",
@@ -970,7 +1031,13 @@ fn render_diff_staging(
                 "direct",
                 "Edit opens only from staging detail and does not approve the patch",
             ),
-            finish_transition,
+            transition(
+                "action.staging.finish",
+                "diff-viewer-staging",
+                "chat-turn",
+                "direct",
+                "Finish applies only included hunks atomically and resumes the paused activity",
+            ),
             transition(
                 "action.staging.cancel",
                 "diff-viewer-staging",
@@ -978,7 +1045,15 @@ fn render_diff_staging(
                 "cancel",
                 "Cancel applies none and returns one level to the unchanged pending edit",
             ),
-        ],
+        ]
+    };
+    Ok((
+        pairs
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect(),
+        pairs.iter().map(|(_, event)| event.clone()).collect(),
+        transitions,
     ))
 }
 
@@ -1999,7 +2074,9 @@ fn render_permission_file_edit(
         semantic(
             screen_id,
             fixture_id,
-            "secondary-action",
+            // Progressive disclosure of the full patch — not a competing decision
+            // secondary (decision secondaries remain Deny + optional persistent allow).
+            "disclosure-action",
             "action.permission.review-detail",
             reference(DOCK_TOP + 5, 4, 24),
             "summary",
