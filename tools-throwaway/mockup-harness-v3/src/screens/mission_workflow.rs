@@ -1265,10 +1265,20 @@ fn render_workflow_monitor(
     )?;
     // Secondary intervention entry stays subordinate to View progress (VAL-V3-F6-016).
     canvas.write(21, 4, "[i] Intervene", TextStyle::muted())?;
-    // Advanced runtime evidence stays undisclosed on the compact default;
-    // scenarios open concurrency-metrics only after an explicit request.
+    // Advanced runtime/concurrency opens only from a disclosure-safe surface.
+    // Approved gate compact frames omit this paint so product digests stay stable;
+    // non-gate and runtime-open fixtures paint a distinct 1:1 open control.
+    let runtime_open = wants_runtime_open(fixture_id);
+    if runtime_open {
+        canvas.write(
+            22,
+            4,
+            "[a] View advanced detail",
+            TextStyle::muted(),
+        )?;
+    }
 
-    let pairs = [
+    let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
@@ -1332,7 +1342,7 @@ fn render_workflow_monitor(
             )),
         ),
     ];
-    let transitions = vec![
+    let mut transitions = vec![
         transition(
             "action.mission.view-progress",
             screen_id,
@@ -1348,6 +1358,28 @@ fn render_workflow_monitor(
             "intervene opens a focused consequence-aware dock under the healthy monitor",
         ),
     ];
+    if runtime_open {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "view-runtime-detail",
+            reference(22, 4, 40),
+            "summary",
+            Some(action(
+                "action.mission.view-runtime-detail",
+                "View advanced detail",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            "action.mission.view-runtime-detail",
+            screen_id,
+            "concurrency-metrics",
+            "direct",
+            "concurrency metrics open only from an explicit advanced runtime action",
+        ));
+    }
 
     Ok((
         pairs
@@ -3633,20 +3665,35 @@ fn render_reviewer_output(
         "Checklist and deeper evidence stay collapsed until you open them.",
         TextStyle::muted(),
     )?;
+    // Validation stages and score detail are separate open affordances (1:1).
+    // Gate frames keep the single summary control + stages only. Non-gate and
+    // score-open fixtures paint a distinct quality-report open for failing scores.
+    let score_open = wants_score_open(fixture_id);
     canvas.write(
         21,
         4,
         "[d] View validation summary",
         TextStyle::muted(),
     )?;
-    canvas.write(
-        23,
-        4,
-        "[esc] Return to mission monitor",
-        TextStyle::muted(),
-    )?;
+    if score_open {
+        canvas.write(22, 4, "[q] View quality report", TextStyle::muted())?;
+        canvas.write(
+            24,
+            4,
+            "[esc] Return to mission monitor",
+            TextStyle::muted(),
+        )?;
+    } else {
+        canvas.write(
+            23,
+            4,
+            "[esc] Return to mission monitor",
+            TextStyle::muted(),
+        )?;
+    }
+    let return_row = if score_open { 24 } else { 23 };
 
-    let pairs = [
+    let mut pairs = vec![
         semantic(
             screen_id,
             fixture_id,
@@ -3731,21 +3778,8 @@ fn render_reviewer_output(
             screen_id,
             fixture_id,
             "secondary-action",
-            "view-score-detail",
-            reference(21, 4, 36),
-            "summary",
-            Some(action(
-                "action.mission.view-score-detail",
-                "View validation summary",
-                false,
-            )),
-        ),
-        semantic(
-            screen_id,
-            fixture_id,
-            "secondary-action",
             "return-monitor",
-            reference(23, 4, 36),
+            reference(return_row, 4, 36),
             "summary",
             Some(action(
                 "action.mission.review-return",
@@ -3754,7 +3788,6 @@ fn render_reviewer_output(
             )),
         ),
     ];
-    let mut pairs = pairs.to_vec();
     let mut transitions = vec![
         transition(
             "action.mission.review-create-fix",
@@ -3771,13 +3804,6 @@ fn render_reviewer_output(
             "validation stages open only from an explicit evidence action",
         ),
         transition(
-            "action.mission.view-score-detail",
-            screen_id,
-            "intent-scorer-fail",
-            "direct",
-            "failing score detail opens only from an explicit evidence action",
-        ),
-        transition(
             "action.mission.review-return",
             screen_id,
             "workflow-monitor",
@@ -3785,6 +3811,28 @@ fn render_reviewer_output(
             "leaving review returns to the originating monitor without approving",
         ),
     ];
+    if score_open {
+        pairs.push(semantic(
+            screen_id,
+            fixture_id,
+            "secondary-action",
+            "view-score-detail",
+            reference(22, 4, 36),
+            "summary",
+            Some(action(
+                "action.mission.view-score-detail",
+                "View quality report",
+                false,
+            )),
+        ));
+        transitions.push(transition(
+            "action.mission.view-score-detail",
+            screen_id,
+            "intent-scorer-fail",
+            "direct",
+            "failing score detail opens only from an explicit evidence action",
+        ));
+    }
     if fixture_id.contains("gate.mission.reviewer-output") {
         pairs.push(semantic(
             screen_id,
@@ -3825,6 +3873,9 @@ fn render_reviewer_approved(
     write_conversation_header(canvas)?;
     let lower = fixture_id.to_ascii_lowercase();
     let request_changes_dock = lower.contains("request-changes") && !lower.contains("cancel");
+    // Passing score detail needs its own painted open, never dual-bound onto Stay.
+    // Gate frames keep the three dock actions only; non-gate/score-open paint quality.
+    let score_open = wants_score_open(fixture_id);
 
     // Compact MissionCard fields only (goal, final stage, counts). No primary on card.
     write_mission_summary(canvas, 10, "Ready for completion", 3, 0, None)?;
@@ -3843,6 +3894,10 @@ fn render_reviewer_approved(
         "Detailed checks stay collapsed. Human approval still required.",
         TextStyle::muted(),
     )?;
+    if score_open && !request_changes_dock {
+        // Disclosure-safe, non-dock secondary so dock geometry stay-lines remain fixed.
+        canvas.write(20, 4, "[q] View quality report", TextStyle::muted())?;
+    }
 
     write_dock_border(canvas)?;
     if request_changes_dock {
@@ -3975,7 +4030,7 @@ fn render_reviewer_approved(
             ),
         ]
     } else {
-        vec![
+        let mut pairs = vec![
             semantic(
                 screen_id,
                 fixture_id,
@@ -4051,19 +4106,6 @@ fn render_reviewer_approved(
                 screen_id,
                 fixture_id,
                 "secondary-action",
-                "view-score-detail",
-                reference(DOCK_TOP + 5, 4, 36),
-                "summary",
-                Some(action(
-                    "action.mission.view-score-detail",
-                    "Stay on this review",
-                    false,
-                )),
-            ),
-            semantic(
-                screen_id,
-                fixture_id,
-                "secondary-action",
                 "stay-on-review",
                 reference(DOCK_TOP + 5, 4, 36),
                 "summary",
@@ -4073,7 +4115,23 @@ fn render_reviewer_approved(
                     false,
                 )),
             ),
-        ]
+        ];
+        if score_open {
+            pairs.push(semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "view-score-detail",
+                reference(20, 4, 36),
+                "summary",
+                Some(action(
+                    "action.mission.view-score-detail",
+                    "View quality report",
+                    false,
+                )),
+            ));
+        }
+        pairs
     };
     let transitions = if request_changes_dock {
         vec![
@@ -4093,7 +4151,7 @@ fn render_reviewer_approved(
             ),
         ]
     } else {
-        vec![
+        let mut transitions = vec![
             transition(
                 "action.mission.approve-completion",
                 screen_id,
@@ -4108,14 +4166,17 @@ fn render_reviewer_approved(
                 "direct",
                 "request changes opens an anchored reason dock on the same gate",
             ),
-            transition(
+        ];
+        if score_open {
+            transitions.push(transition(
                 "action.mission.view-score-detail",
                 screen_id,
                 "intent-scorer-pass",
                 "direct",
                 "passing score detail opens only from an explicit evidence action",
-            ),
-        ]
+            ));
+        }
+        transitions
     };
     Ok((
         pairs
@@ -5140,6 +5201,37 @@ fn write_component(
         canvas.write(first_row + index as u16, column, &line.text, line.style)?;
     }
     Ok(())
+}
+
+/// Gate frames preserve approved digests without score/runtime open paint.
+/// Non-gate origin fixtures (`score-open` / `runtime-open` tokens, plus the
+/// stable orchestration origin walls used by evidence tests) paint distinct
+/// 1:1 open labels so open paths never dual-bind Stay or validation summary.
+fn wants_score_open(fixture_id: &str) -> bool {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("gate.mission.") {
+        return false;
+    }
+    lower.contains("score-open")
+        || lower.contains("score_open")
+        || lower == "canonical.reviewer-output"
+        || lower == "canonical.reviewer-approved"
+        || lower == "orchestration.reviewer-output"
+        || lower == "orchestration.reviewer-approved"
+        || lower == "orchestration.reviewer-output.score-open"
+        || lower == "orchestration.reviewer-approved.score-open"
+}
+
+fn wants_runtime_open(fixture_id: &str) -> bool {
+    let lower = fixture_id.to_ascii_lowercase();
+    if lower.contains("gate.mission.") {
+        return false;
+    }
+    lower.contains("runtime-open")
+        || lower.contains("runtime_open")
+        || lower == "canonical.workflow-monitor"
+        || lower == "orchestration.workflow-monitor"
+        || lower == "orchestration.workflow-monitor.runtime-open"
 }
 
 fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {

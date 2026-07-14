@@ -84,6 +84,55 @@ fn validation_scores_runtime_and_tool_evidence_absent_from_defaults() {
     }
 }
 
+fn painted_actions(audit: &mockup_harness_v3::audit::AuditDocument) -> Vec<(String, String)> {
+    audit
+        .events
+        .iter()
+        .filter_map(|event| {
+            event.action.as_ref().map(|action| {
+                (action.action_id.clone(), action.label.clone())
+            })
+        })
+        .collect()
+}
+
+fn assert_unique_action_labels(audit: &mockup_harness_v3::audit::AuditDocument) {
+    let mut by_label: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (action_id, label) in painted_actions(audit) {
+        by_label.entry(label).or_default().push(action_id);
+    }
+    for (label, action_ids) in by_label {
+        assert_eq!(
+            action_ids.len(),
+            1,
+            "visible label `{label}` dual-binds action_ids {action_ids:?}"
+        );
+    }
+}
+
+fn assert_action_painted(
+    audit: &mockup_harness_v3::audit::AuditDocument,
+    action_id: &str,
+    expected_label: &str,
+) {
+    let text = audit.render_txt();
+    assert!(
+        text.contains(expected_label),
+        "origin must paint `{expected_label}`:\n{text}"
+    );
+    let hit = audit.events.iter().find_map(|event| {
+        event.action.as_ref().and_then(|action| {
+            (action.action_id == action_id).then_some(action.label.as_str())
+        })
+    });
+    assert_eq!(
+        hit,
+        Some(expected_label),
+        "action `{action_id}` must bind painted label `{expected_label}`, got {hit:?}"
+    );
+}
+
 #[test]
 fn verification_ladder_opens_on_request_with_origin_return() {
     let audit = audit_screen("verification-ladder", "orchestration.verification-ladder")
@@ -144,6 +193,156 @@ fn verification_ladder_opens_on_request_with_origin_return() {
         back.actions[0].action_id,
         "action.mission.verification-ladder-return"
     );
+}
+
+#[test]
+fn score_and_runtime_origin_affordances_are_distinct_and_painted() {
+    // Gate products may omit open paints; origin evidence uses disclosure-safe
+    // non-gate fixtures so action_id ↔ label stays 1:1 (VAL-V3-F6-027/029/030/032).
+    let pass_origin = audit_screen(
+        "reviewer-approved",
+        "orchestration.reviewer-approved.score-open",
+    )
+    .expect("pass origin with score open");
+    pass_origin
+        .validate()
+        .expect("pass origin audit must stay bijective");
+    assert_unique_action_labels(&pass_origin);
+    assert_action_painted(
+        &pass_origin,
+        "action.mission.view-score-detail",
+        "View quality report",
+    );
+    assert_action_painted(
+        &pass_origin,
+        "action.mission.stay-on-review",
+        "Stay on this review",
+    );
+    let pass_text = pass_origin.render_txt();
+    assert!(
+        !pass_text.contains("View quality report")
+            || !pass_text
+                .lines()
+                .any(|line| line.contains("Stay on this review")
+                    && line.contains("View quality report")),
+        "score open must not share Stay label:\n{pass_text}"
+    );
+
+    let fail_origin = audit_screen(
+        "reviewer-output",
+        "orchestration.reviewer-output.score-open",
+    )
+    .expect("fail origin with score open");
+    fail_origin
+        .validate()
+        .expect("fail origin audit must stay bijective");
+    assert_unique_action_labels(&fail_origin);
+    assert_action_painted(
+        &fail_origin,
+        "action.mission.view-validation-stages",
+        "View validation summary",
+    );
+    assert_action_painted(
+        &fail_origin,
+        "action.mission.view-score-detail",
+        "View quality report",
+    );
+    let fail_text = fail_origin.render_txt();
+    assert!(
+        fail_text.contains("[d] View validation summary"),
+        "validation summary key must remain:\n{fail_text}"
+    );
+    assert!(
+        fail_text.contains("[q] View quality report"),
+        "score detail needs its own painted open:\n{fail_text}"
+    );
+
+    let runtime_origin = audit_screen(
+        "workflow-monitor",
+        "orchestration.workflow-monitor.runtime-open",
+    )
+    .expect("runtime origin");
+    runtime_origin
+        .validate()
+        .expect("runtime origin audit must stay bijective");
+    assert_unique_action_labels(&runtime_origin);
+    assert_action_painted(
+        &runtime_origin,
+        "action.mission.view-runtime-detail",
+        "View advanced detail",
+    );
+    assert_action_painted(
+        &runtime_origin,
+        "action.mission.view-progress",
+        "View progress",
+    );
+    assert_action_painted(
+        &runtime_origin,
+        "action.mission.open-intervene",
+        "Intervene",
+    );
+    let runtime_text = runtime_origin.render_txt();
+    assert!(
+        runtime_text.contains("[a] View advanced detail"),
+        "compact disclosure-safe monitor must paint advanced runtime open:\n{runtime_text}"
+    );
+
+    // Gate frames must not dual-bind residual score/runtime opens onto Stay or summary.
+    for (screen, fixture) in [
+        ("reviewer-approved", "gate.mission.reviewer-approved"),
+        ("reviewer-output", "gate.mission.reviewer-output"),
+        ("workflow-monitor", "gate.mission.workflow-monitor"),
+    ] {
+        let gate = audit_screen(screen, fixture).expect("gate frame renders");
+        gate.validate().expect("gate audit bijective");
+        let gate_actions = painted_actions(&gate);
+        assert!(
+            !gate_actions
+                .iter()
+                .any(|(id, label)| id == "action.mission.view-score-detail"
+                    && label == "Stay on this review"),
+            "{screen} must not dual-bind score onto Stay: {gate_actions:?}"
+        );
+        assert!(
+            !gate_actions
+                .iter()
+                .any(|(id, label)| id == "action.mission.view-score-detail"
+                    && label == "View validation summary"),
+            "{screen} must not dual-bind score onto validation summary: {gate_actions:?}"
+        );
+        assert!(
+            !gate_actions
+                .iter()
+                .any(|(id, label)| id == "action.mission.view-runtime-detail"
+                    && (label == "View progress" || label == "Intervene")),
+            "{screen} must not dual-bind runtime onto View progress/Intervene: {gate_actions:?}"
+        );
+        if screen == "reviewer-output" {
+            // Gate may omit score open paint while keeping stages only.
+            assert!(
+                !gate_actions
+                    .iter()
+                    .any(|(id, _)| id == "action.mission.view-score-detail"),
+                "gate reviewer-output should not invent dual score action: {gate_actions:?}"
+            );
+        }
+        if screen == "reviewer-approved" {
+            assert!(
+                !gate_actions
+                    .iter()
+                    .any(|(id, _)| id == "action.mission.view-score-detail"),
+                "gate reviewer-approved should not invent dual score action: {gate_actions:?}"
+            );
+        }
+        if screen == "workflow-monitor" {
+            assert!(
+                !gate_actions
+                    .iter()
+                    .any(|(id, _)| id == "action.mission.view-runtime-detail"),
+                "gate compact monitor omits advanced runtime paint: {gate_actions:?}"
+            );
+        }
+    }
 }
 
 #[test]
