@@ -455,7 +455,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Subgate: contract-assertion-inventory (all 462 IDs enumerated)
+# Subgate: contract-assertion-inventory (all 471 IDs enumerated)
 # Includes HARNESS-038/039/040 monospaced PNG baseline registration family.
 # ---------------------------------------------------------------------------
 contract_log="$WORKDIR/contract.txt"
@@ -464,20 +464,20 @@ import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 ids = re.findall(r"^### (VAL-V3-[A-Z0-9-]+):", text, re.M)
-if len(ids) != 462:
-    print(f"expected 462 VAL-V3 assertions, found {len(ids)}")
+if len(ids) != 471:
+    print(f"expected 471 VAL-V3 assertions, found {len(ids)}")
     raise SystemExit(1)
-if len(set(ids)) != 462:
+if len(set(ids)) != 471:
     print("duplicate assertion IDs in validation-contract.md")
     raise SystemExit(1)
-print("contract-assertion-inventory: OK count=462")
+print("contract-assertion-inventory: OK count=471")
 for i in ids:
     print(i)
 PY
 then
-  record_subgate "contract-assertion-inventory" "pass" "$(sha_of "$contract_log")" "validation-contract enumerates exact 462 assertions"
+  record_subgate "contract-assertion-inventory" "pass" "$(sha_of "$contract_log")" "validation-contract enumerates exact 471 assertions"
 else
-  record_subgate "contract-assertion-inventory" "fail" "$(sha_of "$contract_log" 2>/dev/null || echo missing)" "assertion inventory is not exactly 462 unique IDs"
+  record_subgate "contract-assertion-inventory" "fail" "$(sha_of "$contract_log" 2>/dev/null || echo missing)" "assertion inventory is not exactly 471 unique IDs"
 fi
 
 # ---------------------------------------------------------------------------

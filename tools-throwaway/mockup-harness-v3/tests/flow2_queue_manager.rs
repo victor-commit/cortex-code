@@ -49,18 +49,34 @@ fn queue_manager_opens_with_order_next_marker_and_one_time_consequence() {
 
     // VAL-V3-F2-024: reorder/remove/run-next controls, primary consequence,
     // one selected row, labeled remove (no color-only destroy), stable id/rev.
-    assert!(text.contains("[enter] Apply"));
-    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
+    // Phase-A prose language keeps Enter/Esc bylines without bracket key atoms.
     assert!(
-        text.contains("[r] Reorder") || text.contains("Reorder"),
+        text.contains("Enter to apply")
+            || text.contains("[enter] Apply")
+            || text.contains("Enter · Apply"),
+        "apply control must be visible as plain prose or legacy atom:\n{text}"
+    );
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
+    let lower = text.to_ascii_lowercase();
+    assert!(
+        text.contains("[r] Reorder")
+            || text.contains("Reorder")
+            || lower.contains("r to reorder")
+            || lower.contains("reorder"),
         "reorder control must be visible as plain text"
     );
     assert!(
-        text.contains("[x] Remove") || text.contains("Remove"),
+        text.contains("[x] Remove")
+            || text.contains("Remove")
+            || lower.contains("x to remove")
+            || lower.contains("remove"),
         "remove control must be labeled (never unlabeled or color-only)"
     );
     assert!(
-        text.contains("[n] Run next") || text.contains("Run next"),
+        text.contains("[n] Run next")
+            || text.contains("Run next")
+            || lower.contains("n to run next")
+            || lower.contains("run next"),
         "run-next control must be attached to the selected queue row"
     );
     assert!(text.contains("queue-item-1") || text.contains("id:queue-item-1"));

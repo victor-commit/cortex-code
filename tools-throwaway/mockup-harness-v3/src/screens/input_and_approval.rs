@@ -3574,7 +3574,10 @@ fn render_queue_manager(
     };
     dock_line(canvas, DOCK_TOP + 2, primary_line, TextStyle::muted())?;
 
-    let refresh_label = "Enter to refresh queue";
+    // Header paints the compact protons "Enter to refresh" / "Enter to apply";
+    // action labels stay longer prose for audit readability, but reference
+    // geometry must bind the exact painted substring.
+    let refresh_label = "Enter to refresh";
     let apply_label = "Enter to apply";
     let cancel_label = "Esc to cancel";
     let cancel_start = header
