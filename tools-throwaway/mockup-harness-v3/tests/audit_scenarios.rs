@@ -40,8 +40,18 @@ fn typed_audit_is_stable_bijective_and_includes_styled_cells() {
             .render_txt()
             .lines()
             .nth(33)
-            .is_some_and(|line| line.contains("[enter] Allow once")),
-        "permission rendering must use the mandatory bottom DecisionDock"
+            .is_some_and(|line| line.contains("› Allow once")),
+        "permission rendering must use the mandatory bottom DecisionDock with prose selection, not bracket chords"
+    );
+    assert!(
+        first
+            .render_txt()
+            .contains("Esc to cancel"),
+        "permission DecisionDock must use Claude prose bylines instead of [esc] atoms"
+    );
+    assert!(
+        !first.render_txt().contains("[enter]") && !first.render_txt().contains("[esc]"),
+        "foundation permission must not emit bracket key atoms after Phase A kill-switch"
     );
     assert_eq!(first.to_json(), second.to_json());
 }
@@ -121,7 +131,18 @@ fn conversation_pilot_screens_keep_the_transcript_and_one_clear_next_step() {
 
     let home_text = home.render_txt();
     assert!(home_text.contains("Recent work"));
-    assert!(home_text.contains("Ask Code to continue"));
+    assert!(
+        home_text.contains("Ask Code…") || home_text.contains("Ask Code"),
+        "home composer must invite the next request without legacy 'Ask Code to continue' essay copy"
+    );
+    assert!(
+        home_text.contains("Enter to resume") || home_text.contains("Enter to"),
+        "home recent-work resume cue must use prose bylines, not bracket chords"
+    );
+    assert!(
+        !home_text.contains("[enter]") && !home_text.contains("[esc]"),
+        "home must not paint bracket key atoms after Phase A kill-switch"
+    );
     assert_eq!(
         home.transitions[0].to_screen_id, "chat-turn",
         "home must begin the resumed conversation"
