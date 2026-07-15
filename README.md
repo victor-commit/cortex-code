@@ -301,25 +301,48 @@ CORTEX_NO_NET=1 ./target/debug/cortex run "Say hello"
 CORTEX_NO_NET=1 ./target/debug/cortex net check
 ```
 
-Default features include network and server support. For a minimal no-network
-build:
+Default features include network and the local server surface; network is
+**additive**. A minimal offline-only binary compiles without those defaults:
 
 ```bash
 cargo build -p cli --no-default-features
 ./target/debug/cortex --version
 ```
 
+That build still runs local commands (`--help`, `config`, `search`, `session`,
+`stats`, `replay`, `export`/`import`, completions). Network-backed paths fail
+closed until you rebuild with the default features (or `--features network`).
+
 ## Test and validate
+
+Build, typecheck, and lint:
 
 ```bash
 cargo build -p cli
 cargo check --workspace
 cargo clippy --workspace --no-deps
-cargo test --workspace
 ```
 
-Live OpenRouter tests skip automatically when `OPENROUTER_API_KEY` is not set,
-so the workspace test suite runs fully offline.
+Run the offline workspace suite. Several integration tests read the Cortex data
+directory, model cache, and temp state, and a few share ports or process groups, so
+isolate `HOME`/`TMPDIR` and run the suite single-threaded. Live OpenRouter tests skip
+automatically when `OPENROUTER_API_KEY` is not set rather than failing:
+
+```bash
+old_home="$HOME"
+test_home="$(mktemp -d)"
+test_tmp="$test_home/tmp"
+mkdir -p "$test_tmp"
+HOME="$test_home" TMPDIR="$test_tmp" \
+  CARGO_HOME="${CARGO_HOME:-$old_home/.cargo}" \
+  RUSTUP_HOME="${RUSTUP_HOME:-$old_home/.rustup}" \
+  env -u OPENROUTER_API_KEY -u CORTEX_DATA_DIR -u CORTEX_DB_PATH -u CORTEX_AUTH_FILE \
+    -u XDG_DATA_HOME -u XDG_CONFIG_HOME \
+  cargo test --workspace -- --test-threads=1
+```
+
+Leaving `OPENROUTER_API_KEY` exported runs the live-gated tests against OpenRouter
+as well; the offline path above is what you want for a clean local CI-style pass.
 
 ## License & attribution
 
