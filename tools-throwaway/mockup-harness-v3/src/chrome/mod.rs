@@ -5,5 +5,6 @@
 
 pub mod components;
 pub mod layout;
+pub mod mission_control;
 pub mod picker_contract;
 pub mod tokens;

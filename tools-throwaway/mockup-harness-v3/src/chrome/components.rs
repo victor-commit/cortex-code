@@ -231,7 +231,9 @@ pub struct ComponentLine {
 }
 
 impl ComponentLine {
-    fn new(text: impl Into<String>, style: TextStyle) -> Self {
+    /// Construct a styled chrome line. Public for sibling chrome modules
+    /// (mission-control primitives, layout helpers).
+    pub fn new(text: impl Into<String>, style: TextStyle) -> Self {
         Self {
             text: text.into(),
             style,
@@ -248,7 +250,8 @@ pub struct ComponentAnatomy {
 }
 
 impl ComponentAnatomy {
-    const fn passive() -> Self {
+    /// Shared empty anatomy for passive chrome (rows, headers, logs).
+    pub const fn passive() -> Self {
         Self {
             primary_action_count: 0,
             secondary_action_count: 0,
