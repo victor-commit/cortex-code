@@ -57,6 +57,7 @@ fn cortex(sandbox: &Sandbox, args: &[&str]) -> Command {
     command.env_remove("OPENROUTER_API_KEY");
     command.env_remove("CORTEX_OPENROUTER_BASE_URL");
     command.env_remove("CORTEX_NO_NET");
+    command.env_remove("CORTEX_PURE");
     command
 }
 
@@ -1035,5 +1036,165 @@ export default async function plugin() {{
         std::fs::read_to_string(&marker).expect("hook marker written"),
         "command-hook",
         "local plugin must still load and run command.execute.before under NO_NET (discovery skipped, hooks still active)"
+    );
+}
+
+/// `--pure` / `CORTEX_PURE=1` must short-circuit plugin-management validation probes so install
+/// and update neither resolve package plugins nor execute plugin load side effects (VAL-PLUGIN-032).
+#[test]
+fn cortex_pure_plugin_install_and_update_neither_resolve_nor_execute() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let sandbox = Sandbox::new("pure-mgmt");
+    let package = sandbox.project.join("pkg");
+    let marker = sandbox.home.join("markers/pure-mgmt-marker.txt");
+    std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("marker dir");
+    write_package_plugin(
+        &package,
+        "pure-mgmt-proof",
+        "1.2.3",
+        &format!(
+            r#"
+import {{ appendFile }} from "node:fs/promises";
+export default async function plugin() {{
+  await appendFile("{}", "loaded\n");
+  return {{ async event() {{}} }};
+}}
+"#,
+            marker.display()
+        ),
+    );
+    let spec = format!("file:{}", package.display());
+
+    // Positive control: ordinary install resolves, loads, and leaves a load-side-effect marker.
+    let install = run(
+        cortex(&sandbox, &["plugin", "install", &spec, "--format", "json"]),
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        install.status.code(),
+        Some(0),
+        "non-pure install should succeed: {}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let install_doc: serde_json::Value =
+        serde_json::from_slice(&install.stdout).expect("install JSON");
+    assert_eq!(install_doc["pure"], false);
+    assert!(
+        marker.exists(),
+        "non-pure install validation probe must load plugin code"
+    );
+    let marker_after_install =
+        std::fs::read_to_string(&marker).expect("marker after non-pure install");
+    assert!(
+        !marker_after_install.is_empty(),
+        "non-pure install must write a load marker"
+    );
+    let lock_path = sandbox.project.join(".cortex/plugin-lock.json");
+    let lock_after_install = std::fs::read_to_string(&lock_path).expect("lockfile after install");
+    assert!(
+        lock_after_install.contains("pure-mgmt-proof") && lock_after_install.contains("1.2.3"),
+        "non-pure install pins the package: {lock_after_install}"
+    );
+
+    // Pure install: no resolve/load of plugin code (marker unchanged; lock not re-resolved).
+    std::fs::remove_file(&marker).expect("clear marker before pure install");
+    let pure_install = run(
+        cortex(
+            &sandbox,
+            &["--pure", "plugin", "install", &spec, "--format", "json"],
+        ),
+        Duration::from_secs(15),
+    );
+    assert_eq!(
+        pure_install.status.code(),
+        Some(0),
+        "pure plugin install should skip probe cleanly: {}",
+        String::from_utf8_lossy(&pure_install.stderr)
+    );
+    let pure_install_doc: serde_json::Value =
+        serde_json::from_slice(&pure_install.stdout).expect("pure install JSON");
+    assert_eq!(pure_install_doc["pure"], true);
+    assert!(
+        !marker.exists(),
+        "pure plugin install must not execute configured plugin code"
+    );
+    // Reinstall under pure should not rewrite a fresh lock pin from a resolve probe.
+    let lock_after_pure_install =
+        std::fs::read_to_string(&lock_path).expect("lockfile after pure install");
+    assert_eq!(
+        lock_after_install, lock_after_pure_install,
+        "pure install must not re-resolve or repin lock entries"
+    );
+
+    // Pure update via environment equivalent: leave the lock pin alone and never execute plugin code.
+    std::fs::write(&marker, "pre-pure-update\n").expect("seed marker");
+    let mut pure_update = cortex(&sandbox, &["plugin", "update", &spec, "--format", "json"]);
+    pure_update.env("CORTEX_PURE", "1");
+    let pure_update = run(pure_update, Duration::from_secs(15));
+    assert_eq!(
+        pure_update.status.code(),
+        Some(0),
+        "pure plugin update should skip re-resolve cleanly: {}",
+        String::from_utf8_lossy(&pure_update.stderr)
+    );
+    let pure_update_doc: serde_json::Value =
+        serde_json::from_slice(&pure_update.stdout).expect("pure update JSON");
+    assert_eq!(pure_update_doc["pure"], true);
+    assert!(pure_update_doc.get("locked").is_none() || pure_update_doc["locked"].is_null());
+    let marker_after_pure_update =
+        std::fs::read_to_string(&marker).expect("marker after pure update");
+    assert_eq!(
+        marker_after_pure_update, "pre-pure-update\n",
+        "pure plugin update must not resolve or execute plugin code"
+    );
+    let lock_after_pure_update =
+        std::fs::read_to_string(&lock_path).expect("lockfile after pure update");
+    assert_eq!(
+        lock_after_install, lock_after_pure_update,
+        "pure update must not drop or re-resolve the lock pin"
+    );
+
+    // Ordinary (non-pure) update continues to re-resolve and execute the load probe.
+    std::fs::remove_file(&marker).expect("clear marker before non-pure update");
+    let update = run(
+        cortex(&sandbox, &["plugin", "update", &spec, "--format", "json"]),
+        Duration::from_secs(30),
+    );
+    assert_eq!(
+        update.status.code(),
+        Some(0),
+        "non-pure plugin update should re-resolve: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let update_doc: serde_json::Value =
+        serde_json::from_slice(&update.stdout).expect("update JSON");
+    assert_eq!(update_doc["pure"], false);
+    assert!(
+        marker.exists(),
+        "non-pure update validation probe must load plugin code"
+    );
+}
+
+/// Empty plugin specs and pure-mode inventory routing for `plugin install` remain fail-closed.
+#[test]
+fn cortex_pure_plugin_install_still_rejects_empty_spec() {
+    let sandbox = Sandbox::new("pure-empty-spec");
+    let pure_empty = run(
+        cortex(&sandbox, &["--pure", "plugin", "install", ""]),
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        pure_empty.status.code(),
+        Some(2),
+        "empty plugin specs remain a usage error under pure mode: {}",
+        String::from_utf8_lossy(&pure_empty.stderr)
+    );
+    let err = String::from_utf8_lossy(&pure_empty.stderr);
+    assert!(
+        err.contains("must not be empty"),
+        "pure install should still validate the management CLI surface: {err}"
     );
 }

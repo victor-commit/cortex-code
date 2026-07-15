@@ -136,7 +136,7 @@ fn main() -> ExitCode {
         }
         Some(Command::Models(args)) => models_cmd::run(args, pure_plugins).into(),
         Some(Command::Generate(args)) => generate_cmd::run(args).into(),
-        Some(Command::Plugin(args)) => plugin_cmd::run(args).into(),
+        Some(Command::Plugin(args)) => plugin_cmd::run(args, pure_plugins).into(),
         Some(Command::Provider(args)) => provider_cmd::run(args, pure_plugins).into(),
         Some(Command::Project(args)) => project_cmd::run(args).into(),
         Some(Command::Worktree(args)) => worktree_cmd::run(args, bus.clone()).into(),

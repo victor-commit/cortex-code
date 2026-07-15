@@ -15,16 +15,21 @@ use crate::cli::{
     PluginSurfaceType, PluginUpdateArgs,
 };
 
-pub fn run(args: PluginArgs) -> Exit {
+/// Run a plugin management subcommand.
+///
+/// `pure_plugins` is the process-wide pure-mode decision already computed from `--pure` and
+/// `CORTEX_PURE=1`. Pure mode is a global routing inventory: install and update validation probes
+/// neither resolve nor execute plugin code when it is enabled.
+pub fn run(args: PluginArgs, pure_plugins: bool) -> Exit {
     match args.command {
-        PluginCommand::Install(args) => install(args),
+        PluginCommand::Install(args) => install(args, pure_plugins),
         PluginCommand::List(args) => list(args),
-        PluginCommand::Update(args) => update(args),
+        PluginCommand::Update(args) => update(args, pure_plugins),
         PluginCommand::Remove(args) => remove(args),
     }
 }
 
-fn install(args: PluginInstallArgs) -> Exit {
+fn install(args: PluginInstallArgs, pure_plugins: bool) -> Exit {
     let spec = args.spec.trim();
     if spec.is_empty() {
         eprintln!("cortex plugin install: plugin spec must not be empty");
@@ -44,21 +49,26 @@ fn install(args: PluginInstallArgs) -> Exit {
         return Exit::Usage;
     }
 
-    let probe = match install_probe_config(&cwd, spec, args.plugin_type) {
-        Ok(config) => config,
-        Err(message) => {
-            eprintln!("cortex plugin install: {message}");
-            return Exit::Usage;
-        }
-    };
     let surface = install_surface(args.plugin_type);
-    if let Err(err) = plugins::RuntimeHost::new().load_config_for_surface_with_config(
-        &probe,
-        surface,
-        serde_json::Value::Object(Default::default()),
-    ) {
-        eprintln!("cortex plugin install: {err}");
-        return Exit::Failure;
+    // Pure mode is a global kill switch: do not resolve package plugins or execute plugin code
+    // during the install validation probe. Spec-shape / config bookkeeping still proceeds without
+    // a runtime load so `--pure plugin install` leaves zero plugin side effects.
+    if !pure_plugins {
+        let probe = match install_probe_config(&cwd, spec, args.plugin_type) {
+            Ok(config) => config,
+            Err(message) => {
+                eprintln!("cortex plugin install: {message}");
+                return Exit::Usage;
+            }
+        };
+        if let Err(err) = plugins::RuntimeHost::new().load_config_for_surface_with_config(
+            &probe,
+            surface,
+            serde_json::Value::Object(Default::default()),
+        ) {
+            eprintln!("cortex plugin install: {err}");
+            return Exit::Failure;
+        }
     }
 
     let update = match update_project_plugin_config(&cwd, spec, args.plugin_type) {
@@ -75,7 +85,14 @@ fn install(args: PluginInstallArgs) -> Exit {
         surface: surface.to_owned(),
         config_path: update.config_path.display().to_string(),
         changed: update.changed,
-        message: if update.changed {
+        pure: pure_plugins,
+        message: if pure_plugins {
+            if update.changed {
+                "plugin recorded in project config under pure mode (no resolve/load probe)"
+            } else {
+                "plugin already installed; pure mode skipped resolve/load probe"
+            }
+        } else if update.changed {
             "plugin installed and project config updated"
         } else {
             "plugin already installed; lock/config remain deterministic"
@@ -151,7 +168,7 @@ fn list(args: PluginListArgs) -> Exit {
     }
 }
 
-fn update(args: PluginUpdateArgs) -> Exit {
+fn update(args: PluginUpdateArgs, pure_plugins: bool) -> Exit {
     let spec = args.spec.trim();
     if spec.is_empty() {
         eprintln!("cortex plugin update: plugin spec must not be empty");
@@ -183,6 +200,26 @@ fn update(args: PluginUpdateArgs) -> Exit {
         return Exit::Usage;
     };
     let plugin_type = args.plugin_type.or_else(|| entry.surface_type());
+    let surface = install_surface(plugin_type);
+
+    // Pure mode means zero plugin resolution and zero plugin execution — skip the re-resolve
+    // probe entirely instead of dropping the lock pin and then failing half-way through.
+    if pure_plugins {
+        let document = PluginUpdateDocument {
+            spec: spec.to_owned(),
+            surface: surface.to_owned(),
+            version: None,
+            pure: true,
+            message: "pure mode skips package re-resolve and load probe",
+            locked: None,
+        };
+        return match args.format.format {
+            OutputFormat::Text => {
+                emit_text(&format!("{}: `{}`\n", document.message, document.spec))
+            }
+            OutputFormat::Json | OutputFormat::Jsonl => emit_json(&document),
+        };
+    }
 
     // Drop the existing pin so the next resolve re-pins against the current package.
     if let Err(message) = plugins::remove_locked_plugin(&cwd, &package_spec) {
@@ -197,7 +234,6 @@ fn update(args: PluginUpdateArgs) -> Exit {
             return Exit::Usage;
         }
     };
-    let surface = install_surface(plugin_type);
     if let Err(err) = plugins::RuntimeHost::new().load_config_for_surface_with_config(
         &probe,
         surface,
@@ -215,6 +251,7 @@ fn update(args: PluginUpdateArgs) -> Exit {
         spec: spec.to_owned(),
         surface: surface.to_owned(),
         version: locked.as_ref().map(|lock| lock.version.clone()),
+        pure: false,
         message: "plugin re-resolved and lockfile pin refreshed",
         locked: locked.as_ref().map(LockedDoc::from),
     };
@@ -519,6 +556,8 @@ struct PluginInstallDocument {
     surface: String,
     config_path: String,
     changed: bool,
+    /// True when `--pure` / `CORTEX_PURE=1` skipped the resolve/load validation probe.
+    pure: bool,
     message: &'static str,
 }
 
@@ -561,6 +600,8 @@ struct PluginUpdateDocument {
     surface: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
+    /// True when `--pure` / `CORTEX_PURE=1` skipped the re-resolve and load validation probe.
+    pure: bool,
     message: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     locked: Option<LockedDoc>,
