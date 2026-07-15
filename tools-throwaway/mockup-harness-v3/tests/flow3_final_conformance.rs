@@ -1056,6 +1056,68 @@ fn configuration_state_remains_consistent_across_the_flow() {
         );
     }
 
+    // empty-model-apply: Sonnet side_effect/attachment and after paint/audit agree
+    // (VAL-V3-F3-046 dual-source ,regression). Keep cancel on stock empty Opus.
+    let empty_apply = replay_case("empty-model-apply", 1).expect("empty-model-apply");
+    empty_apply.validate().expect("empty-model-apply valid");
+    assert_eq!(empty_apply.after.screen_id, "empty");
+    assert!(
+        empty_apply.after.attachment.contains("Claude Sonnet 4.5"),
+        "attachment claims Sonnet applied: {}",
+        empty_apply.after.attachment
+    );
+    assert!(
+        empty_apply
+            .side_effects
+            .iter()
+            .any(|effect| effect.status == "model-applied"),
+        "side_effect status model-applied"
+    );
+    let empty_choice = empty_apply
+        .audit
+        .model_choice
+        .as_ref()
+        .expect("empty-model-apply after model_choice");
+    assert_eq!(
+        empty_choice.applied, "Claude Sonnet 4.5",
+        "audit.model_choice.applied must match applied Sonnet, not stock empty Opus"
+    );
+    assert!(
+        empty_choice.pending.is_none()
+            || empty_choice.pending.as_deref() == Some(empty_choice.applied.as_str()),
+        "after apply, pending must not disagree with applied"
+    );
+    let empty_after_text = empty_apply.audit.render_txt();
+    let empty_status = empty_after_text.lines().last().unwrap();
+    assert!(
+        empty_after_text.contains("Ready · Claude Sonnet 4.5"),
+        "after paint Ready model must be Sonnet"
+    );
+    assert!(
+        empty_status.contains("Claude Sonnet 4.5"),
+        "after statusline must be Sonnet: {empty_status}"
+    );
+    assert!(
+        !empty_status.contains("Claude Opus 4.8"),
+        "after apply must not pixel-match default empty Opus statusline"
+    );
+    // Cancel still returns to the intentional stock Opus empty fixture.
+    let empty_cancel = replay_case("empty-model-cancel", 1).expect("empty-model-cancel");
+    empty_cancel.validate().expect("empty-model-cancel valid");
+    let cancel_choice = empty_cancel
+        .audit
+        .model_choice
+        .as_ref()
+        .expect("cancel model_choice");
+    assert_eq!(
+        cancel_choice.applied, "Claude Opus 4.8",
+        "cancel must keep intentional stock empty Opus fixture split"
+    );
+    assert_eq!(
+        empty_cancel.audit.fixture_id, "views.empty.origin",
+        "cancel after-fixture remains views.empty.origin"
+    );
+
     // Work-style confirm updates capability without losing the conversation model.
     let confirmed = replay_case("work-style-access-confirm", 1).expect("confirm");
     confirmed.validate().expect("confirm valid");

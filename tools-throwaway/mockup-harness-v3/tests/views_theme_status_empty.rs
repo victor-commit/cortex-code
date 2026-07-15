@@ -310,6 +310,47 @@ fn empty_configuration_returns_to_empty() {
         "only the selected setting changed"
     );
     assert!(apply.after.transcript.is_empty());
+    // VAL-V3-F3-046: after paint, statusline, model_choice.applied, and the
+    // model-applied side effect must share one applied Sonnet truth — never the
+    // stock empty Opus fixture.
+    let apply_text = apply.audit.render_txt();
+    let apply_status = apply_text.lines().last().expect("statusline");
+    assert!(
+        apply_text.contains("Ready · Claude Sonnet 4.5"),
+        "after-apply Ready model must paint Claude Sonnet 4.5, got:\n{apply_text}"
+    );
+    assert!(
+        apply_status.contains("Claude Sonnet 4.5"),
+        "after-apply statusline must paint Claude Sonnet 4.5: {apply_status}"
+    );
+    assert!(
+        !apply_status.contains("Claude Opus 4.8"),
+        "after-apply statusline must not keep stock empty Opus: {apply_status}"
+    );
+    let applied = apply
+        .audit
+        .model_choice
+        .as_ref()
+        .map(|choice| choice.applied.as_str())
+        .expect("empty-model-apply after audit.model_choice.applied");
+    assert_eq!(
+        applied, "Claude Sonnet 4.5",
+        "audit.model_choice.applied must agree with apply attachment/side_effect"
+    );
+    assert!(
+        apply.side_effects.iter().any(|effect| {
+            effect.status == "model-applied"
+                && (effect.effect_id.contains("model-apply")
+                    || effect.effect_id.contains("model.apply"))
+        }),
+        "side_effect must remain model-applied for empty-model-apply"
+    );
+    assert!(
+        apply.audit.fixture_id.contains("after-apply")
+            && apply.audit.fixture_id.to_ascii_lowercase().contains("sonnet"),
+        "empty-model-apply after fixture must be the Sonnet after-apply bind, got {}",
+        apply.audit.fixture_id
+    );
 
     let open_session = replay_case("empty-open-session", 1).expect("open session");
     open_session.validate().expect("open session valid");

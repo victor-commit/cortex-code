@@ -2516,7 +2516,14 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             ("status-details", "status") => "views.status.advanced".to_owned(),
             ("status-return", "chat-turn") => "flow1.daily-work.stable".to_owned(),
             ("empty-open-model", "model-picker") => "views.empty.model-picker".to_owned(),
-            ("empty-model-cancel" | "empty-model-apply", "empty") => "views.empty.origin".to_owned(),
+            // Cancel keeps the intentional stock empty Opus fixture. Apply must
+            // bind the post-apply Sonnet fixture so paint, statusline, and
+            // audit.model_choice.applied agree with attachment + side_effect
+            // (VAL-V3-F3-046).
+            ("empty-model-cancel", "empty") => "views.empty.origin".to_owned(),
+            ("empty-model-apply", "empty") => {
+                "views.empty.after-apply.sonnet".to_owned()
+            }
             ("empty-open-session", "session-picker") => "views.empty.session-picker".to_owned(),
             ("empty-session-cancel", "empty") => "views.empty.origin".to_owned(),
             ("empty-session-resume", "chat-turn") => "flow1.daily-work.stable".to_owned(),
