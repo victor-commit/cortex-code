@@ -397,6 +397,127 @@ fn run_writes_parseable_audit_records_for_permission_shell_file_and_provider_net
 }
 
 #[test]
+fn command_path_records_session_correlated_file_and_plugin_audit() {
+    let _guard = acquire_test_lock();
+    let scratch = Scratch::new("command-path");
+    write_command_path_audit_plugin(&scratch.project);
+
+    let session = "ses_command_path_audit";
+    let vetoed = run(cortex_without_provider(
+        &scratch,
+        &[
+            "run",
+            "--session",
+            session,
+            "--command",
+            "touch",
+            "--command-arg",
+            "blocked.marker",
+        ],
+    ));
+    assert!(
+        !vetoed.status.success(),
+        "plugin-vetoed command must fail closed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&vetoed.stdout),
+        String::from_utf8_lossy(&vetoed.stderr)
+    );
+    assert!(!scratch.project.join("blocked.marker").exists());
+
+    let written = run(cortex_without_provider(
+        &scratch,
+        &[
+            "run",
+            "--session",
+            session,
+            "--command",
+            "write-marker",
+            "--command-arg",
+            "original.txt",
+            "--command-arg",
+            "hello",
+        ],
+    ));
+    assert_success(&written);
+    assert!(!scratch.project.join("original.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(scratch.project.join("rewritten.txt")).expect("rewritten file"),
+        "hello"
+    );
+
+    let records = read_audit(&scratch.audit);
+    // Two separate `cortex run` processes mint different turn ids; still require session
+    // correlation, surface attribution, and monotonic sequence across the durable sink.
+    assert_schema_and_order(&records, None);
+    assert!(
+        records.iter().all(|record| record["session"] == session),
+        "command-path audit records must share the session id: {records:#?}"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["turn_id"].as_str().is_some_and(|id| !id.is_empty())),
+        "every command-path record must carry a turn id: {records:#?}"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| { record["surface"] == "run" && record["source"] == "headless-command" }),
+        "command-path records must attribute to the headless command surface: {records:#?}"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "plugin_load"
+                && record["plugin"]
+                    .as_str()
+                    .is_some_and(|plugin| plugin.contains("plugin.mjs"))
+                && record["outcome"] == "success"
+        }),
+        "command-path must audit loaded plugins: {records:#?}"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "plugin_hook"
+                && record["hook"] == "command.execute.before"
+                && record["action"] == "veto"
+                && record["outcome"] == "denied"
+        }),
+        "vetoed command path must emit a plugin_hook denial: {records:#?}"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "plugin_hook"
+                && record["hook"] == "command.execute.before"
+                && record["action"] == "transform"
+                && record["outcome"] == "success"
+                && record["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("rewritten.txt"))
+        }),
+        "transforming command path must emit a plugin_hook transform: {records:#?}"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["type"] == "file_mutation"
+                && record["operation"] == "write"
+                && record["outcome"] == "success"
+                && record["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("rewritten.txt"))
+        }),
+        "command path write must emit a session-correlated file mutation: {records:#?}"
+    );
+    assert!(
+        !records.iter().any(|record| {
+            record["type"] == "file_mutation"
+                && record["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("blocked.marker"))
+        }),
+        "vetoed command must not emit a file mutation: {records:#?}"
+    );
+}
+
+#[test]
 fn denied_shell_effect_is_audited_without_execution_or_disk_effect() {
     let _guard = acquire_test_lock();
     let scratch = Scratch::new("deny");
@@ -1225,6 +1346,30 @@ export default async function plugin() {
     .expect("write plugin");
     std::fs::write(project.join("cortex.toml"), "plugin = [\"./plugin.mjs\"]\n")
         .expect("write config");
+}
+
+fn write_command_path_audit_plugin(project: &std::path::Path) {
+    std::fs::write(
+        project.join("plugin.mjs"),
+        r#"
+export default async function plugin() {
+  return {
+    "command.execute.before": async (command) => {
+      if (command.args?.[0] === "blocked.marker") {
+        return { veto: true, reason: "blocked for command-path audit" };
+      }
+      if (command.args?.[0] === "original.txt") {
+        return { ...command, args: ["rewritten.txt", ...(command.args?.slice(1) ?? [])] };
+      }
+      return command;
+    }
+  };
+}
+"#,
+    )
+    .expect("write command-path audit plugin");
+    std::fs::write(project.join("cortex.toml"), "plugin = [\"./plugin.mjs\"]\n")
+        .expect("write command-path audit config");
 }
 
 fn write_cross_m5_plugin_and_mcp_config(

@@ -579,6 +579,9 @@ impl PluginState {
     }
 
     /// Apply `command.execute.before` hooks to a command invocation.
+    ///
+    /// Behavior-affecting outcomes (transform / veto) are recorded in the attached audit sink when
+    /// one is available, matching the tool/permission hook attribution contract.
     pub(crate) fn command_before(&self, mut command: CommandInvocation) -> CommandBeforeOutcome {
         for loaded in &self.loaded {
             if !plugin_has_hook(loaded, "command.execute.before") {
@@ -591,12 +594,34 @@ impl PluginState {
                         continue;
                     };
                     if let Some(reason) = veto_reason(&value) {
+                        if let Some(audit) = self.audit_sink() {
+                            audit.record_plugin_hook(
+                                loaded.spec.raw_spec(),
+                                "command.execute.before",
+                                "veto",
+                                "denied",
+                                Some(&reason),
+                            );
+                        }
                         return CommandBeforeOutcome::Veto {
                             plugin: loaded.spec.raw_spec().to_owned(),
                             reason,
                         };
                     }
+                    let before = command.clone();
                     command = command_from_output(command, value);
+                    if command != before
+                        && let Some(audit) = self.audit_sink()
+                    {
+                        let detail = format!("{} {}", command.name, command.args.join(" "));
+                        audit.record_plugin_hook(
+                            loaded.spec.raw_spec(),
+                            "command.execute.before",
+                            "transform",
+                            "success",
+                            Some(detail.trim_end()),
+                        );
+                    }
                 }
                 Err(err) => {
                     self.record_runtime_hook_error(loaded, "command.execute.before", &err);

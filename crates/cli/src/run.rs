@@ -893,6 +893,7 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Ex
             return Exit::Failure;
         }
     };
+    let cwd = config_inputs.cwd.clone();
     let run_config = match resolve_run_config(config_inputs) {
         Ok(run_config) => run_config,
         Err(err) => {
@@ -900,6 +901,26 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Ex
             return Exit::Config;
         }
     };
+
+    // Attach a durable session-correlated audit sink before plugin hooks or local file mutations
+    // so the public `cortex run --command` action surface is covered the same way as the LLM tool
+    // path (permission is N/A here; command/plugin/file effects still emit records).
+    let (db, _db_path) = match open_database() {
+        Ok(opened) => opened,
+        Err(exit) => return exit,
+    };
+    let session_id = match resolve_session(&db, session_selection(args.session, args.r#continue)) {
+        Ok(id) => id,
+        Err(exit) => return exit,
+    };
+    if let Ok(project) = crate::project_cmd::resolve_project(&db, &cwd) {
+        let _ = db.sessions().set_project(&session_id, Some(&project.id));
+    }
+    let audit_sink = Arc::new(
+        audit::AuditSink::from_env_or_cwd(&session_id, &cwd)
+            .with_surface_and_source("run", "headless-command"),
+    );
+
     // Local command execution itself opens no sockets, but plugin session startup
     // can resolve a loopback serve URL via TCP health checks on ports 3200-3299.
     // Loading still proceeds under CORTEX_NO_NET so locked packages and offline-
@@ -918,6 +939,8 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Ex
             return Exit::Failure;
         }
     };
+    plugin_state.attach_audit(audit_sink.clone());
+    plugin_state.audit_loaded_plugins();
     if let Some(subscriber) = plugin_state.event_subscriber() {
         bus.subscribe(subscriber);
     }
@@ -935,12 +958,12 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Ex
         }
     };
 
-    let exit = execute_local_command(command);
+    let exit = execute_local_command(command, Some(audit_sink.as_ref()));
     plugin_state.dispose();
     exit
 }
 
-fn execute_local_command(command: CommandInvocation) -> Exit {
+fn execute_local_command(command: CommandInvocation, audit: Option<&audit::AuditSink>) -> Exit {
     match command.name.as_str() {
         "touch" => {
             let Some(path) = command.args.first() else {
@@ -959,7 +982,12 @@ fn execute_local_command(command: CommandInvocation) -> Exit {
                 .append(true)
                 .open(&path)
             {
-                Ok(_) => Exit::Success,
+                Ok(_) => {
+                    if let Some(audit) = audit {
+                        audit.record_file_mutation(&path, "touch", Some("command path"));
+                    }
+                    Exit::Success
+                }
                 Err(err) => {
                     eprintln!("cortex run --command touch: {err}");
                     Exit::Failure
@@ -983,8 +1011,14 @@ fn execute_local_command(command: CommandInvocation) -> Exit {
                 eprintln!("cortex run --command write-marker: {err}");
                 return Exit::Failure;
             }
-            match std::fs::write(&path, content) {
-                Ok(()) => Exit::Success,
+            match std::fs::write(&path, content.as_bytes()) {
+                Ok(()) => {
+                    if let Some(audit) = audit {
+                        let detail = format!("{} bytes via command path", content.len());
+                        audit.record_file_mutation(&path, "write", Some(&detail));
+                    }
+                    Exit::Success
+                }
                 Err(err) => {
                     eprintln!("cortex run --command write-marker: {err}");
                     Exit::Failure
@@ -993,6 +1027,18 @@ fn execute_local_command(command: CommandInvocation) -> Exit {
         }
         "echo" => {
             println!("{}", command.args.join(" "));
+            if let Some(audit) = audit {
+                // Local command path has no shell tool, but echo is still a supported mutation-
+                // free command. Record it under the shell_execution surface shape so command/
+                // shell audit coverage does not have a silent gap on the public path.
+                let command_line = if command.args.is_empty() {
+                    "echo".to_owned()
+                } else {
+                    format!("echo {}", command.args.join(" "))
+                };
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                audit.record_shell_execution(&command_line, &cwd, Some(0), "success");
+            }
             Exit::Success
         }
         other => {
