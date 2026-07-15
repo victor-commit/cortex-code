@@ -3036,7 +3036,9 @@ async fn unknown_session_id_returns_not_found_for_get_and_delete() {
 }
 
 #[tokio::test]
-async fn malformed_create_bodies_are_client_errors_and_health_remains_ok() {
+async fn malformed_create_and_prompt_bodies_are_client_errors_and_health_remains_ok() {
+    // VAL-SERVER-014: create/prompt with malformed JSON or wrong content type → 4xx,
+    // server stays healthy (subsequent GET /health → 200), no panic/crash.
     let scratch = Scratch::new("server-session-malformed-create");
     let app = server::app_with_db_path(scratch.db_path());
 
@@ -3051,10 +3053,10 @@ async fn malformed_create_bodies_are_client_errors_and_health_remains_ok() {
                 .expect("request"),
         )
         .await
-        .expect("malformed JSON response");
+        .expect("malformed JSON create response");
     assert!(
         response.status().is_client_error(),
-        "malformed JSON should be a client error, got {}",
+        "malformed create JSON should be a client error, got {}",
         response.status()
     );
 
@@ -3069,10 +3071,49 @@ async fn malformed_create_bodies_are_client_errors_and_health_remains_ok() {
                 .expect("request"),
         )
         .await
-        .expect("wrong content-type response");
+        .expect("wrong content-type create response");
     assert!(
         response.status().is_client_error(),
-        "wrong content type should be a client error, got {}",
+        "wrong create content type should be a client error, got {}",
+        response.status()
+    );
+
+    // Create a valid session so we can exercise the prompt route rejections.
+    let session = create_session(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{not json"))
+                .expect("request"),
+        )
+        .await
+        .expect("malformed JSON prompt response");
+    assert!(
+        response.status().is_client_error(),
+        "malformed prompt JSON should be a client error, got {}",
+        response.status()
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "text/plain")
+                .body(Body::from(r#"{"text":"hi"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("wrong content-type prompt response");
+    assert!(
+        response.status().is_client_error(),
+        "wrong prompt content type should be a client error, got {}",
         response.status()
     );
 
