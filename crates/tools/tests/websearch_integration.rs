@@ -151,6 +151,66 @@ async fn duckduckgo_provider_returns_bounded_real_result_entries() {
 }
 
 #[tokio::test]
+async fn provider_secret_shaped_title_url_snippet_never_reach_model_content() {
+    let _guard = WEBSEARCH_TEST_LOCK.lock().await;
+    // Runtime-assembled so no contiguous key-shaped literal sits in source (Droid-Shield).
+    let secret = format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8));
+    let body = serde_json::json!({
+        "Heading": format!("Title with {secret}"),
+        "AbstractURL": format!("https://example.test/result?token={secret}"),
+        "Abstract": format!("Snippet embeds {secret} twice {secret}"),
+        "RelatedTopics": [
+            {
+                "FirstURL": format!("https://docs.example.test/path?auth={secret}"),
+                "Text": format!("Related title - related body with {secret}")
+            }
+        ]
+    })
+    .to_string()
+    .into_bytes();
+    let (endpoint, server) = serve_once(200, "application/json", body);
+    let config = WebSearchConfig::duckduckgo()
+        .with_endpoint(Some(endpoint))
+        .expect("endpoint config");
+    let ctx = ToolContext::new(std::env::temp_dir()).with_session(unique_session());
+
+    let output = WebSearchTool::new(config)
+        .execute(
+            serde_json::json!({
+                "query": "secret probe",
+                "livecrawl": true
+            }),
+            &ctx,
+        )
+        .await;
+
+    let _ = server.join().expect("server thread");
+    assert!(!output.is_error, "got error: {}", output.model_content());
+    let rendered = output.model_content();
+    assert!(
+        !rendered.contains(&secret),
+        "raw secret must not appear in model-facing ToolOutput: {rendered}"
+    );
+    assert!(
+        !output
+            .parts
+            .iter()
+            .any(|part| part.as_text().is_some_and(|text| text.contains(&secret))),
+        "raw secret must not appear in ToolOutput parts: {:?}",
+        output.parts
+    );
+    assert!(
+        rendered.contains(redaction::PLACEHOLDER),
+        "secret-shaped provider fields must be replaced with the placeholder: {rendered}"
+    );
+    // Clean structure and surrounding text must still render.
+    assert!(rendered.contains("websearch results"), "{rendered}");
+    assert!(rendered.contains("Title with"), "{rendered}");
+    assert!(rendered.contains("example.test"), "{rendered}");
+    assert!(rendered.contains("Snippet embeds"), "{rendered}");
+}
+
+#[tokio::test]
 async fn websearch_accepts_num_results_alias_and_caps_context() {
     let _guard = WEBSEARCH_TEST_LOCK.lock().await;
     let body = serde_json::json!({

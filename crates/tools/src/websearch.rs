@@ -1098,7 +1098,14 @@ fn render_results(
             rendered.push_str(&format!("\n   Snippet: {snippet}"));
         }
     }
-    bound_output(&rendered, OutputLimits::default(), "websearch").text
+    // Provider-controlled titles, URLs, and snippets are untrusted: scrub them at the final
+    // model-facing boundary (same class as webfetch's render_html/non_html redaction).
+    bound_output(
+        &redaction::redact(&rendered),
+        OutputLimits::default(),
+        "websearch",
+    )
+    .text
 }
 
 fn parse_bool_arg(value: &Value, key: &str) -> Result<bool, String> {
@@ -1339,6 +1346,41 @@ mod tests {
         assert!(rendered.contains("1. Rust Programming Language"));
         assert!(rendered.contains("URL: https://www.rust-lang.org/"));
         assert!(rendered.contains("Snippet: Official site"));
+    }
+
+    #[test]
+    fn render_results_redacts_provider_controlled_secret_shaped_fields() {
+        // Assemble at runtime so no contiguous key-shaped literal sits in source.
+        let secret = format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8));
+        let results = vec![SearchResult {
+            title: format!("Leaked title {secret}"),
+            url: format!("https://example.test/docs?token={secret}"),
+            snippet: Some(format!("Snippet leaks {secret} into free text")),
+        }];
+        let rendered = render_results(
+            WebSearchProvider::DuckDuckGo,
+            "secret probe",
+            &results,
+            SearchOptions {
+                timeout: Duration::from_secs(1),
+                count: 1,
+                livecrawl: true,
+                search_type: Some("web".to_owned()),
+                context_max_characters: DEFAULT_CONTEXT_MAX_CHARACTERS,
+            },
+        );
+        assert!(
+            !rendered.contains(&secret),
+            "raw secret must not reach model-facing render: {rendered}"
+        );
+        assert!(
+            rendered.contains(redaction::PLACEHOLDER),
+            "secret-shaped fields must become the canonical placeholder: {rendered}"
+        );
+        // Clean surrounding text must remain.
+        assert!(rendered.contains("Leaked title"), "{rendered}");
+        assert!(rendered.contains("example.test/docs"), "{rendered}");
+        assert!(rendered.contains("Snippet leaks"), "{rendered}");
     }
 
     #[test]
