@@ -1115,7 +1115,9 @@ fn stale_or_partial_patch_application_is_atomic_with_refresh() {
     );
     // Finish is no longer the writable primary while the patch is stale.
     assert!(
-        !failed_text.contains("[enter] Finish"),
+        !failed_text.contains("[enter] Finish")
+            && !failed_text.contains("Enter to finish")
+            && !failed_text.contains("› Finish"),
         "Finish must not remain the enter primary while the workspace is stale"
     );
 
@@ -1141,7 +1143,10 @@ fn stale_or_partial_patch_application_is_atomic_with_refresh() {
     assert_eq!(refreshed_diff.hunks[1].hunk_id, "hunk.retry-test");
     let refreshed_text = refreshed.audit.render_txt();
     assert!(refreshed_text.contains("revision: patch-retry-19"));
-    assert!(refreshed_text.contains("[enter] Finish"));
+    assert!(
+        refreshed_text.contains("Enter to finish") || refreshed_text.contains("[enter] Finish"),
+        "refreshed staging must restore Finish as the enter primary (prose or residual bracket)"
+    );
     assert!(refreshed_text.contains("Refreshed review"));
     assert_eq!(
         primary_events(&refreshed.audit)

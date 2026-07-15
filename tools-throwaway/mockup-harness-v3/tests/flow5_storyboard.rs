@@ -10,7 +10,10 @@ use mockup_harness_v3::{
 };
 
 const RECOVERY_TASK: &str = "Finish the release notes without losing the current work.";
+/// Audit continuity tag (visible_origin field) — may not paint as a primary title.
 const RECOVERY_ORIGIN: &str = "Recovery · paused conversation";
+/// Phase-A painted subject title after journey-breadcrumb kill-switch.
+const RECOVERY_PAINTED_ORIGIN: &str = "Recovery";
 const USER_PROMPT: &str =
     "You · Summarize the remaining release notes and the still-open risks.";
 const PARTIAL_REPLY: &str =
@@ -174,7 +177,11 @@ fn recovery_storyboard_tells_one_coherent_failure_to_return_to_undo_story() {
         audit_screen("checkpoint-undo", "gate.recovery.checkpoint-undo").expect("checkpoint-undo");
 
     let turn_text = turn.render_txt();
-    assert!(turn_text.contains(RECOVERY_ORIGIN));
+    // Painted subject is "Recovery"; audit origin tag may still be journey-flagged.
+    assert!(
+        turn_text.contains(RECOVERY_PAINTED_ORIGIN) || turn_text.contains(RECOVERY_ORIGIN),
+        "turn-error must paint Recovery subject (or residual journey origin)"
+    );
     assert!(turn_text.contains(RECOVERY_TASK));
     assert!(turn_text.contains(USER_PROMPT));
     assert!(turn_text.contains(PARTIAL_REPLY));
@@ -187,7 +194,10 @@ fn recovery_storyboard_tells_one_coherent_failure_to_return_to_undo_story() {
     }));
 
     let network_text = network.render_txt();
-    assert!(network_text.contains(RECOVERY_ORIGIN));
+    assert!(
+        network_text.contains(RECOVERY_PAINTED_ORIGIN) || network_text.contains(RECOVERY_ORIGIN),
+        "error-network must paint Recovery subject (or residual journey origin)"
+    );
     assert!(network_text.contains(USER_PROMPT));
     assert!(network_text.contains(PARTIAL_REPLY));
     assert!(

@@ -124,6 +124,61 @@ pub fn contains_bracket_key_atom(text: &str) -> bool {
     false
 }
 
+/// True when paint shows a primary Enter control in **either** Claude prose form
+/// (`Enter to …`) or residual Phase-B bracket form (`[enter] …` / `› [enter] …`).
+///
+/// Prefer prose-only assertions on rewritten Phase-A surfaces. Use this dual-branch
+/// helper only when the screen set still includes true Phase-B residuals.
+pub fn has_enter_control(text: &str) -> bool {
+    text.contains("Enter to") || text.contains("[enter]") || text.contains("› [enter]")
+}
+
+/// True when paint shows a local Esc/cancel control as prose (`Esc to …`) or
+/// residual Phase-B brackets (`[esc] …` / `[esc] Cancel` / `[esc] Back`).
+pub fn has_esc_control(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    text.contains("Esc to")
+        || text.contains("[esc]")
+        || lower.contains("esc to")
+        || lower.contains("[esc]")
+}
+
+/// Primary action label check that accepts:
+/// - Phase-A dock: `› {label}` and/or `Enter to {lowercased label…}`
+/// - Phase-B residual: `[enter] {label}` / `› [enter] {label}`
+///
+/// `label` is the human action noun as painted on the primary row (e.g. "Retry reply",
+/// "Apply model", "Fork", "Finish"). Matching is substring-based against visible TXT.
+pub fn has_primary_action_label(text: &str, label: &str) -> bool {
+    let label = label.trim();
+    if label.is_empty() {
+        return false;
+    }
+    let lower_label = noun_clause(label);
+    text.contains(&format!("› {label}"))
+        || text.contains(&format!("Enter to {lower_label}"))
+        || text.contains(&format!("Enter to {label}"))
+        || text.contains(&format!("[enter] {label}"))
+        || text.contains(&format!("› [enter] {label}"))
+        // Prose bylines may keep label casing after "Enter to" depending on constructor.
+        || text
+            .to_ascii_lowercase()
+            .contains(&format!("enter to {}", label.to_ascii_lowercase()))
+}
+
+/// Local secondary key clause that accepts Phase-A prose (`c for Continue…`) or
+/// residual Phase-B brackets (`[c] Continue…`).
+pub fn has_secondary_key_clause(text: &str, key: &str, label_fragment: &str) -> bool {
+    let key = key.trim();
+    let fragment = label_fragment.trim();
+    if key.is_empty() || fragment.is_empty() {
+        return false;
+    }
+    text.contains(&format!("[{key}] {fragment}"))
+        || text.contains(&format!("{key} for {fragment}"))
+        || text.contains(fragment)
+}
+
 /// True when a primary title uses a journey breadcrumb prefix (N-12).
 pub fn is_journey_breadcrumb_title(title: &str) -> bool {
     let trimmed = title.trim();

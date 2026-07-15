@@ -272,15 +272,20 @@ fn picker_controls_are_local_and_minimal() {
                 && !text.contains("? help"),
             "{screen_id} must not show a global hint row"
         );
-        // Keys are dock-local: enter / esc appear near bottom slip (dock rows).
+        // Keys are dock-local: enter/esc appear near bottom slip (dock rows).
+        // Phase-A paints Claude prose (`Enter to` / `Esc to`); residual Phase-B
+        // screens may still use bracket atoms. Accept either form.
         let dock_region = text
             .lines()
             .skip(30)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            dock_region.contains("[enter]") || dock_region.contains("[esc]"),
-            "{screen_id} must keep enter/esc keys inside the action dock"
+            dock_region.contains("Enter to")
+                || dock_region.contains("Esc to")
+                || dock_region.contains("[enter]")
+                || dock_region.contains("[esc]"),
+            "{screen_id} must keep enter/esc keys inside the action dock (prose or residual bracket)"
         );
     }
 }

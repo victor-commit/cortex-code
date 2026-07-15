@@ -7,16 +7,22 @@ use mockup_harness_v3::{
     scenario::{diff_fixture_file_bytes, replay_case},
 };
 
-const STAGING_ACTIONS: [(&str, &str); 4] = [
-    ("action.staging.include-all", "Include all"),
-    ("action.staging.edit", "Edit"),
-    ("action.staging.finish", "Finish"),
-    ("action.staging.cancel", "Cancel"),
+// Phase-A staging chrome is prose (`a include all · e edit · Enter to finish · Esc to cancel`).
+// Tuple is (action_id, audit label, visible geometry span on the chrome row).
+const STAGING_ACTIONS: [(&str, &str, &str); 4] = [
+    ("action.staging.include-all", "Include all", "include all"),
+    ("action.staging.edit", "Edit", "edit"),
+    ("action.staging.finish", "Finish", "finish"),
+    ("action.staging.cancel", "Cancel", "cancel"),
 ];
 
-const STALE_STAGING_ACTIONS: [(&str, &str); 2] = [
-    ("action.staging.refresh", "Refresh and review"),
-    ("action.staging.cancel", "Cancel"),
+const STALE_STAGING_ACTIONS: [(&str, &str, &str); 2] = [
+    (
+        "action.staging.refresh",
+        "Refresh and review",
+        "refresh and review",
+    ),
+    ("action.staging.cancel", "Cancel", "cancel"),
 ];
 
 // Historical fixture identity for src/net/retry_policy.rs buried payloads.
@@ -80,9 +86,14 @@ fn staging_chrome_action_render_refs_match_visible_label_geometry() {
     assert_eq!(rows.len(), 40, "staging canvas stays fixed at 40 rows");
 
     // Multiline hunks expand into the body; chrome lives below the payloads.
+    // Phase-A paint: "a include all · e edit · Enter to finish · Esc to cancel"
+    // (legacy dual-branch still allows residual bracket mullions if a fixture lags).
     let chrome_row = rows
         .iter()
-        .position(|row| row.contains("[a] Include all") && row.contains("[enter] Finish"))
+        .position(|row| {
+            (row.contains("a include all") && row.contains("Enter to finish"))
+                || (row.contains("[a] Include all") && row.contains("[enter] Finish"))
+        })
         .expect("staging chrome must remain visible after payload expansion")
         as u16;
     assert!(
@@ -90,15 +101,17 @@ fn staging_chrome_action_render_refs_match_visible_label_geometry() {
         "chrome must sit under the expanded multiline hunk body, found row {chrome_row}"
     );
     assert!(
-        rows[chrome_row as usize].contains("[e] Edit")
-            && rows[chrome_row as usize].contains("[esc] Cancel"),
+        (rows[chrome_row as usize].contains("e edit")
+            && rows[chrome_row as usize].contains("Esc to cancel"))
+            || (rows[chrome_row as usize].contains("[e] Edit")
+                && rows[chrome_row as usize].contains("[esc] Cancel")),
         "chrome must expose include-all/edit/Finish/Cancel on one row"
     );
 
-    for (action_id, label) in STAGING_ACTIONS {
+    for (action_id, audit_label, visible_label) in STAGING_ACTIONS {
         let event = action_event(&audit, action_id);
         let action = event.action.as_ref().expect("action evidence");
-        assert_eq!(action.label, label);
+        assert_eq!(action.label, audit_label);
         assert_eq!(
             event.identity.render_refs.len(),
             1,
@@ -116,21 +129,23 @@ fn staging_chrome_action_render_refs_match_visible_label_geometry() {
             .char_indices()
             .map(|(byte, _)| byte)
             .zip(0u16..)
-            .find(|(byte, _)| visible[*byte..].starts_with(label))
+            .find(|(byte, _)| visible[*byte..].starts_with(visible_label))
             .map(|(_, col)| col)
-            .unwrap_or_else(|| panic!("label {label:?} must appear on chrome row {chrome_row}"));
-        let label_end = label_start + label.chars().count() as u16;
+            .unwrap_or_else(|| {
+                panic!("label {visible_label:?} must appear on chrome row {chrome_row}")
+            });
+        let label_end = label_start + visible_label.chars().count() as u16;
         assert!(
             reference.start <= label_start && reference.end >= label_end,
-            "{action_id} ref [{}..{}) must cover label {label:?} at [{label_start}..{label_end}) on row {chrome_row}; cells={:?}",
+            "{action_id} ref [{}..{}) must cover label {visible_label:?} at [{label_start}..{label_end}) on row {chrome_row}; cells={:?}",
             reference.start,
             reference.end,
             cell_slice(&audit, reference.row, reference.start, reference.end)
         );
         let fragment = cell_slice(&audit, reference.row, reference.start, reference.end);
         assert!(
-            fragment.contains(label),
-            "{action_id} cells must contain {label:?}, got {fragment:?}"
+            fragment.contains(visible_label),
+            "{action_id} cells must contain {visible_label:?}, got {fragment:?}"
         );
     }
 }
@@ -143,10 +158,13 @@ fn staging_action_geometry_survives_include_all_and_apply_failure_variants() {
         let chrome_row = audit
             .render_txt()
             .lines()
-            .position(|row| row.contains("[a] Include all") && row.contains("[enter] Finish"))
+            .position(|row| {
+                (row.contains("a include all") && row.contains("Enter to finish"))
+                    || (row.contains("[a] Include all") && row.contains("[enter] Finish"))
+            })
             .unwrap_or_else(|| panic!("fixture {fixture} must keep staging chrome"))
             as u16;
-        for (action_id, label) in STAGING_ACTIONS {
+        for (action_id, _audit_label, visible_label) in STAGING_ACTIONS {
             let event = action_event(&audit, action_id);
             let reference = &event.identity.render_refs[0];
             assert_eq!(
@@ -155,8 +173,8 @@ fn staging_action_geometry_survives_include_all_and_apply_failure_variants() {
             );
             let fragment = cell_slice(&audit, reference.row, reference.start, reference.end);
             assert!(
-                fragment.contains(label),
-                "{fixture}/{action_id} geometry must cover {label:?}, got {fragment:?}"
+                fragment.contains(visible_label),
+                "{fixture}/{action_id} geometry must cover {visible_label:?}, got {fragment:?}"
             );
         }
     }
@@ -170,9 +188,12 @@ fn staging_action_geometry_survives_include_all_and_apply_failure_variants() {
     let chrome_row = stale
         .render_txt()
         .lines()
-        .position(|row| row.contains("Refresh and review") && row.contains("[esc] Cancel"))
+        .position(|row| {
+            (row.contains("Enter to refresh and review") && row.contains("Esc to cancel"))
+                || (row.contains("Refresh and review") && row.contains("[esc] Cancel"))
+        })
         .expect("stale staging chrome must expose Refresh and review") as u16;
-    for (action_id, label) in STALE_STAGING_ACTIONS {
+    for (action_id, _audit_label, visible_label) in STALE_STAGING_ACTIONS {
         let event = action_event(&stale, action_id);
         let reference = &event.identity.render_refs[0];
         assert_eq!(
@@ -181,8 +202,8 @@ fn staging_action_geometry_survives_include_all_and_apply_failure_variants() {
         );
         let fragment = cell_slice(&stale, reference.row, reference.start, reference.end);
         assert!(
-            fragment.contains(label),
-            "stale/{action_id} geometry must cover {label:?}, got {fragment:?}"
+            fragment.contains(visible_label),
+            "stale/{action_id} geometry must cover {visible_label:?}, got {fragment:?}"
         );
     }
     assert!(

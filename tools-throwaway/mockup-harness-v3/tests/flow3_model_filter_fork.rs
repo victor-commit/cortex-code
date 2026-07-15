@@ -211,7 +211,13 @@ fn fork_picker_states_source_checkpoint_and_destination_semantics() {
             || text.contains("without changing the source"),
         "plain non-destructive copy must be explicit"
     );
-    assert!(text.contains("[enter] Fork") || text.contains("› [enter] Fork"));
+    assert!(
+        text.contains("› Fork")
+            || text.contains("Enter to fork")
+            || text.contains("[enter] Fork")
+            || text.contains("› [enter] Fork"),
+        "fork picker must expose Fork as the primary (prose or residual bracket)"
+    );
     assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")) || text.contains("Cancel"));
     for forbidden in ["rewinds history", "branch name", "export conversation"] {
         assert!(

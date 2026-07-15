@@ -1,6 +1,7 @@
 use mockup_harness_v3::chrome::{
     components::{
-        composer_header_meta, contains_bracket_key_atom, is_journey_breadcrumb_title,
+        composer_header_meta, contains_bracket_key_atom, has_enter_control, has_esc_control,
+        has_primary_action_label, has_secondary_key_clause, is_journey_breadcrumb_title,
         reject_composer_debug_meta, reject_journey_breadcrumb_title, validate_component,
         ActivityRow, ActivityState, Component, ConnectionRow, ConnectionState, DecisionDock,
         DiffBlock, DiffKind, DisclosureBlock, DisclosureState, Inspector, InspectorTab,
@@ -345,6 +346,29 @@ fn shortcut_byline_renders_claude_style_prose_without_brackets() {
         ShortcutByline::new(vec![]).is_err(),
         "empty bylines must fail closed"
     );
+}
+
+#[test]
+fn dual_branch_prose_or_bracket_helpers_accept_shortcut_byline_form() {
+    let prose = "› Apply model · Esc to Cancel\nEnter to apply model · Esc to cancel";
+    assert!(has_enter_control(prose));
+    assert!(has_esc_control(prose));
+    assert!(has_primary_action_label(prose, "Apply model"));
+    assert!(has_secondary_key_clause(
+        " c for Continue from partial reply",
+        "c",
+        "Continue from partial reply"
+    ));
+
+    let residual = "› [enter] Retry reply\n[c] Continue from partial reply\n[esc] Cancel";
+    assert!(has_enter_control(residual));
+    assert!(has_esc_control(residual));
+    assert!(has_primary_action_label(residual, "Retry reply"));
+    assert!(has_secondary_key_clause(
+        residual,
+        "c",
+        "Continue from partial reply"
+    ));
 }
 
 #[test]

@@ -867,14 +867,14 @@ fn render_diff_staging(
             None,
         ));
         // Stale finish is fail-closed: Finish stays unavailable until an explicit refresh.
-        // Chrome: "Enter to refresh and review · Esc to cancel"
-        // col:     4...................................... / 39...
+        // Chrome: "Enter to refresh and review · Esc to cancel" written at column 4.
+        // Labels covered: "refresh and review" @13..31, "cancel" @41..47.
         pairs.push(semantic(
             screen_id,
             fixture_id,
             "primary-action",
             "refresh-and-review",
-            reference(25, 12, 30),
+            reference(25, 13, 31),
             "focused",
             Some(action(
                 "action.staging.refresh",
@@ -934,14 +934,15 @@ fn render_diff_staging(
                 false,
             )),
         ));
-        // Staging chrome is a single shifted row: keep each action anchor on the
-        // true visible label span after multiline hunk bodies expand upward layout.
+        // Staging chrome (Phase-A prose):
+        // "i include · x exclude · a include all · e edit · Enter to finish · Esc to cancel"
+        // written at column 4. Cover the human label spans after the local letter key.
         pairs.push(semantic(
             screen_id,
             fixture_id,
             "include-all-action",
             "include-all-hunks",
-            reference(25, 34, 45),
+            reference(25, 30, 41),
             "summary",
             Some(action("action.staging.include-all", "Include all", false)),
         ));
@@ -950,7 +951,7 @@ fn render_diff_staging(
             fixture_id,
             "edit-action",
             "edit-focused-hunk",
-            reference(25, 51, 55),
+            reference(25, 46, 50),
             "summary",
             Some(action("action.staging.edit", "Edit", false)),
         ));
@@ -959,7 +960,7 @@ fn render_diff_staging(
             fixture_id,
             "primary-action",
             "finish-included-hunks",
-            reference(25, 68, 74),
+            reference(25, 62, 68),
             "focused",
             Some(action("action.staging.finish", "Finish", false)),
         ));
@@ -968,7 +969,7 @@ fn render_diff_staging(
             fixture_id,
             "cancel-action",
             "return-pending-edit",
-            reference(25, 82, 88),
+            reference(25, 78, 84),
             "summary",
             Some(action("action.staging.cancel", "Cancel", false)),
         ));

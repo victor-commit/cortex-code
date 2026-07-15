@@ -76,8 +76,18 @@ fn turn_error_primary_labels_retry_versus_continue_with_consequence() {
     let audit = audit_screen("turn-error", "gate.recovery.turn-error")
         .expect("turn-error primary hierarchy must render");
     let text = audit.render_txt();
-    assert!(text.contains("› [enter] Retry reply"));
-    assert!(text.contains("[c] Continue from partial reply"));
+    assert!(
+        text.contains("› Retry reply")
+            || text.contains("Enter to retry reply")
+            || text.contains("› [enter] Retry reply"),
+        "turn-error primary must label Retry reply (prose or residual bracket)"
+    );
+    assert!(
+        text.contains("c for Continue from partial reply")
+            || text.contains("[c] Continue from partial reply")
+            || text.contains("Continue from partial reply"),
+        "turn-error must expose Continue from partial reply as a secondary"
+    );
     assert!(text.contains("Retry starts a new reply and replaces the partial text."));
     assert!(text.contains("Continue keeps the partial reply and restores the composer."));
     assert_eq!(
@@ -215,7 +225,12 @@ fn network_offline_is_manual_only_with_zero_provider_attempts() {
         .expect("offline audit must stay bijective");
     let text = audit.render_txt();
     assert!(text.contains("Network access is off"));
-    assert!(text.contains("› [enter] Review network setting"));
+    assert!(
+        text.contains("› Review network setting")
+            || text.contains("Enter to review network setting")
+            || text.contains("› [enter] Review network setting"),
+        "offline branch must expose Review network setting as primary"
+    );
     assert!(!text.contains("Retry request"));
     assert!(!text.contains("Retry reply"));
     assert!(!text.contains("Waiting"));
