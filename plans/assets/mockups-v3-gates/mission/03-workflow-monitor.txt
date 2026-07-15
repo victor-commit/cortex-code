@@ -16,10 +16,10 @@
     Progress stays calm until you ask for a task summary.                                                               
     No blocker. Open progress only when you need the details.                                                           
                                                                                                                         
-    › composer ready                                                                                                    
-      Keep the risk note short before we publish.                                                                       
+    Later draft stays ready in the originating conversation.                                                            
                                                                                                                         
     [i] Intervene                                                                                                       
+    [esc] Resume conversation                                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         

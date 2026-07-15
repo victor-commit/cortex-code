@@ -117,8 +117,13 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
     let surface = match screen_id {
         "workflow-launch" | "workflow-launch-blocked" | "workflow-monitor-failure"
         | "reviewer-approved" => Surface::ActionDock,
+        // Intervention/lifecycle docks replace the temporary detail with ActionDock.
         "workflow-monitor" if monitor_uses_action_dock(&lower_fixture) => Surface::ActionDock,
-        "workflow-monitor" => Surface::ConversationShell,
+        // Healthy / progress / validating monitors are temporary detail views: the
+        // mission card owns the canvas (no bottom composer). Declaring
+        // conversation_shell while painting mid-screen "› composer ready" fails
+        // VAL-V3-DS-009/010.
+        "workflow-monitor" => Surface::TemporaryDetailView,
         "reviewer-output"
         | "team-board"
         | "verification-ladder"
@@ -154,6 +159,11 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
         _ => unreachable!(),
     };
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
+    // Keep the surface event 1:1 with the composition-declared arrangement for this
+    // fixture. Registry alone can lag dock overrides (intervene/pause/stop) and
+    // ensure_core would otherwise inherit the wrong default.
+    let (candidates, events) =
+        ensure_surface_event(screen_id, fixture_id, surface, candidates, events);
     Ok(AuditDocument {
         screen_id: screen_id.to_owned(),
         fixture_id: fixture_id.to_owned(),
@@ -175,6 +185,54 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             later_draft: Some(LATER_DRAFT.to_owned()),
         }),
     })
+}
+
+/// Injects or rewrites the single surface event so arrange/paint never diverge.
+fn ensure_surface_event(
+    screen_id: &str,
+    fixture_id: &str,
+    surface: Surface,
+    mut candidates: Vec<SemanticCandidate>,
+    mut events: Vec<SemanticEvent>,
+) -> (Vec<SemanticCandidate>, Vec<SemanticEvent>) {
+    let subject = surface.as_str();
+    let present = events
+        .iter()
+        .filter(|event| event.identity.family == "surface")
+        .count();
+    if present == 1 {
+        // Normalize subject when paint paths emit the surface early.
+        for event in &mut events {
+            if event.identity.family == "surface" && event.identity.subject_id != subject {
+                event.identity.subject_id = subject.to_owned();
+                event.identity.candidate_id = format!("candidate.surface.{subject}");
+                event.identity.event_id = format!("event.surface.{subject}");
+            }
+        }
+        for candidate in &mut candidates {
+            if candidate.identity.family == "surface" && candidate.identity.subject_id != subject {
+                candidate.identity.subject_id = subject.to_owned();
+                candidate.identity.candidate_id = format!("candidate.surface.{subject}");
+                candidate.identity.event_id = format!("event.surface.{subject}");
+            }
+        }
+        return (candidates, events);
+    }
+    // Drop any stale duplicate surface events and add exactly one.
+    candidates.retain(|candidate| candidate.identity.family != "surface");
+    events.retain(|event| event.identity.family != "surface");
+    let (candidate, event) = semantic(
+        screen_id,
+        fixture_id,
+        "surface",
+        subject,
+        reference(0, 0, 1),
+        "summary",
+        None,
+    );
+    candidates.insert(0, candidate);
+    events.insert(0, event);
+    (candidates, events)
 }
 
 fn render_workflow_launch(
@@ -1010,10 +1068,25 @@ fn render_workflow_monitor(
             "Validation is automatic. There is no primary repair action yet.",
             TextStyle::muted(),
         )?;
-        canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(19, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        // Temporary-detail anatomy: no mid-screen composer pretence (DS-009/010).
+        canvas.write(
+            18,
+            4,
+            "Later draft is preserved in the originating conversation.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(20, 4, "[esc] Resume conversation", TextStyle::muted())?;
 
         let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "surface",
+                "temporary-detail-view",
+                reference(10, 4, 28),
+                "summary",
+                None,
+            ),
             semantic(
                 screen_id,
                 fixture_id,
@@ -1063,14 +1136,36 @@ fn render_workflow_monitor(
                     true,
                 )),
             ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "return-action",
+                "monitor-return",
+                reference(20, 4, 34),
+                "summary",
+                Some(action(
+                    "action.mission.monitor-return",
+                    "Resume conversation",
+                    false,
+                )),
+            ),
         ];
-        let transitions = vec![transition(
-            "action.mission.validation-running",
-            screen_id,
-            "workflow-monitor",
-            "automatic",
-            "fresh validation ends at review on success or Needs attention on failure",
-        )];
+        let transitions = vec![
+            transition(
+                "action.mission.validation-running",
+                screen_id,
+                "workflow-monitor",
+                "automatic",
+                "fresh validation ends at review on success or Needs attention on failure",
+            ),
+            transition(
+                "action.mission.monitor-return",
+                screen_id,
+                "chat-turn",
+                "cancel",
+                "return restores the originating conversation with preserved draft",
+            ),
+        ];
         return Ok((
             pairs
                 .iter()
@@ -1118,10 +1213,19 @@ fn render_workflow_monitor(
             canvas.write(19, 4, "Recently completed", TextStyle::bright())?;
             canvas.write(20, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         }
-        canvas.write(22, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(23, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        canvas.write(22, 4, "[i] Intervene", TextStyle::muted())?;
+        canvas.write(23, 4, "[esc] Resume conversation", TextStyle::muted())?;
 
         let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "surface",
+                "temporary-detail-view",
+                reference(10, 4, 28),
+                "summary",
+                None,
+            ),
             semantic(
                 screen_id,
                 fixture_id,
@@ -1184,15 +1288,57 @@ fn render_workflow_monitor(
                     false,
                 )),
             ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "secondary-action",
+                "open-intervene",
+                reference(22, 4, 18),
+                "summary",
+                Some(action(
+                    "action.mission.open-intervene",
+                    "Intervene",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "return-action",
+                "monitor-return",
+                reference(23, 4, 34),
+                "summary",
+                Some(action(
+                    "action.mission.monitor-return",
+                    "Resume conversation",
+                    false,
+                )),
+            ),
         ];
         let mut pairs = pairs.to_vec();
-        let mut transitions = vec![transition(
-            "action.mission.view-progress",
-            screen_id,
-            "workflow-monitor",
-            "direct",
-            "progress disclosure returns to the same compact monitor",
-        )];
+        let mut transitions = vec![
+            transition(
+                "action.mission.view-progress",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "progress disclosure returns to the same compact monitor",
+            ),
+            transition(
+                "action.mission.open-intervene",
+                screen_id,
+                "workflow-monitor",
+                "direct",
+                "intervene opens a focused consequence-aware dock under the monitor",
+            ),
+            transition(
+                "action.mission.monitor-return",
+                screen_id,
+                "chat-turn",
+                "cancel",
+                "return restores the originating conversation with preserved draft",
+            ),
+        ];
         if fixture_id.contains("gate.mission.workflow-monitor")
             && !fixture_id.contains("failure")
         {
@@ -1256,15 +1402,18 @@ fn render_workflow_monitor(
         "No blocker. Open progress only when you need the details.",
         TextStyle::muted(),
     )?;
-    canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
+    // Temporary detail keeps later-draft intent as a quiet preservation note,
+    // not a mid-screen conversation-shell composer (VAL-V3-DS-009/010).
     canvas.write(
-        19,
+        18,
         4,
-        "  Keep the risk note short before we publish.",
-        TextStyle::text(),
+        "Later draft stays ready in the originating conversation.",
+        TextStyle::muted(),
     )?;
     // Secondary intervention entry stays subordinate to View progress (VAL-V3-F6-016).
-    canvas.write(21, 4, "[i] Intervene", TextStyle::muted())?;
+    canvas.write(20, 4, "[i] Intervene", TextStyle::muted())?;
+    // Dedicated return control for temporary-detail surface anatomy.
+    canvas.write(21, 4, "[esc] Resume conversation", TextStyle::muted())?;
     // Advanced runtime/concurrency opens only from a disclosure-safe surface.
     // Approved gate compact frames omit this paint so product digests stay stable;
     // non-gate and runtime-open fixtures paint a distinct 1:1 open control.
@@ -1279,6 +1428,15 @@ fn render_workflow_monitor(
     }
 
     let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "surface",
+            "temporary-detail-view",
+            reference(10, 4, 28),
+            "summary",
+            None,
+        ),
         semantic(
             screen_id,
             fixture_id,
@@ -1333,11 +1491,24 @@ fn render_workflow_monitor(
             fixture_id,
             "secondary-action",
             "open-intervene",
-            reference(21, 4, 18),
+            reference(20, 4, 18),
             "summary",
             Some(action(
                 "action.mission.open-intervene",
                 "Intervene",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
+            "return-action",
+            "monitor-return",
+            reference(21, 4, 34),
+            "summary",
+            Some(action(
+                "action.mission.monitor-return",
+                "Resume conversation",
                 false,
             )),
         ),
@@ -1356,6 +1527,13 @@ fn render_workflow_monitor(
             "workflow-monitor",
             "direct",
             "intervene opens a focused consequence-aware dock under the healthy monitor",
+        ),
+        transition(
+            "action.mission.monitor-return",
+            screen_id,
+            "chat-turn",
+            "cancel",
+            "return restores the originating conversation with preserved draft",
         ),
     ];
     if runtime_open {
@@ -1428,8 +1606,13 @@ fn render_monitor_lifecycle(
             "Restored reviewing stage for this mission. No auto-advance.",
             TextStyle::muted(),
         )?;
-        canvas.write(16, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(17, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        canvas.write(
+            16,
+            4,
+            "Later draft stays ready in the originating conversation.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(17, 4, "[esc] Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1446,8 +1629,13 @@ fn render_monitor_lifecycle(
             "Restored awaiting human completion. Approval required.",
             TextStyle::muted(),
         )?;
-        canvas.write(16, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(17, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        canvas.write(
+            16,
+            4,
+            "Later draft stays ready in the originating conversation.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(17, 4, "[esc] Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1470,8 +1658,13 @@ fn render_monitor_lifecycle(
             "Restored validating stage. No auto-advance past validation.",
             TextStyle::muted(),
         )?;
-        canvas.write(16, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(17, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        canvas.write(
+            16,
+            4,
+            "Later draft stays ready in the originating conversation.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(17, 4, "[esc] Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1497,8 +1690,13 @@ fn render_monitor_lifecycle(
             "Restored blocked stage with the same cause and completed work.",
             TextStyle::muted(),
         )?;
-        canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(19, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
+        canvas.write(
+            18,
+            4,
+            "Later draft stays ready in the originating conversation.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(19, 4, "[esc] Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1526,10 +1724,28 @@ fn render_monitor_lifecycle(
             &format!("Safe boundary · {SAFE_BOUNDARY_ID}"),
             TextStyle::muted(),
         )?;
-        canvas.write(18, 4, "› composer ready", TextStyle::muted())?;
-        canvas.write(19, 4, &format!("  {LATER_DRAFT}"), TextStyle::text())?;
-        canvas.write(21, 4, "[i] Intervene", TextStyle::muted())?;
+        canvas.write(
+            18,
+            4,
+            "Later draft stays ready in the originating conversation.",
+            TextStyle::muted(),
+        )?;
+        canvas.write(20, 4, "[i] Intervene", TextStyle::muted())?;
+        canvas.write(21, 4, "[esc] Resume conversation", TextStyle::muted())?;
         let pairs = [
+            semantic(
+                screen_id,
+                fixture_id,
+                "surface",
+                if monitor_uses_action_dock(&fixture_id.to_ascii_lowercase()) {
+                    "action-dock"
+                } else {
+                    "temporary-detail-view"
+                },
+                reference(10, 4, 28),
+                "summary",
+                None,
+            ),
             semantic(
                 screen_id,
                 fixture_id,
@@ -1593,11 +1809,24 @@ fn render_monitor_lifecycle(
                 fixture_id,
                 "secondary-action",
                 "open-intervene",
-                reference(21, 4, 18),
+                reference(20, 4, 18),
                 "summary",
                 Some(action(
                     "action.mission.open-intervene",
                     "Intervene",
+                    false,
+                )),
+            ),
+            semantic(
+                screen_id,
+                fixture_id,
+                "return-action",
+                "monitor-return",
+                reference(21, 4, 34),
+                "summary",
+                Some(action(
+                    "action.mission.monitor-return",
+                    "Resume conversation",
                     false,
                 )),
             ),
@@ -1629,6 +1858,13 @@ fn render_monitor_lifecycle(
                 "workflow-monitor",
                 "direct",
                 "intervene opens a focused consequence-aware dock",
+            ),
+            transition(
+                "action.mission.monitor-return",
+                screen_id,
+                "chat-turn",
+                "cancel",
+                "return restores the originating conversation with preserved draft",
             ),
             transition(
                 "action.mission.restart-restore",
@@ -2417,6 +2653,19 @@ fn lifecycle_passive(
         semantic(
             screen_id,
             fixture_id,
+            "return-action",
+            "monitor-return",
+            reference(17, 4, 34),
+            "summary",
+            Some(action(
+                "action.mission.monitor-return",
+                "Resume conversation",
+                false,
+            )),
+        ),
+        semantic(
+            screen_id,
+            fixture_id,
             "restart-restore",
             "mission.restart",
             reference(10, 4, 56),
@@ -2428,13 +2677,22 @@ fn lifecycle_passive(
             )),
         ),
     ];
-    let transitions = vec![transition(
-        "action.mission.restart-restore",
-        screen_id,
-        screen_id,
-        "direct",
-        path,
-    )];
+    let transitions = vec![
+        transition(
+            "action.mission.restart-restore",
+            screen_id,
+            screen_id,
+            "direct",
+            path,
+        ),
+        transition(
+            "action.mission.monitor-return",
+            screen_id,
+            "chat-turn",
+            "cancel",
+            "return restores the originating conversation with preserved draft",
+        ),
+    ];
     Ok((
         pairs
             .iter()
@@ -2578,6 +2836,15 @@ fn render_progress_disclosure(
     }
 
     let mut pairs = vec![
+        semantic(
+            screen_id,
+            fixture_id,
+            "surface",
+            "temporary-detail-view",
+            reference(10, 4, 28),
+            "summary",
+            None,
+        ),
         semantic(
             screen_id,
             fixture_id,

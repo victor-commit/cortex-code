@@ -392,6 +392,86 @@ fn healthy_monitor_is_compact_with_one_view_progress_action() {
     );
 }
 
+/// VAL-V3-DS-009/010: healthy workflow-monitor must not declare conversation_shell
+/// until it paints a true bottom composer + statusline anatomy. Prefer temporary
+/// detail with explicit return when the compact mission card owns the canvas.
+#[test]
+fn healthy_monitor_surface_matches_temporary_detail_anatomy() {
+    for fixture in [
+        "gate.mission.workflow-monitor",
+        "canonical.workflow-monitor",
+        "public-audit",
+    ] {
+        let audit = audit_screen("workflow-monitor", fixture)
+            .unwrap_or_else(|e| panic!("monitor/{fixture} must render: {e}"));
+        audit
+            .validate()
+            .unwrap_or_else(|e| panic!("monitor/{fixture} audit: {e}"));
+        let surface = audit
+            .events
+            .iter()
+            .find(|event| event.identity.family == "surface")
+            .map(|event| event.identity.subject_id.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            surface, "temporary-detail-view",
+            "monitor/{fixture}: healthy monitor must not claim conversation-shell with mid-card composer: got {surface}"
+        );
+        let text = audit.render_txt();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 40, "monitor/{fixture}: 40-row canvas");
+        // No fake mid-screen composer label that pretends shell anatomy.
+        let composer_line = lines
+            .iter()
+            .position(|line| line.contains("› composer ready"));
+        assert!(
+            composer_line.is_none(),
+            "monitor/{fixture}: mid-screen › composer ready contradicts temporary detail; got row {composer_line:?}"
+        );
+        // Compact mission identity + one primary remain.
+        assert!(
+            text.contains("[enter] View progress"),
+            "monitor/{fixture}: View progress primary must stay"
+        );
+        assert!(
+            text.contains("[i] Intervene"),
+            "monitor/{fixture}: Intervene secondary must stay 1:1"
+        );
+        // Temporary-detail return path is visible (not a conversation shell).
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            lower.contains("[esc]")
+                && (lower.contains("return") || lower.contains("resume conversation")),
+            "monitor/{fixture}: temporary detail needs an obvious return affordance"
+        );
+        // Return must not dual-bind onto View progress / Intervene labels.
+        let view_progress = audit.events.iter().filter(|e| {
+            e.action
+                .as_ref()
+                .is_some_and(|a| a.action_id == "action.mission.view-progress")
+        }).count();
+        let intervene = audit.events.iter().filter(|e| {
+            e.action
+                .as_ref()
+                .is_some_and(|a| a.action_id == "action.mission.open-intervene")
+        }).count();
+        let return_home = audit.events.iter().filter(|e| {
+            e.action.as_ref().is_some_and(|a| {
+                a.action_id == "action.mission.monitor-return"
+                    || a.action_id.contains("return")
+                    || a.label.to_ascii_lowercase().contains("return")
+                    || a.label.to_ascii_lowercase().contains("resume conversation")
+            })
+        }).count();
+        assert_eq!(view_progress, 1, "monitor/{fixture}: View progress 1:1");
+        assert_eq!(intervene, 1, "monitor/{fixture}: Intervene 1:1");
+        assert!(
+            return_home >= 1,
+            "monitor/{fixture}: dedicated return action must exist (got {return_home})"
+        );
+    }
+}
+
 #[test]
 fn mission_storyboard_declares_launch_through_monitor_path() {
     let flow = mission_flow();

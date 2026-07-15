@@ -673,7 +673,9 @@ const CANONICAL_INVENTORY: [ScreenSpec; 86] = [
         id: "workflow-monitor",
         category: Category::Orchestration,
         flow: FlowOwner::Mission,
-        surface: Surface::ConversationShell,
+        // Healthy monitor is a temporary mission detail (compact MissionCard), not a
+        // conversation shell. Intervention fixtures override to ActionDock in paint.
+        surface: Surface::TemporaryDetailView,
         status: IMPLEMENTED,
     },
     ScreenSpec {
