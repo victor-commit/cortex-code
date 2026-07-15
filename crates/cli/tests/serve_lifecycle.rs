@@ -473,6 +473,99 @@ fn serve_catalog_discovery_fails_soft_offline_in_node_workspace() {
     wait_for_port_released(port);
 }
 
+/// VAL-SERVER-006: with `CORTEX_NO_NET=1` the loopback listener still serves `/health`, but a
+/// prompt turn fails closed with a net-disabled diagnostic and produces no assistant content.
+#[test]
+fn serve_prompt_fails_closed_under_no_net_while_health_stays_ok() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let scratch = Scratch::new("serve-no-net-prompt");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace dir");
+    let data_dir = scratch.dir.join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+    let db_path = scratch.db_path();
+    let port = free_port();
+    let mut server =
+        ServerProcess::start_offline_in_workspace(port, &workspace, &db_path, &data_dir);
+
+    let health = request_json(port, "GET", "/health", None);
+    assert_eq!(
+        health.status, 200,
+        "loopback health must stay ok under CORTEX_NO_NET: {}",
+        health.body
+    );
+
+    let created = request_json(port, "POST", "/session", Some("{}"));
+    assert_eq!(
+        created.status, 201,
+        "session create under no-net: {}",
+        created.body
+    );
+    let session: serde_json::Value =
+        serde_json::from_str(&created.body).expect("created session JSON");
+    let id = session["id"].as_str().expect("session id").to_owned();
+
+    let prompt = request_json(
+        port,
+        "POST",
+        &format!("/session/{id}/message"),
+        Some(r#"{"parts":[{"type":"text","text":"Reply with pong only"}]}"#),
+    );
+    assert_eq!(
+        prompt.status, 503,
+        "prompt must fail closed under CORTEX_NO_NET: {}",
+        prompt.body
+    );
+    let body: serde_json::Value = serde_json::from_str(&prompt.body).expect("prompt error JSON");
+    let diagnostic = body["error"]
+        .as_str()
+        .or_else(|| body["message"].as_str())
+        .unwrap_or("");
+    assert!(
+        diagnostic.contains("CORTEX_NO_NET")
+            || diagnostic.to_ascii_lowercase().contains("network disabled")
+            || diagnostic.contains("net-disabled")
+            || body["kind"].as_str() == Some("net-disabled"),
+        "prompt refusal must name the net-disabled kill-switch: {}",
+        prompt.body
+    );
+    assert!(
+        body.get("content").is_none()
+            || body["content"].is_null()
+            || body["content"].as_str().is_none_or(|text| text.is_empty()),
+        "fail-closed prompt must not return assistant content: {}",
+        prompt.body
+    );
+
+    let messages = request_json(port, "GET", &format!("/session/{id}/message"), None);
+    assert_eq!(
+        messages.status, 200,
+        "message list after no-net: {}",
+        messages.body
+    );
+    let listed: serde_json::Value =
+        serde_json::from_str(&messages.body).expect("message list JSON");
+    let rows = listed["messages"]
+        .as_array()
+        .cloned()
+        .or_else(|| listed.as_array().cloned())
+        .unwrap_or_default();
+    assert!(
+        rows.iter().all(|message| message["role"] != "assistant"),
+        "no-net prompt must not fabricate/persist an assistant answer: {listed}"
+    );
+
+    let health_after = request_json(port, "GET", "/health", None);
+    assert_eq!(
+        health_after.status, 200,
+        "server must remain healthy after the refused prompt: {}",
+        health_after.body
+    );
+
+    server.stop();
+    wait_for_port_released(port);
+}
+
 #[test]
 fn serve_summarize_and_compact_audit_the_no_net_refusal() {
     let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
