@@ -4,6 +4,7 @@ use errors::Exit;
 use events::EventBus;
 
 use crate::cli::ServeArgs;
+#[cfg(feature = "server")]
 use crate::style::{self, Styler};
 
 pub fn run(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool, verbose: u8) -> Exit {
@@ -11,6 +12,20 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool, verbose: u8)
         return crate::feature_gate::server_unavailable("serve");
     }
 
+    #[cfg(feature = "server")]
+    {
+        run_server(args, bus, pure_plugins, verbose)
+    }
+
+    #[cfg(not(feature = "server"))]
+    {
+        let _ = (args, bus, pure_plugins, verbose);
+        crate::feature_gate::server_unavailable("serve")
+    }
+}
+
+#[cfg(feature = "server")]
+fn run_server(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool, verbose: u8) -> Exit {
     // The banner, routes hint, and access log are the human/stderr surface; stdout stays clean for
     // machine consumers. Styling auto-disables when stderr is not a TTY (or NO_COLOR is set).
     let styler = Styler::for_stderr();
@@ -97,6 +112,7 @@ pub fn run(args: ServeArgs, bus: Arc<EventBus>, pure_plugins: bool, verbose: u8)
 /// Build the styled per-request access-log sink for `cortex serve -v`. Each completed request is
 /// rendered as one aligned row on stderr (method + path + status + duration), styled only when the
 /// stream is a TTY.
+#[cfg(feature = "server")]
 fn access_log_sink(styler: Styler) -> server::AccessLogSink {
     Arc::new(move |record: server::AccessLogRecord| {
         eprintln!(
@@ -113,6 +129,7 @@ fn access_log_sink(styler: Styler) -> server::AccessLogSink {
     })
 }
 
+#[cfg(feature = "server")]
 fn auth_from_args(args: &ServeArgs) -> Result<server::ServerAuth, server::ServeError> {
     match args.token.as_deref() {
         Some(token) => server::ServerAuth::bearer_token(token, args.public),

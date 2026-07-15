@@ -13,9 +13,12 @@ path = "src/main.rs"
 workspace = true
 
 [features]
+# Default delivery keeps network + server additive. `--no-default-features` is the
+# local-only binary: network/server code paths fail closed at the CLI feature gate,
+# and the server crate is not linked at all.
 default = ["network", "server"]
 network = []
-server = ["network"]
+server = ["network", "dep:server"]
 
 [dependencies]
 protocol = { workspace = true }
@@ -40,7 +43,7 @@ audit = { workspace = true }
 skills = { workspace = true }
 memory = { workspace = true }
 tui = { workspace = true }
-server = { workspace = true }
+server = { workspace = true, optional = true }
 acp = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }
