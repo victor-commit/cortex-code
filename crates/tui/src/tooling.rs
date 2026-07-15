@@ -1117,7 +1117,8 @@ mod tests {
     fn tui_dispatcher_audits_shell_execution_with_surface() {
         let dir = scratch_dir("audit");
         let audit = Arc::new(
-            audit::AuditSink::new(dir.join("audit.jsonl"), "ses_tui_audit").with_surface("tui"),
+            audit::AuditSink::new(dir.join("audit.jsonl"), "ses_tui_audit")
+                .with_surface_and_source("tui", "tui"),
         );
         let (tx, _rx) = channel();
         let dispatcher =

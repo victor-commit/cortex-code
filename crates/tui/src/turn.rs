@@ -178,7 +178,7 @@ pub fn spawn(request: SpawnRequest) -> Receiver<TurnMessage> {
                                 .unwrap_or_else(remote_message_id);
                             let audit_sink = Arc::new(
                                 audit::AuditSink::from_env_or_cwd(&session_id, &cwd)
-                                    .with_surface("tui"),
+                                    .with_surface_and_source("tui", "tui"),
                             );
                             let lsp_hooks =
                                 Arc::new(crate::lsp_bridge::LspHooks::new(cwd.clone()));

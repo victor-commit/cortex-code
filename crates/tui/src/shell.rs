@@ -51,6 +51,17 @@ pub fn run(command: &str, cwd: &Path) -> ShellOutcome {
     }
 }
 
+/// Parse `[exit code: N]` from a rendered shell outcome when the process code is not carried
+/// separately. Returns `None` for signal-killed children and start failures.
+#[must_use]
+pub fn exit_status_from_output(output: &str) -> Option<i32> {
+    const MARKER: &str = "[exit code: ";
+    let start = output.rfind(MARKER)? + MARKER.len();
+    let rest = output.get(start..)?;
+    let end = rest.find(']')?;
+    rest[..end].parse().ok()
+}
+
 /// Render a completed command's captured output: redaction-scrubbed stdout, then a labeled stderr
 /// section when present, then a trailing exit-code line so the result is legible even when empty.
 fn render(output: &std::process::Output) -> String {
