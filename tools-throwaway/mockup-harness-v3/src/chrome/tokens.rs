@@ -4,9 +4,20 @@
 pub const CANVAS_COLUMNS: u16 = 120;
 pub const CANVAS_ROWS: u16 = 40;
 
+/// Pixel size of one rasterized terminal cell in gallery/gate PNGs.
+pub const CELL_WIDTH: u32 = 10;
+pub const CELL_HEIGHT: u32 = 21;
+
+/// Shared monospaced baseline within each cell (row-relative, from top).
+///
+/// DejaVu Sans Mono at size 16 has design ascent ≈15 and descent ≈4. With this
+/// constant, non-descender bottoms land near `CELL_BASELINE - 1` and descenders
+/// remain inside the cell. Never center glyph bitmaps by height.
+pub const CELL_BASELINE: i32 = 16;
+
 /// The canonical raster dimensions. Each text cell maps to 10 by 21 pixels.
-pub const PNG_WIDTH: u32 = 1200;
-pub const PNG_HEIGHT: u32 = 840;
+pub const PNG_WIDTH: u32 = CANVAS_COLUMNS as u32 * CELL_WIDTH;
+pub const PNG_HEIGHT: u32 = CANVAS_ROWS as u32 * CELL_HEIGHT;
 
 /// Accent is reserved for focus/current work, never decoration.
 pub const ACCENT_USE_BUDGET: usize = 3;

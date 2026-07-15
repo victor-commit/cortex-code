@@ -6,7 +6,7 @@
 //! inventory/flow, TXT/PNG fidelity, semantic/transition audit, negative
 //! fixtures, immutable v2 references, assertion-to-case coverage, vision
 //! evidence, README index, programmatic check.sh, statusline policy,
-//! approval integrity, secret/commit/path scope, contractual 458-assertion
+//! approval integrity, secret/commit/path scope, contractual 462-assertion
 //! inventory, and double-render determinism via the public scripts.
 
 use std::collections::BTreeMap;
@@ -39,7 +39,8 @@ pub const REQUIRED_SUBGATES: &[&str] = &[
 const CANONICAL_GALLERY: &str = "/projects/cortex-code/plans/assets/mockups-v3";
 const GATE_GALLERY: &str = "/projects/cortex-code/plans/assets/mockups-v3-gates";
 /// Exact validation-contract assertion inventory for the final aggregate.
-pub const CONTRACT_ASSERTION_COUNT: usize = 458;
+/// Includes HARNESS-038/039/040 monospaced PNG baseline registration family.
+pub const CONTRACT_ASSERTION_COUNT: usize = 462;
 const DEFAULT_MISSION: &str = "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc";
 
 #[derive(Clone, Debug, Eq, PartialEq)]

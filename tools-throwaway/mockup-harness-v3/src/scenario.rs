@@ -25020,12 +25020,14 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
     );
     // Paint per-cell absolute backgrounds first so light galleries and swatches
     // never inherit residual dark canvas pixels.
+    let cell_w = crate::chrome::tokens::CELL_WIDTH;
+    let cell_h = crate::chrome::tokens::CELL_HEIGHT;
     for cell in canvas {
         if let Some((r, g, b)) = cell.absolute_bg {
-            let cell_x = cell.column as u32 * 10;
-            let cell_y = cell.row as u32 * 21;
-            for y in 0..21u32 {
-                for x in 0..10u32 {
+            let cell_x = cell.column as u32 * cell_w;
+            let cell_y = cell.row as u32 * cell_h;
+            for y in 0..cell_h {
+                for x in 0..cell_w {
                     image.put_pixel(cell_x + x, cell_y + y, Pixel([r, g, b]));
                 }
             }
@@ -25046,8 +25048,8 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
         } else {
             token_fg
         };
-        let cell_x = cell.column as u32 * 10;
-        let cell_y = cell.row as u32 * 21;
+        let cell_x = cell.column as u32 * cell_w;
+        let cell_y = cell.row as u32 * cell_h;
         if crate::chrome::tokens::glyph_rendering(cell.glyph)
             == Some(crate::chrome::tokens::GlyphRendering::SyntheticElbow)
         {
@@ -25070,8 +25072,12 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
         }
         let font = if cell.style.bold { &bold } else { &regular };
         let (metrics, bitmap) = font.rasterize(cell.glyph, 16.0);
-        let base_x = cell.column as i32 * 10 + (10 - metrics.width as i32) / 2;
-        let base_y = cell.row as i32 * 21 + (21 - metrics.height as i32) / 2;
+        // Monospaced pen origin + shared baseline. Never center the raster bbox:
+        // different coverages would shift baseline by several pixels per glyph.
+        let pen_x = cell.column as i32 * cell_w as i32;
+        let pen_y = cell.row as i32 * cell_h as i32 + crate::chrome::tokens::CELL_BASELINE;
+        let base_x = pen_x + metrics.xmin;
+        let base_y = pen_y - metrics.ymin - metrics.height as i32;
         for y in 0..metrics.height {
             for x in 0..metrics.width {
                 let alpha = bitmap[y * metrics.width + x] as u16;
@@ -25113,7 +25119,9 @@ fn draw_underscore(
     cell_y: u32,
     foreground: image::Rgb<u8>,
 ) {
-    let y = cell_y + 17;
+    // Hang 1px under the shared latin baseline so chat-turn '_' matches
+    // body-text registration instead of floating mid-cell.
+    let y = cell_y + crate::chrome::tokens::CELL_BASELINE as u32 + 1;
     for x in cell_x + 1..cell_x + 9 {
         if x < image.width() && y < image.height() {
             image.put_pixel(x, y, foreground);
@@ -25138,14 +25146,14 @@ fn draw_synthetic_elbow(
             image.put_pixel(x, y, foreground);
         }
     };
-    // Even 2px solid stroke. Tall left-rail stem mirrors mono U+23BF proportions
-    // (much taller than a mid-cell capital letter foot) and the horizontal arm
-    // springs from the solid bottom-left join to the right cell edge.
+    // Even 2px solid stroke. Horizontal arm sits on the shared CELL_BASELINE
+    // so the elbow foot registers with latin text (not mid-cell height).
+    let baseline = crate::chrome::tokens::CELL_BASELINE as u32;
     let stem_left = cell_x + 3;
     let stem_right = cell_x + 4;
     let stem_top = cell_y + 3;
-    let arm_top = cell_y + 14;
-    let arm_bottom = cell_y + 15;
+    let arm_top = cell_y + baseline - 2;
+    let arm_bottom = cell_y + baseline - 1;
     let arm_right = cell_x + 9;
 
     for y in stem_top..=arm_bottom {
