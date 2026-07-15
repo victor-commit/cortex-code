@@ -18,9 +18,19 @@ fn multiline_composer_keeps_authored_lines_distinct_from_wrapping_with_a_visible
     let rows = text.lines().collect::<Vec<_>>();
     assert_eq!(rows.len(), 40);
     assert!(rows.iter().all(|row| row.chars().count() == 120));
-    assert!(text.contains("Draft · 3 authored lines"));
-    assert!(text.contains("wraps visually"));
-    assert!(text.contains("cursor at character 30"));
+    assert!(text.contains("Draft · 3 lines"));
+    assert!(
+        !text.contains("wraps visually"),
+        "composer must not leak visual wrap debug meta"
+    );
+    assert!(
+        !text.contains("cursor at character"),
+        "composer must not paint cursor-column HUD text"
+    );
+    assert!(
+        !text.contains("[@]"),
+        "composer header must not billboard bracket mention chords"
+    );
     assert!(text.contains("Check the retry path in @retry"));
     assert!(text.contains("Then explain the failure path that still needs coverage before the merge;"));
     assert!(text.contains("Keep the summary short before we merge."));

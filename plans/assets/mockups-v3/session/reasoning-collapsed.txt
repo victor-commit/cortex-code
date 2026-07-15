@@ -7,7 +7,7 @@
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
-    › Why this answer · checked the shared rate-limit guard path  [enter] Expand rationale                              
+    › Why this answer · checked the shared rate-limit guard path · Enter to expand rationale                            
                                                                                                                         
                                                                                                                         
     The shared request guard applies the limit before route work begins.                                                

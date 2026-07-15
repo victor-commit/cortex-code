@@ -5,7 +5,7 @@
                                                                                │   LSP                                  
     You · Find where the server applies the rate limit and explain the safe pa │   Todo                                 
                                                                                │ › Subs                                 
-                                                                               │ [esc] Return to conversation           
+                                                                               │ Esc to return to conversation          
     Code                                                                       │                                        
                                                                                │ Delegated work                         
     The shared request guard applies the limit before route work begins.       │ 1 running · 1 done · 1 queued          

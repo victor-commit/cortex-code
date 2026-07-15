@@ -30,10 +30,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Draft · 3 authored lines · wraps visually · [@] Mention a file                                                   │  
-  │ › Check the retry path in @retry| cursor at character 30                                                         │  
+  │ Draft · 3 lines                                                                                                  │  
+  │ › Check the retry path in @retry█                                                                                │  
   │   Then explain the failure path that still needs coverage before the merge;                                      │  
-  │     wrap: include a concise test plan with the visible recovery behavior.                                        │  
+  │     include a concise test plan with the visible recovery behavior.                                              │  
   │   Keep the summary short before we merge.                                                                        │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

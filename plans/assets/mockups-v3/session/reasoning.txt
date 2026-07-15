@@ -7,7 +7,7 @@
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
-    ▾ Why this answer · checked the shared rate-limit guard path  [enter] Collapse                                      
+    ▾ Why this answer · checked the shared rate-limit guard path · Enter to collapse                                    
       Limit checks run once before any route handler.                                                                   
       Login and API both call the same shared guard.                                                                    
       That keeps one safety rule instead of per-route copies.                                                           

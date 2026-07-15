@@ -10,8 +10,8 @@
                                                                                                                         
     Prepare the release safely and review the result.                                                                   
     Running · 1 complete · 2 remaining                                                                                  
-    [enter] View progress                                                                                               
-                                                                                                                        
+    › View progress                                                                                                     
+    Enter to view progress                                                                                              
                                                                                                                         
     Progress stays calm until you ask for a task summary.                                                               
     No blocker. Open progress only when you need the details.                                                           

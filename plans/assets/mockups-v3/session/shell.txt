@@ -14,7 +14,7 @@
       ⎿ M crates/server/src/models/session.rs                                                                           
       ⎿ ?? crates/server/tests/login_regression.rs                                                                      
                                                                                                                         
-    ● Shell · cargo test --workspace · Running · running · 4s elapsed · [s] Stop command                                
+    ● Shell · cargo test --workspace · Running · running · 4s elapsed · Esc to stop command                             
       ⎿ Compiling cortex-server v0.1.0                                                                                  
       ⎿ Finished test profile in 3.1s                                                                                   
       ⎿ test routes::login::rate_limited ... ok                                                                         

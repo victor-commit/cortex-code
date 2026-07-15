@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use crate::registry::canonical_inventory;
 use crate::{
     chrome::{
-        components::DecisionDock,
+        components::{DecisionDock, ShortcutByline, ShortcutHint},
         layout::{ScreenComposition, StatusLine, SurfaceLayout},
         tokens::{
             palette, validate_glyphs, validate_text_safety, validate_token_hex, ColorToken,
@@ -735,12 +735,8 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
             canvas.write(action_row + offset as u16, 2, &line.text, line.style)?;
         }
     } else {
-        canvas.write(
-            action_row,
-            2,
-            &format!("[enter] {}", action.label),
-            TextStyle::accent(),
-        )?;
+        let byline = ShortcutByline::new(vec![ShortcutHint::new("Enter", action.label.as_str())?])?;
+        canvas.write(action_row, 2, &byline.render(), TextStyle::accent())?;
     }
     canvas.write(
         10,
@@ -786,7 +782,17 @@ pub fn audit_screen(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, 
                         0
                     },
                 start: 2,
-                end: 2 + 8 + action.label.chars().count() as u16,
+                // Action dock paints `› {label}`; conversation shell paints prose byline.
+                end: 2 + if screen.surface == Surface::ActionDock {
+                    2 + action.label.chars().count()
+                } else {
+                    ShortcutByline::new(vec![ShortcutHint::new("Enter", action.label.as_str())
+                        .expect("primary action byline")])
+                    .expect("primary action byline")
+                    .render()
+                    .chars()
+                    .count()
+                } as u16,
             },
         ),
         candidate(
@@ -884,7 +890,7 @@ fn empty_after_onboarding_audit(fixture_id: &str) -> Result<AuditDocument, Strin
     canvas.write(
         COMPOSER_BOTTOM - 1,
         4,
-        "[enter] Continue",
+        &ShortcutByline::new(vec![ShortcutHint::new("Enter", "continue")?])?.render(),
         TextStyle::accent(),
     )?;
     canvas.write(

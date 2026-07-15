@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                │ MCP status                             
     Daily work · current conversation                                          │ › MCP                                  
-    Find where the server applies the rate limit and explain the safe path.    │ [esc] Return to conversation           
+    Find where the server applies the rate limit and explain the safe path.    │ Esc to return to conversation          
                                                                                │                                        
     You · Find where the server applies the rate limit and explain the safe pa │                                        
                                                                                │                                        

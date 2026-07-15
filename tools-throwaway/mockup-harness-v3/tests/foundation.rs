@@ -1,8 +1,11 @@
 use mockup_harness_v3::chrome::{
     components::{
+        composer_header_meta, contains_bracket_key_atom, is_journey_breadcrumb_title,
+        reject_composer_debug_meta, reject_journey_breadcrumb_title, validate_component,
         ActivityRow, ActivityState, Component, ConnectionRow, ConnectionState, DecisionDock,
         DiffBlock, DiffKind, DisclosureBlock, DisclosureState, Inspector, InspectorTab,
-        MissionCard, RecoveryBlock, ReviewBlock, SelectionDock, SelectionRow,
+        MissionCard, RecoveryBlock, ReviewBlock, SelectionDock, SelectionRow, ShortcutByline,
+        ShortcutHint,
     },
     layout::{ScreenComposition, StatusLine, SurfaceLayout, CANVAS_COLUMNS, CANVAS_ROWS},
     tokens::{
@@ -176,14 +179,14 @@ fn shared_components_encode_focus_local_keys_and_primary_actions() {
     assert!(activity
         .lines()
         .iter()
-        .any(|line| line.text.contains("Stop")));
+        .any(|line| line.text.contains("Esc to stop")));
 
     let disclosure = DisclosureBlock::new("Why this changed", DisclosureState::Collapsed)
         .with_expanded_detail("A concise user-facing rationale.");
     assert!(disclosure
         .lines()
         .iter()
-        .any(|line| line.text.contains("Expand")));
+        .any(|line| line.text.contains("Enter to expand")));
 
     let selection = SelectionDock::new(
         "Choose a model",
@@ -295,7 +298,7 @@ fn inspector_detail_diff_and_review_have_reversible_focused_anatomy() {
     assert!(inspector
         .lines()
         .iter()
-        .any(|line| line.text.contains("Return to conversation")));
+        .any(|line| line.text.contains("Esc to return to conversation")));
 
     let detail = mockup_harness_v3::chrome::components::DetailView::new(
         "Review changes",
@@ -322,4 +325,246 @@ fn inspector_detail_diff_and_review_have_reversible_focused_anatomy() {
     );
     assert_eq!(review.anatomy().primary_action_count, 1);
     assert!(review.anatomy().accent_uses <= ACCENT_USE_BUDGET);
+}
+
+#[test]
+fn shortcut_byline_renders_claude_style_prose_without_brackets() {
+    let byline = ShortcutByline::enter_esc_choose("Apply model", "cancel")
+        .expect("common dock byline must construct");
+    assert_eq!(
+        byline.render(),
+        "Enter to apply model · Esc to cancel · ↑↓ to choose"
+    );
+    assert!(!contains_bracket_key_atom(&byline.render()));
+
+    assert!(
+        ShortcutHint::new("[enter]", "send").is_err(),
+        "bracket key atoms must fail closed at construction"
+    );
+    assert!(
+        ShortcutByline::new(vec![]).is_err(),
+        "empty bylines must fail closed"
+    );
+}
+
+#[test]
+fn shared_chrome_components_never_emit_bracket_key_atoms() {
+    let activity = ActivityRow::new(
+        "Check changed files",
+        ActivityState::Running,
+        "2 of 4 files checked",
+    )
+    .with_elapsed("12s")
+    .with_interrupt("Stop");
+    let disclosure = DisclosureBlock::new("Why this changed", DisclosureState::Collapsed)
+        .with_expanded_detail("A concise user-facing rationale.");
+    let selection = SelectionDock::new(
+        "Choose a model",
+        vec![
+            SelectionRow::new("Claude Opus 4.8", "Careful work on complex changes"),
+            SelectionRow::new("GPT-5.2 Codex", "Fast help for focused edits"),
+        ],
+        1,
+        "Changes the model for this conversation.",
+        "Apply model",
+    )
+    .expect("selection dock constructs");
+    let decision = DecisionDock::new(
+        Surface::ActionDock,
+        "Allow this command?",
+        "It will check the project files.",
+        "Allow once",
+    )
+    .expect("decision dock constructs")
+    .with_secondary("Deny")
+    .expect("secondary constructs")
+    .with_secondary("Cancel")
+    .expect("cancel constructs");
+    let connection = ConnectionRow::new("Project search", ConnectionState::NeedsSignIn, "Sign in");
+    let recovery = RecoveryBlock::new(
+        "Connection paused",
+        "Your draft and completed work are still here.",
+        "Try again",
+    )
+    .with_evidence("Show connection details");
+    let mission = MissionCard::new(
+        "Prepare the release notes",
+        "Reviewing changes",
+        3,
+        2,
+        Some("One item needs attention"),
+        "View progress",
+    );
+    let inspector = Inspector::new(
+        "Files",
+        "chat-turn",
+        vec![InspectorTab::new("Files"), InspectorTab::new("Diagnostics")],
+        0,
+    )
+    .expect("inspector constructs");
+    let detail = mockup_harness_v3::chrome::components::DetailView::new(
+        "Review changes",
+        "chat-turn",
+        vec!["One finding needs attention."],
+    );
+    let review = ReviewBlock::new(
+        "Ready for review",
+        "The selected change is safe to inspect.",
+        "Open evidence",
+    )
+    .with_secondary("Show details");
+
+    let mut rendered = Vec::new();
+    for component in [
+        activity.lines(),
+        disclosure.lines(),
+        selection.lines(),
+        decision
+            .render()
+            .expect("decision dock must render when valid"),
+        connection.lines(),
+        recovery.lines(),
+        mission.lines(),
+        inspector.lines(),
+        detail.lines(),
+        review.lines(),
+    ] {
+        rendered.extend(component);
+    }
+
+    for line in &rendered {
+        assert!(
+            !contains_bracket_key_atom(&line.text),
+            "chrome line leaked bracket key atom: {}",
+            line.text
+        );
+    }
+    assert!(rendered.iter().any(|line| line.text.contains("Enter to")));
+    assert!(rendered.iter().any(|line| line.text.contains("Esc to")));
+
+    validate_component(&selection).expect("selection dock must remain valid anatomy");
+    validate_component(&decision).expect("decision dock must remain valid anatomy");
+    validate_component(&recovery).expect("recovery block must remain valid anatomy");
+}
+
+#[test]
+fn journey_breadcrumb_titles_and_composer_debug_meta_are_banned() {
+    for title in [
+        "Daily work · current conversation",
+        "Mission · current conversation",
+        "Input and approval · paused conversation",
+        "Work configuration · onboarding",
+        "Provider and MCP · connect",
+        "Recovery · paused conversation",
+    ] {
+        assert!(
+            is_journey_breadcrumb_title(title),
+            "expected breadcrumb recognition for {title}"
+        );
+        assert!(reject_journey_breadcrumb_title(title).is_err());
+    }
+    assert!(reject_journey_breadcrumb_title("Prepare the release safely").is_ok());
+    assert!(reject_journey_breadcrumb_title("Current conversation").is_ok());
+
+    assert!(reject_composer_debug_meta("cursor at character 30").is_err());
+    assert!(reject_composer_debug_meta("Draft · wraps visually").is_err());
+    assert!(reject_composer_debug_meta("Draft · [@] Mention").is_err());
+    assert_eq!(
+        composer_header_meta(3).expect("line-count meta is allowed"),
+        "Draft · 3 lines"
+    );
+    assert_eq!(
+        composer_header_meta(1).expect("singular line-count meta is allowed"),
+        "Draft · 1 line"
+    );
+}
+
+/// Fail-closed chrome unit fixtures for the redesign language kill-switch.
+/// Full published gallery still has screen-owned brackets until phase-A
+/// rewrites land; this scan proves shared chrome cannot emit them.
+#[test]
+fn chrome_unit_fixtures_scan_has_zero_bracket_key_atoms() {
+    let fixtures = vec![
+        ActivityRow::new(
+            "Search project",
+            ActivityState::Running,
+            "128 of 400 files",
+        )
+        .with_elapsed("4s")
+        .with_interrupt("Stop search")
+        .compact()
+        .lines(),
+        SelectionDock::new(
+            "Choose how Code should work",
+            vec![
+                SelectionRow::new("Careful edits", "Review before writes"),
+                SelectionRow::new("Quick implementation", "Move faster on focused tasks"),
+            ],
+            0,
+            "Applies to the next reply only.",
+            "Apply work style",
+        )
+        .expect("fixture")
+        .lines(),
+        DecisionDock::new(
+            Surface::ActionDock,
+            "Allow this shell command?",
+            "It will run once, then resume the paused edit.",
+            "Allow once",
+        )
+        .expect("fixture")
+        .with_secondary("Deny")
+        .expect("fixture")
+        .render()
+        .expect("fixture"),
+        RecoveryBlock::new(
+            "Could not reach the provider",
+            "Your draft and completed work are still here.",
+            "Try again",
+        )
+        .lines(),
+        MissionCard::new(
+            "Prepare the release safely",
+            "Running",
+            1,
+            2,
+            None,
+            "View progress",
+        )
+        .lines(),
+        Inspector::new(
+            "Files",
+            "current conversation",
+            vec![InspectorTab::new("Files")],
+            0,
+        )
+        .expect("fixture")
+        .lines(),
+        mockup_harness_v3::chrome::components::DetailView::new(
+            "Help",
+            "current conversation",
+            vec!["Enter · send the draft"],
+        )
+        .lines(),
+        ReviewBlock::new("Ready for review", "One finding needs attention.", "Open evidence")
+            .lines(),
+    ];
+
+    let mut violators = Vec::new();
+    for lines in fixtures {
+        for line in lines {
+            if contains_bracket_key_atom(&line.text) {
+                violators.push(line.text.clone());
+            }
+            assert!(
+                !is_journey_breadcrumb_title(&line.text),
+                "chrome fixture painted journey breadcrumb title: {}",
+                line.text
+            );
+        }
+    }
+    assert!(
+        violators.is_empty(),
+        "chrome unit fixtures must not emit bracket key atoms: {violators:?}"
+    );
 }

@@ -3,11 +3,226 @@
 //! These types deliberately model readable user-facing content, local keys,
 //! focus, and a single primary action. Screens compose them instead of
 //! hand-rolling detached pickers, recovery cards, or mission dashboards.
+//!
+//! Shortcut and return copy uses Claude-style prose bylines
+//! (`Enter to apply · Esc to cancel`) — never bracket key-chord atoms.
 
 use crate::{
     chrome::tokens::{ColorToken, TextStyle, ACCENT_USE_BUDGET},
     Surface,
 };
+
+/// Known journey-breadcrumb prefixes that must never be primary titles (N-12).
+const FORBIDDEN_JOURNEY_TITLE_PREFIXES: &[&str] = &[
+    "Daily work ·",
+    "Mission ·",
+    "Input and approval ·",
+    "Work configuration ·",
+    "Provider and MCP ·",
+    "Recovery ·",
+];
+
+/// Implementation meta phrases banned from the composer jewel (N-13).
+const FORBIDDEN_COMPOSER_DEBUG_META: &[&str] =
+    &["cursor at character", "wraps visually"];
+
+/// One Claude-style shortcut clause: `Enter to confirm`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShortcutHint {
+    key_words: String,
+    verb: String,
+}
+
+impl ShortcutHint {
+    pub fn new(key_words: impl Into<String>, verb: impl Into<String>) -> Result<Self, String> {
+        let key_words = key_words.into().trim().to_owned();
+        let verb = noun_clause(&verb.into());
+        if key_words.is_empty() || verb.is_empty() {
+            return Err("shortcut hint requires key words and a verb".to_owned());
+        }
+        if contains_bracket_key_atom(&key_words) || contains_bracket_key_atom(&verb) {
+            return Err("shortcut hints may not use bracket key atoms".to_owned());
+        }
+        Ok(Self { key_words, verb })
+    }
+
+    pub fn render(&self) -> String {
+        format!("{} to {}", self.key_words, self.verb)
+    }
+}
+
+/// Middot-joined prose byline for local shortcuts (F-8 / VAL-V3-DS-030).
+///
+/// Example: `Enter to send · Esc to cancel · ↑↓ to choose`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShortcutByline {
+    hints: Vec<ShortcutHint>,
+}
+
+impl ShortcutByline {
+    pub fn new(hints: Vec<ShortcutHint>) -> Result<Self, String> {
+        if hints.is_empty() {
+            return Err("shortcut byline requires at least one hint".to_owned());
+        }
+        if hints
+            .iter()
+            .any(|hint| contains_bracket_key_atom(&hint.render()))
+        {
+            return Err("shortcut byline may not emit bracket key atoms".to_owned());
+        }
+        Ok(Self { hints })
+    }
+
+    /// Common confirm/cancel pair used by docks and cards.
+    pub fn enter_esc(enter_verb: &str, esc_verb: &str) -> Result<Self, String> {
+        Self::new(vec![
+            ShortcutHint::new("Enter", enter_verb)?,
+            ShortcutHint::new("Esc", esc_verb)?,
+        ])
+    }
+
+    /// Confirm, cancel, and list navigation.
+    pub fn enter_esc_choose(enter_verb: &str, esc_verb: &str) -> Result<Self, String> {
+        Self::new(vec![
+            ShortcutHint::new("Enter", enter_verb)?,
+            ShortcutHint::new("Esc", esc_verb)?,
+            ShortcutHint::new("↑↓", "choose")?,
+        ])
+    }
+
+    pub fn render(&self) -> String {
+        self.hints
+            .iter()
+            .map(ShortcutHint::render)
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
+    pub fn as_component_line(&self, style: TextStyle) -> ComponentLine {
+        ComponentLine::new(self.render(), style)
+    }
+}
+
+/// True when `text` contains a bracket key-chord atom such as `[enter]` or `[@]`.
+/// Content tokens like `[attachment: path]` are ignored.
+pub fn contains_bracket_key_atom(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            if let Some(rel_end) = text[i + 1..].find(']') {
+                let inner = &text[i + 1..i + 1 + rel_end];
+                if is_key_chord_token(inner) {
+                    return true;
+                }
+                i += 2 + rel_end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// True when a primary title uses a journey breadcrumb prefix (N-12).
+pub fn is_journey_breadcrumb_title(title: &str) -> bool {
+    let trimmed = title.trim();
+    FORBIDDEN_JOURNEY_TITLE_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
+/// Fail closed when a title is a journey breadcrumb rather than a human subject.
+pub fn reject_journey_breadcrumb_title(title: &str) -> Result<(), String> {
+    if is_journey_breadcrumb_title(title) {
+        return Err(format!(
+            "journey breadcrumb titles are banned (use a human subject): {title}"
+        ));
+    }
+    Ok(())
+}
+
+/// Fail closed when composer chrome leaks implementation meta (N-13).
+pub fn reject_composer_debug_meta(text: &str) -> Result<(), String> {
+    let lower = text.to_ascii_lowercase();
+    for phrase in FORBIDDEN_COMPOSER_DEBUG_META {
+        if lower.contains(phrase) {
+            return Err(format!("composer debug meta is banned: {phrase}"));
+        }
+    }
+    if contains_bracket_key_atom(text) {
+        return Err("composer meta may not use bracket key atoms".to_owned());
+    }
+    Ok(())
+}
+
+/// Clean composer header meta: line count only (no wrap/cursor debug).
+pub fn composer_header_meta(authored_line_count: usize) -> Result<String, String> {
+    let text = if authored_line_count == 1 {
+        "Draft · 1 line".to_owned()
+    } else {
+        format!("Draft · {authored_line_count} lines")
+    };
+    reject_composer_debug_meta(&text)?;
+    Ok(text)
+}
+
+fn is_key_chord_token(inner: &str) -> bool {
+    let token = inner.trim();
+    if token.is_empty() || token.len() > 12 {
+        return false;
+    }
+    // File/content chips such as `[attachment: path]` are not key chords.
+    if token.contains(':') || token.contains(' ') || token.contains('/') {
+        return false;
+    }
+    let lower = token.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "enter"
+            | "esc"
+            | "escape"
+            | "tab"
+            | "space"
+            | "return"
+            | "shift"
+            | "↑↓"
+            | "↑"
+            | "↓"
+            | "@"
+            | "/"
+            | "?"
+            | "sc"
+            | "ctrl+k"
+            | "ctrl+g"
+            | "ctrl+c"
+            | "ctrl+d"
+    ) || token
+        .chars()
+        .all(|c| "↑↓←→".contains(c) && !c.is_whitespace())
+        || (token.len() <= 3
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '^'))
+}
+
+fn noun_clause(verb: &str) -> String {
+    let trimmed = verb.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn byline_or_empty(result: Result<ShortcutByline, String>) -> String {
+    result
+        .map(|byline| byline.render())
+        .unwrap_or_else(|_| String::new())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentLine {
@@ -140,23 +355,26 @@ impl Component for ActivityRow {
         if let Some(elapsed) = &self.elapsed {
             summary.push_str(&format!(" · {elapsed}"));
         }
+        let interrupt_byline = self.interrupt.as_ref().map(|action| {
+            byline_or_empty(
+                ShortcutHint::new("Esc", action.as_str())
+                    .and_then(|hint| ShortcutByline::new(vec![hint])),
+            )
+        });
         if !self.compact {
             let mut lines = vec![
                 ComponentLine::new(summary, TextStyle::text()),
                 ComponentLine::new(format!("  {}", self.detail), TextStyle::muted()),
             ];
-            if let Some(action) = &self.interrupt {
-                lines.push(ComponentLine::new(
-                    format!("  [s] {action}"),
-                    TextStyle::bright(),
-                ));
+            if let Some(byline) = interrupt_byline {
+                lines.push(ComponentLine::new(format!("  {byline}"), TextStyle::bright()));
             }
             return lines;
         }
 
         summary.push_str(&format!(" · {}", self.detail));
-        if let Some(action) = &self.interrupt {
-            summary.push_str(&format!(" · [s] {action}"));
+        if let Some(byline) = interrupt_byline {
+            summary.push_str(&format!(" · {byline}"));
         }
         let style = match self.state {
             ActivityState::Running => TextStyle::bright(),
@@ -234,13 +452,23 @@ impl DisclosureBlock {
 impl Component for DisclosureBlock {
     fn lines(&self) -> Vec<ComponentLine> {
         match self.state {
-            DisclosureState::Collapsed => vec![ComponentLine::new(
-                format!("› {}  [enter] {}", self.summary, self.expand_label),
-                TextStyle::text(),
-            )],
+            DisclosureState::Collapsed => {
+                let byline = byline_or_empty(
+                    ShortcutHint::new("Enter", self.expand_label.as_str())
+                        .and_then(|hint| ShortcutByline::new(vec![hint])),
+                );
+                vec![ComponentLine::new(
+                    format!("› {} · {byline}", self.summary),
+                    TextStyle::text(),
+                )]
+            }
             DisclosureState::Expanded => {
+                let byline = byline_or_empty(
+                    ShortcutHint::new("Enter", self.collapse_label.as_str())
+                        .and_then(|hint| ShortcutByline::new(vec![hint])),
+                );
                 let mut lines = vec![ComponentLine::new(
-                    format!("▾ {}  [enter] {}", self.summary, self.collapse_label),
+                    format!("▾ {} · {byline}", self.summary),
                     TextStyle::text(),
                 )];
                 for detail in &self.expanded_lines {
@@ -332,12 +560,13 @@ impl Component for SelectionDock {
                 ));
             }
         }
+        let byline = byline_or_empty(ShortcutByline::enter_esc_choose(
+            self.primary_action.as_str(),
+            "cancel",
+        ));
         lines.extend([
             ComponentLine::new(format!("  {}", self.consequence), TextStyle::muted()),
-            ComponentLine::new(
-                format!("[enter] {}  [esc] Cancel  [↑↓] Choose", self.primary_action),
-                TextStyle::bright(),
-            ),
+            ComponentLine::new(byline, TextStyle::bright()),
         ]);
         lines
     }
@@ -414,17 +643,21 @@ impl DecisionDock {
             ComponentLine::new(self.title.clone(), TextStyle::bright()),
             ComponentLine::new(self.effect.clone(), TextStyle::text()),
             ComponentLine::new(
-                format!("[enter] {}", self.primary_action),
+                format!("› {}", self.primary_action),
                 TextStyle::accent(),
             ),
         ];
-        for (index, action) in self.secondary_actions.iter().enumerate() {
-            let key = if index == 0 { "d" } else { "esc" };
+        for action in &self.secondary_actions {
             lines.push(ComponentLine::new(
-                format!("[{key}] {action}"),
+                format!("  {action}"),
                 TextStyle::muted(),
             ));
         }
+        let byline = byline_or_empty(ShortcutByline::enter_esc(
+            self.primary_action.as_str(),
+            "cancel",
+        ));
+        lines.push(ComponentLine::new(byline, TextStyle::muted()));
         lines
     }
 }
@@ -478,15 +711,16 @@ impl ConnectionRow {
 
 impl Component for ConnectionRow {
     fn lines(&self) -> Vec<ComponentLine> {
+        let byline = byline_or_empty(
+            ShortcutHint::new("Enter", self.primary_action.as_str())
+                .and_then(|hint| ShortcutByline::new(vec![hint])),
+        );
         vec![
             ComponentLine::new(
                 format!("{} · {}", self.capability, self.state.label()),
                 TextStyle::text(),
             ),
-            ComponentLine::new(
-                format!("  [enter] {}", self.primary_action),
-                TextStyle::bright(),
-            ),
+            ComponentLine::new(format!("  {byline}"), TextStyle::bright()),
         ]
     }
 
@@ -514,13 +748,14 @@ impl ConnectionDetail {
 
 impl Component for ConnectionDetail {
     fn lines(&self) -> Vec<ComponentLine> {
+        let byline = byline_or_empty(
+            ShortcutHint::new("Esc", format!("return to {}", self.origin))
+                .and_then(|hint| ShortcutByline::new(vec![hint])),
+        );
         vec![
             ComponentLine::new(self.capability.clone(), TextStyle::bright()),
             ComponentLine::new(self.detail.clone(), TextStyle::text()),
-            ComponentLine::new(
-                format!("[esc] Return to {}", self.origin),
-                TextStyle::muted(),
-            ),
+            ComponentLine::new(byline, TextStyle::muted()),
         ]
     }
 
@@ -559,16 +794,29 @@ impl Component for RecoveryBlock {
             ComponentLine::new(self.cause.clone(), TextStyle::bright()),
             ComponentLine::new(self.preserved.clone(), TextStyle::text()),
             ComponentLine::new(
-                format!("[enter] {}", self.primary_action),
+                format!("› {}", self.primary_action),
                 TextStyle::accent(),
             ),
         ];
         if let Some(action) = &self.evidence_action {
             lines.push(ComponentLine::new(
-                format!("[d] {action}"),
+                format!("  {action}"),
                 TextStyle::muted(),
             ));
         }
+        let mut hints = Vec::new();
+        if let Ok(hint) = ShortcutHint::new("Enter", self.primary_action.as_str()) {
+            hints.push(hint);
+        }
+        if let Some(action) = &self.evidence_action {
+            if let Ok(hint) = ShortcutHint::new("d", format!("for {}", noun_clause(action))) {
+                hints.push(hint);
+            }
+        }
+        lines.push(ComponentLine::new(
+            byline_or_empty(ShortcutByline::new(hints)),
+            TextStyle::muted(),
+        ));
         lines
     }
 
@@ -626,8 +874,15 @@ impl Component for MissionCard {
             ));
         }
         lines.push(ComponentLine::new(
-            format!("[enter] {}", self.primary_action),
+            format!("› {}", self.primary_action),
             TextStyle::accent(),
+        ));
+        lines.push(ComponentLine::new(
+            byline_or_empty(
+                ShortcutHint::new("Enter", self.primary_action.as_str())
+                    .and_then(|hint| ShortcutByline::new(vec![hint])),
+            ),
+            TextStyle::muted(),
         ));
         lines
     }
@@ -693,7 +948,10 @@ impl Component for Inspector {
         }
         // Keep the return line short enough for the 37-column inspector.
         lines.push(ComponentLine::new(
-            "[esc] Return to conversation".to_owned(),
+            byline_or_empty(
+                ShortcutHint::new("Esc", "return to conversation")
+                    .and_then(|hint| ShortcutByline::new(vec![hint])),
+            ),
             TextStyle::muted(),
         ));
         lines
@@ -731,7 +989,10 @@ impl Component for DetailView {
                 .map(|line| ComponentLine::new(line, TextStyle::text())),
         );
         lines.push(ComponentLine::new(
-            format!("[esc] Return to {}", self.origin),
+            byline_or_empty(
+                ShortcutHint::new("Esc", format!("return to {}", self.origin))
+                    .and_then(|hint| ShortcutByline::new(vec![hint])),
+            ),
             TextStyle::accent(),
         ));
         lines
@@ -857,15 +1118,29 @@ impl Component for ReviewBlock {
         }
         if self.include_actions {
             lines.push(ComponentLine::new(
-                format!("[enter] {}", self.primary_action),
+                format!("› {}", self.primary_action),
                 TextStyle::accent(),
             ));
             if let Some(secondary) = &self.secondary_action {
                 lines.push(ComponentLine::new(
-                    format!("[d] {secondary}"),
+                    format!("  {secondary}"),
                     TextStyle::muted(),
                 ));
             }
+            let mut hints = Vec::new();
+            if let Ok(hint) = ShortcutHint::new("Enter", self.primary_action.as_str()) {
+                hints.push(hint);
+            }
+            if let Some(secondary) = &self.secondary_action {
+                if let Ok(hint) = ShortcutHint::new("d", format!("for {}", noun_clause(secondary)))
+                {
+                    hints.push(hint);
+                }
+            }
+            lines.push(ComponentLine::new(
+                byline_or_empty(ShortcutByline::new(hints)),
+                TextStyle::muted(),
+            ));
         }
         lines
     }
@@ -881,7 +1156,7 @@ impl Component for ReviewBlock {
 
 /// Compact decision-dock body used by dense offender rework: title, one effect
 /// line optional, one primary, up to two compact secondary/cancel lines.
-/// Avoids restating list-row bodies or dual [enter]/[esc] footnotes.
+/// Avoids restating list-row bodies or dual bracket footnotes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompactActionDock {
     title: String,
@@ -894,6 +1169,9 @@ impl CompactActionDock {
     pub fn new(title: &str, primary: &str) -> Result<Self, String> {
         if title.trim().is_empty() || primary.trim().is_empty() {
             return Err("compact action dock needs a title and primary action".to_owned());
+        }
+        if contains_bracket_key_atom(primary) {
+            return Err("compact action dock primary may not use bracket key atoms".to_owned());
         }
         Ok(Self {
             title: title.to_owned(),
@@ -912,6 +1190,9 @@ impl CompactActionDock {
         if self.secondary_lines.len() >= 3 {
             return Err("compact action dock allows at most three secondary lines".to_owned());
         }
+        if contains_bracket_key_atom(line) {
+            return Err("compact action dock secondary may not use bracket key atoms".to_owned());
+        }
         self.secondary_lines.push(line.to_owned());
         Ok(self)
     }
@@ -922,12 +1203,16 @@ impl CompactActionDock {
             lines.push(ComponentLine::new(summary.clone(), TextStyle::muted()));
         }
         lines.push(ComponentLine::new(
-            format!("› [enter] {}", self.primary),
+            format!("› {}", self.primary),
             TextStyle::accent(),
         ));
         for line in &self.secondary_lines {
             lines.push(ComponentLine::new(line.clone(), TextStyle::muted()));
         }
+        lines.push(ComponentLine::new(
+            byline_or_empty(ShortcutByline::enter_esc(self.primary.as_str(), "cancel")),
+            TextStyle::muted(),
+        ));
         lines
     }
 }
@@ -956,12 +1241,31 @@ pub fn validate_component(component: &impl Component) -> Result<(), String> {
     if anatomy.accent_uses > ACCENT_USE_BUDGET {
         return Err("a component exceeds the accent-use budget".to_owned());
     }
-    if component
-        .lines()
-        .iter()
-        .any(|line| line.text.contains("ctx "))
-    {
-        return Err("components may not add statusline context usage".to_owned());
+    for line in component.lines() {
+        if line.text.contains("ctx ") {
+            return Err("components may not add statusline context usage".to_owned());
+        }
+        if contains_bracket_key_atom(&line.text) {
+            return Err(format!(
+                "components may not emit bracket key atoms: {}",
+                line.text
+            ));
+        }
+        if is_journey_breadcrumb_title(&line.text) {
+            return Err(format!(
+                "components may not paint journey breadcrumb titles: {}",
+                line.text
+            ));
+        }
+        if reject_composer_debug_meta(&line.text).is_err()
+            && (line.text.to_ascii_lowercase().contains("cursor at character")
+                || line.text.to_ascii_lowercase().contains("wraps visually"))
+        {
+            return Err(format!(
+                "components may not emit composer debug meta: {}",
+                line.text
+            ));
+        }
     }
     Ok(())
 }

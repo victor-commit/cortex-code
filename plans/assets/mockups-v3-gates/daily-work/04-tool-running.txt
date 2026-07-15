@@ -13,7 +13,7 @@
     ✓ Checked session rules · Complete · 0.2s · found the shared guard                                                  
                                                                                                                         
                                                                                                                         
-    ● Search project code · Running · 4s elapsed · 128 of 400 files · 3 matches so far · [s] Stop search                
+    ● Search project code · Running · 4s elapsed · 128 of 400 files · 3 matches so far · Esc to stop search             
                                                                                                                         
                                                                                                                         
                                                                                                                         

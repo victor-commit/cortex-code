@@ -277,7 +277,15 @@ fn streaming_has_one_compact_live_owner_and_one_local_stop() {
         0,
         "streaming must not duplicate the compact live row with prose status"
     );
-    assert_eq!(text.matches("Stop reply").count(), 1);
+    assert_eq!(
+        text.matches("Esc to stop reply").count(),
+        1,
+        "live interrupt must use a single local prose byline, not a bracket chord"
+    );
+    assert!(
+        !text.contains("[s]"),
+        "shared activity chrome must not paint bracket stop atoms"
+    );
 }
 
 #[test]

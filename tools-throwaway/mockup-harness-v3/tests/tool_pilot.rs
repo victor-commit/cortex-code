@@ -20,7 +20,14 @@ fn running_tool_is_one_compact_progress_row_with_local_stop_and_one_live_owner()
     assert!(progress_row.contains("128 of 400 files"));
     assert!(progress_row.contains("3 matches so far"));
     assert!(progress_row.contains("4s elapsed"));
-    assert!(progress_row.contains("[s] Stop search"));
+    assert!(
+        progress_row.contains("Esc to stop search"),
+        "interrupt must be a local prose byline, not a bracket key atom"
+    );
+    assert!(
+        !progress_row.contains("[s]"),
+        "running tool row must not emit bracket stop chords"
+    );
     assert_eq!(
         text.lines()
             .filter(|line| line.contains("Search project code"))

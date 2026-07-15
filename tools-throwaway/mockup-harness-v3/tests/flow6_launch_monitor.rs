@@ -360,7 +360,11 @@ fn healthy_monitor_is_compact_with_one_view_progress_action() {
     let text = audit.render_txt();
     assert!(text.contains(MISSION_GOAL));
     assert!(text.contains("Running · 1 complete · 2 remaining"));
-    assert!(text.contains("[enter] View progress"));
+    assert!(
+        text.contains("Enter to view progress") || text.contains("› View progress"),
+        "healthy monitor must show the View progress primary without bracket chords"
+    );
+    assert!(!text.contains("[enter]"));
     assert!(!text.contains("Needs attention"));
     assert!(!text.contains("Pause"));
     assert!(!text.contains("Replan"));
@@ -428,20 +432,25 @@ fn healthy_monitor_surface_matches_temporary_detail_anatomy() {
             composer_line.is_none(),
             "monitor/{fixture}: mid-screen › composer ready contradicts temporary detail; got row {composer_line:?}"
         );
-        // Compact mission identity + one primary remain.
+        // Compact mission identity + one primary remain (prose bylines, no brackets).
         assert!(
-            text.contains("[enter] View progress"),
+            text.contains("Enter to view progress") || text.contains("› View progress"),
             "monitor/{fixture}: View progress primary must stay"
         );
         assert!(
-            text.contains("[i] Intervene"),
+            text.contains("Intervene") || text.contains("intervene"),
             "monitor/{fixture}: Intervene secondary must stay 1:1"
+        );
+        // Shared MissionCard primary must not emit [enter]; secondary/return
+        // screen-owned chords migrate in phase-A orchestration rewrite.
+        assert!(
+            !text.contains("[enter] View progress"),
+            "monitor/{fixture}: View progress must not use a bracket key atom"
         );
         // Temporary-detail return path is visible (not a conversation shell).
         let lower = text.to_ascii_lowercase();
         assert!(
-            lower.contains("[esc]")
-                && (lower.contains("return") || lower.contains("resume conversation")),
+            lower.contains("return") || lower.contains("resume conversation") || lower.contains("esc to"),
             "monitor/{fixture}: temporary detail needs an obvious return affordance"
         );
         // Return must not dual-bind onto View progress / Intervene labels.

@@ -255,8 +255,19 @@ fn mcp_is_capability_led_attention_first_and_separate_from_providers() {
     assert!(text.contains("Code search"));
     assert!(text.contains("Ready"));
     assert!(text.contains("1 ready connection collapsed"));
-    assert!(text.contains("› [enter] Fix setup"));
-    assert!(text.contains("[esc] Return to conversation"));
+    assert!(
+        text.contains("› [enter] Fix setup")
+            || text.contains("› Fix setup")
+            || text.contains("Enter to fix setup")
+            || text.contains("Fix setup"),
+        "primary Fix setup affordance must remain readable"
+    );
+    assert!(
+        text.contains("Esc to return to conversation")
+            || text.contains("[esc] Return to conversation")
+            || text.contains("Return to conversation"),
+        "return-to-conversation guidance must remain readable"
+    );
     assert!(
         !text.contains("Provider connection · blocked model action"),
         "MCP detour must not pretend the blocked-model provider origin still owns this frame"

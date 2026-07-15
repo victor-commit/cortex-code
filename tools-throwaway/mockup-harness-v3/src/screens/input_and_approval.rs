@@ -15,6 +15,7 @@ use crate::{
         SemanticEvent, TransitionTrace,
     },
     chrome::{
+        components::composer_header_meta,
         layout::{
             ScreenComposition, StatusLine, ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP, CANVAS_ROWS,
         },
@@ -2359,13 +2360,15 @@ fn render_multiline_composer(
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Draft · 3 authored lines · wraps visually · [@] Mention a file",
+        &composer_header_meta(3)?,
         TextStyle::bright(),
     )?;
+    // Cursor remains available as semantic evidence (subject draft-offset-N) but
+    // is no longer painted as implementation HUD text inside the composer jewel.
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        &format!("› Check the retry path in {file_reference}| cursor at character {cursor_offset}"),
+        &format!("› Check the retry path in {file_reference}█"),
         TextStyle::text(),
     )?;
     dock_line(
@@ -2377,7 +2380,7 @@ fn render_multiline_composer(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "    wrap: include a concise test plan with the visible recovery behavior.",
+        "    include a concise test plan with the visible recovery behavior.",
         TextStyle::muted(),
     )?;
     dock_line(
