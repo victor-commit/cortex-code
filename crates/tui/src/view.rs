@@ -1094,6 +1094,7 @@ const HELP_SECTIONS: [HelpSection; 4] = [
             ("@path", "add file to ctx"),
             ("!cmd", "run shell"),
             ("/init", "write AGENTS.md"),
+            ("^K/^N", "prev/next message"),
             ("^R", "resume"),
             ("^C", "cancel turn"),
             ("?", "this help"),
@@ -1859,10 +1860,18 @@ mod tests {
         for cmd in [
             "/new", "/sessions", "/fork", "/rename", "/compact", "/export", "/models", "/agents",
             "/variant", "/subagents", "/skills", "/status", "/timeline", "/diff", "/queue", "/mcp",
-            "/review", "/init",
+            "/review", "/init", "^K/^N",
         ] {
             assert!(text.contains(cmd), "help lists the real builtin {cmd}:\n{text}");
         }
+        assert!(
+            text.contains("prev/next message"),
+            "help documents Ctrl+K/Ctrl+N message navigation:\n{text}"
+        );
+        assert!(
+            !text.contains("Alt+Up") && !text.contains("Alt+Down"),
+            "message-nav help must not document unreliable Alt+arrow bindings:\n{text}"
+        );
         // The key column is AMBER (secondary) and the description column is DIM.
         assert_eq!(cell_fg(&buf, "/new"), Some(theme.secondary), "key AMBER");
         assert_eq!(cell_fg(&buf, "fresh session"), Some(theme.text_dim), "desc DIM");
