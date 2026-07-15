@@ -405,7 +405,13 @@ fn render_model_picker(
     let blocked = fixture_id.contains("blocked");
     let onboarding_chapter = is_onboarding_origin(fixture_id);
     if onboarding_chapter {
-        canvas.write(3, 4, FLOW3_ONBOARDING_ORIGIN, TextStyle::muted())?;
+        // Paint human subject only; audit identity keeps journey origin.
+        canvas.write(
+            3,
+            4,
+            subject_title_for_origin(FLOW3_ONBOARDING_ORIGIN),
+            TextStyle::muted(),
+        )?;
         canvas.write(
             4,
             4,
@@ -1010,7 +1016,12 @@ fn render_agent_picker(
         "Autonomous changes"
     };
     if gate_origin {
-        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        canvas.write(
+            3,
+            4,
+            subject_title_for_origin(FLOW3_CURRENT_ORIGIN),
+            TextStyle::muted(),
+        )?;
         canvas.write(
             4,
             4,

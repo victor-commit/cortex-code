@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · Light · temporary preview of the daylight palette                                                     │  
   │ Preview is temporary until Apply; Cancel restores Dark exactly.                                                  │  
-  │ › [enter] Apply theme · [esc] Cancel · restores previous theme                                                   │  
-  │ [↑↓] Preview · only the focused theme is temporary                                                               │  
+  │ › Apply theme · Esc to Cancel · restores previous theme                                                          │  
+  │ ↑↓ to Preview · only the focused theme is temporary                                                              │  
   │ No filter · four themes fit on one screen                                                                        │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

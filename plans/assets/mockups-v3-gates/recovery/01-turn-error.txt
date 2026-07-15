@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                                                                      
+    Recovery                                                                                                            
     Finish the release notes without losing the current work.                                                           
                                                                                                                         
     You · Summarize the remaining release notes and the still-open risks.                                               
@@ -32,9 +32,9 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Recover the interrupted turn                                                                                     │  
   │ Pick whether to replace or keep the partial reply.                                                               │  
-  │ › [enter] Retry reply                                                                                            │  
-  │   [c] Continue from partial reply                                                                                │  
-  │   [esc] Cancel · keep failure record                                                                             │  
+  │ › Retry reply                                                                                                    │  
+  │  c for Continue from partial reply                                                                               │  
+  │  Esc to Cancel · keep failure record                                                                             │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

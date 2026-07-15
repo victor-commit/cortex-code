@@ -33,6 +33,9 @@ const PHASE_A_IDS: &[&str] = &[
     "permission-shell",
     "permission-file-edit",
     "permission-deny-reason",
+    "model-picker",
+    "agent-picker",
+    "session-picker",
 ];
 
 fn fixture_for(screen_id: &str) -> &'static str {
@@ -45,6 +48,9 @@ fn fixture_for(screen_id: &str) -> &'static str {
         "diff-edit" => "flow2.input-and-approval.stable",
         "composer-multiline" | "file-mention" | "slash-menu" => "flow2.input-and-approval.stable",
         "blocked-command" | "tool-failed" => "public-audit",
+        "model-picker" => "flow3-model-picker",
+        "agent-picker" => "flow3-agent-picker",
+        "session-picker" => "flow3-session-picker",
         _ => "public-audit",
     }
 }

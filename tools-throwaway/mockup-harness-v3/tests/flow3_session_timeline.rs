@@ -17,9 +17,12 @@ fn session_rows_and_preview_identify_readable_resume_destinations() {
     assert!(text.contains("Latest stable work") || text.contains("saved draft ready"));
     assert!(text.contains("Tests pass; review is ready"));
     assert!(text.contains("saved draft") || text.contains("Your saved draft"));
-    assert!(text.contains("[enter] Resume latest"));
-    assert!(text.contains("[t] View timeline"));
-    assert!(text.contains("[f] Fork instead"));
+    assert!(text.contains("Resume latest"));
+    assert!(!text.contains("[enter]"));
+    assert!(text.contains("view timeline") || text.contains("View timeline"));
+    assert!(!text.contains("[t]"));
+    assert!(text.contains("fork") || text.contains("Fork"));
+    assert!(!text.contains("[f]"));
     for forbidden in ["session.", "session_", "database key", "transcript store"] {
         assert!(
             !text.contains(forbidden),
@@ -59,7 +62,7 @@ fn session_empty_and_no_match_states_recover_locally() {
         .expect("no-session fixture must render");
     let no_sessions_text = no_sessions.render_txt();
     assert!(no_sessions_text.contains("No saved conversations yet"));
-    assert!(no_sessions_text.contains("[enter] Start a conversation"));
+    assert!(no_sessions_text.contains("Start a conversation")); assert!(!no_sessions_text.contains("[enter]"));
     assert!(!no_sessions_text.contains("Clear filter"));
 
     let no_matches = audit_screen("session-picker", "case.session-no-matches.tick.1")
@@ -67,7 +70,7 @@ fn session_empty_and_no_match_states_recover_locally() {
     let no_matches_text = no_matches.render_txt();
     assert!(no_matches_text.contains("Filter · billing"));
     assert!(no_matches_text.contains("No conversations match"));
-    assert!(no_matches_text.contains("[enter] Clear filter"));
+    assert!(no_matches_text.contains("Clear filter")); assert!(!no_matches_text.contains("[enter]"));
     assert!(!no_matches_text.contains("Start a conversation"));
 
     for audit in [&no_sessions, &no_matches] {
@@ -97,9 +100,12 @@ fn timeline_is_chronological_focused_and_reversible() {
     let current = text.find("Current · Review ready").unwrap();
     assert!(opened < edited && edited < tested && tested < current);
     assert!(text.contains("Fork available"));
-    assert!(text.contains("[enter] Resume latest"));
-    assert!(text.contains("[f] Fork from selected point"));
-    assert!(text.contains("[esc] Back to session preview"));
+    assert!(text.contains("Resume latest"));
+    assert!(!text.contains("[enter]"));
+    assert!(text.contains("fork") || text.contains("Fork"));
+    assert!(!text.contains("[f]"));
+    assert!(text.contains("back to session preview") || text.contains("Back to session preview"));
+    assert!(!text.contains("[esc]"));
     assert!(!text.contains("event_type"));
     assert!(!text.contains("payload"));
 

@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Work configuration · current conversation                                                                           
+    Work configuration                                                                                                  
     Choose how Code should work for this conversation.                                                                  
                                                                                                                         
                                                                                                                         
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Pending selection · Autonomous changes                                                                           │  
   │ Changes access; review the concrete project scope before applying.                                               │  
-  │ › [enter] Review access change · [esc] Cancel                                                                    │  
-  │ [↑↓] Choose · each row explains how Code will work                                                               │  
+  │ › Review access change · Esc to Cancel                                                                           │  
+  │ ↑↓ to Choose · each row explains how Code will work                                                              │  
   │ No filter · three work-style choices fit on one screen                                                           │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

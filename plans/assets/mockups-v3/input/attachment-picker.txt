@@ -30,7 +30,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Attach file · project-relative paths · query:  · 5 matching · [enter] Attach · [esc] Cancel                      │  
+  │ Attach file · project-relative paths · query:  · 5 matching · Enter to attach · Esc to cancel                    │  
   │ Attaches one project file to this draft · png, jpg, pdf, svg                                                     │  
   │ › assets/retry-diagram.png · png · 48.2k · eligible                                                              │  
   │   docs/retry-overview.pdf · pdf · 120.4k · eligible                                                              │  

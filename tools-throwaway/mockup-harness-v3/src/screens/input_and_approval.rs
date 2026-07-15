@@ -3809,7 +3809,8 @@ fn render_queue_manager(
     let controls = if conflict {
         "Enter to refresh queue · discards stale pending edits · never resurrects consumed items"
     } else {
-        "r reorder · x remove · n run next · selected payload moves as one unit"
+        // Prose byline SYM needles must match the RenderRef bind list below 1:1.
+        "r to reorder · x to remove · n to run next · selected payload moves as one unit"
     };
     debug_assert!(
         controls.chars().count() <= 113,

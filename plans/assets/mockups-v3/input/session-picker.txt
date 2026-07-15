@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Work configuration · current conversation                                                                           
+    Work configuration                                                                                                  
     Resume a conversation or inspect its history.                                                                       
                                                                                                                         
     Resume a conversation                                                                                               
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Resume · Retry policy review                                                                                     │  
   │ Latest stable work · saved draft ready                                                                           │  
-  │ › [enter] Resume latest · [t] View timeline                                                                      │  
-  │ [f] Fork instead · [esc] Back · [↑↓] Choose                                                                      │  
+  │ › Resume latest · t to view timeline                                                                             │  
+  │ f to fork · Esc to back · ↑↓ to choose                                                                           │  
   │                                                                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

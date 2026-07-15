@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                                                                      
+    Recovery                                                                                                            
     Finish the release notes without losing the current work.                                                           
                                                                                                                         
     You · Summarize the remaining release notes and the still-open risks.                                               
@@ -33,7 +33,7 @@
   │ Automatic network wait                                                                                           │  
   │ One bounded backoff timer owns the next attempt.                                                                 │  
   │   Waiting · no primary action while the timer runs                                                               │  
-  │   [esc] Cancel                                                                                                   │  
+  │  Esc to Cancel                                                                                                   │  
   │ Cancel stops future attempts and keeps this origin.                                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

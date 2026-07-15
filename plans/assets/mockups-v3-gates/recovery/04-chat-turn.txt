@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                                                                      
+    Recovery                                                                                                            
     Finish the release notes without losing the current work.                                                           
                                                                                                                         
     You · Summarize the remaining release notes and the still-open risks.                                               
@@ -34,7 +34,7 @@
   │ › Reply to Code                                                                                                     
       Keep the risk note short before we publish.                                                                       
       [u] Undo last checkpoint                                                                                          
-    [enter] Send reply                                                                                                  
+    Enter to send                                                                                                       
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

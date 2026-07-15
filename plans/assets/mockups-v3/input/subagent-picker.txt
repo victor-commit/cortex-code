@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · Explore auth boundaries · this task only                                                              │  
   │ Delegation stays task-local; your session work style is unchanged.                                               │  
-  │ › [enter] Use this helper · [esc] Cancel                                                                         │  
-  │ [↑↓] Choose · outcome describes fit for the current task                                                         │  
+  │ › Use this helper · Esc to Cancel                                                                                │  
+  │ ↑↓ to Choose · outcome describes fit for the current task                                                        │  
   │ No filter · three task helpers fit on one screen                                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

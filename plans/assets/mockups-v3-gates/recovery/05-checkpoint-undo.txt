@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                                                                      
+    Recovery                                                                                                            
     Finish the release notes without losing the current work.                                                           
                                                                                                                         
     You · Summarize the remaining release notes and the still-open risks.                                               
@@ -32,9 +32,9 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Checkpoint restore                                                                                               │  
   │ Redo reapplies the same checkpoint file set.                                                                     │  
-  │ › [enter] Redo change                                                                                            │  
-  │   [c] Continue in conversation                                                                                   │  
-  │   [esc] Back · keep restoration                                                                                  │  
+  │ › Redo change                                                                                                    │  
+  │  c for Continue in conversation                                                                                  │  
+  │  Esc to Back · keep restoration                                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

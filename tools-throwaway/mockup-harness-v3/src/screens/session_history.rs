@@ -11,6 +11,7 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
+        components::subject_title_for_origin,
         layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
@@ -88,7 +89,13 @@ fn render_session_picker(
     let docs_selected = fixture_id.contains("selected-docs");
     let selected_index = usize::from(docs_selected);
     if gate_origin {
-        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        // Paint human subject only; audit visible_origin keeps journey identity.
+        canvas.write(
+            3,
+            4,
+            subject_title_for_origin(FLOW3_CURRENT_ORIGIN),
+            TextStyle::muted(),
+        )?;
         canvas.write(4, 4, FLOW3_RESUME_TASK, TextStyle::bright())?;
     } else {
         canvas.write(
@@ -161,16 +168,17 @@ fn render_session_picker(
         },
         TextStyle::muted(),
     )?;
+    // Claude prose bylines: never bracket key atoms (N-11 / F-8).
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Resume latest · [t] View timeline",
+        "› Resume latest · t to view timeline",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[f] Fork instead · [esc] Back · [↑↓] Choose",
+        "f to fork · Esc to back · ↑↓ to choose",
         TextStyle::muted(),
     )?;
     dock_line(canvas, DOCK_TOP + 5, "", TextStyle::muted())?;
@@ -405,13 +413,13 @@ fn render_no_sessions(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Start a conversation",
+        "› Start a conversation",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[esc] Back · your draft and reading position stay unchanged",
+        "Esc to back · your draft and reading position stay unchanged",
         TextStyle::muted(),
     )?;
     dock_line(canvas, DOCK_TOP + 5, "", TextStyle::muted())?;
@@ -538,13 +546,13 @@ fn render_no_matches(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Clear filter",
+        "› Clear filter",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[esc] Back · keep the filter and return to the conversation",
+        "Esc to back · keep the filter and return to the conversation",
         TextStyle::muted(),
     )?;
     dock_line(canvas, DOCK_TOP + 5, "", TextStyle::muted())?;
@@ -645,7 +653,12 @@ fn render_timeline(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     if is_gate_fixture(fixture_id) {
-        canvas.write(2, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        canvas.write(
+            2,
+            4,
+            subject_title_for_origin(FLOW3_CURRENT_ORIGIN),
+            TextStyle::muted(),
+        )?;
         canvas.write(
             4,
             4,
@@ -720,11 +733,11 @@ fn render_timeline(
         "Historical points fork into a copy. Only the latest state can resume directly.",
         TextStyle::muted(),
     )?;
-    canvas.write(35, 4, "› [enter] Resume latest", TextStyle::accent())?;
+    canvas.write(35, 4, "› Resume latest", TextStyle::accent())?;
     canvas.write(
         36,
         4,
-        "[f] Fork from selected point · [esc] Back to session preview · [↑↓] Choose point",
+        "f to fork · Esc to back to session preview · ↑↓ to choose point",
         TextStyle::muted(),
     )?;
 
@@ -878,7 +891,12 @@ fn render_fork_picker(
 ) -> Result<ScreenEvidence, String> {
     let gate_origin = is_gate_fixture(fixture_id);
     if gate_origin {
-        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        canvas.write(
+            3,
+            4,
+            subject_title_for_origin(FLOW3_CURRENT_ORIGIN),
+            TextStyle::muted(),
+        )?;
         canvas.write(4, 4, FLOW3_RESUME_TASK, TextStyle::bright())?;
     } else {
         canvas.write(
@@ -957,7 +975,7 @@ fn render_fork_picker(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Fork · [esc] Cancel",
+        "› Fork · Esc to cancel",
         TextStyle::accent(),
     )?;
     dock_line(

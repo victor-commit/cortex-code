@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Work configuration · onboarding                                                                                     
+    First-run setup                                                                                                     
     Your first conversation is waiting for this choice.                                                                 
                                                                                                                         
                                                                                                                         
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · Claude Opus 4.8                                                                                       │  
   │ Switching applies this choice: deeper reasoning for the next reply only.                                         │  
-  │ › [enter] Apply model · [esc] Cancel                                                                             │  
-  │ [↑↓] Choose · [f] Filter models · current choice stays unchanged until Apply                                     │  
+  │ › Apply model · Esc to Cancel                                                                                    │  
+  │ ↑↓ to Choose · f for Filter models · current choice stays unchanged until Apply                                  │  
   │ Only the selected model's pending change is explained here.                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

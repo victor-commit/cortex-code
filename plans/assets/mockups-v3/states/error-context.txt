@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                                                                      
+    Recovery                                                                                                            
     Finish the release notes without losing the current work.                                                           
                                                                                                                         
     You · Summarize the remaining release notes and the still-open risks.                                               
@@ -18,7 +18,7 @@
     Transcript, draft, pending task, and completed edits stay readable.                                                 
     Draft kept · Keep the risk note short before we publish.                                                            
                                                                                                                         
-    › Evidence  [enter] Expand technical details                                                                        
+    › Evidence Enter to Expand technical details                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Recover from full context                                                                                        │  
   │ A summary replaces older visible context. Full history stays preserved.                                          │  
-  │ › [enter] Compact and continue                                                                                   │  
-  │   [n] Start new session                                                                                          │  
-  │   [esc] Cancel · keep this conversation paused                                                                   │  
+  │ › Compact and continue                                                                                           │  
+  │  n for Start new session                                                                                         │  
+  │  Esc to Cancel · keep this conversation paused                                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

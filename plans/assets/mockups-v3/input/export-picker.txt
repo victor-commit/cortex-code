@@ -30,7 +30,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Export conversation · Creates one sandboxed file from this conversation · [enter] Export · [esc] Cancel          │  
+  │ Export conversation · Creates one sandboxed file from this conversation · Enter to export · Esc to cancel        │  
   │ › Markdown · readable .md · headings and code [default]                                                          │  
   │   JSON · structured messages (.json) · keeps each turn as data                                                   │  
   │   HTML · styled shareable page (.html) · ready to open in a browser                                              │  

@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Work configuration · current conversation                                                                           
+    Work configuration                                                                                                  
                                                                                                                         
     Retry policy review · Session history · Oldest first                                                                
                                                                                                                         
@@ -33,8 +33,8 @@
     Historical points fork into a copy. Only the latest state can resume directly.                                      
                                                                                                                         
                                                                                                                         
-    › [enter] Resume latest                                                                                             
-    [f] Fork from selected point · [esc] Back to session preview · [↑↓] Choose point                                    
+    › Resume latest                                                                                                     
+    f to fork · Esc to back to session preview · ↑↓ to choose point                                                     
                                                                                                                         
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

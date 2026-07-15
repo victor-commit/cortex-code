@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · Claude Opus 4.8 · 2 of 3 matching                                                                     │  
   │ Switching applies this choice: deeper reasoning for the next reply only.                                         │  
-  │ › [enter] Apply model · [c] Clear filter · [esc] Cancel                                                          │  
-  │ [↑↓] Choose · query stays visible · current choice stays until Apply                                             │  
+  │ › Apply model · c for Clear filter · Esc to Cancel                                                               │  
+  │ ↑↓ to Choose · query stays visible · current choice stays until Apply                                            │  
   │ Nonmatching models stay hidden; relative order of matches is unchanged.                                          │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

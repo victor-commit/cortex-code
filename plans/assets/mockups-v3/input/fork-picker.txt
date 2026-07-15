@@ -32,7 +32,7 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Fork · new session from Today, 09:37                                                                             │  
   │ Source history stays unchanged after confirmation.                                                               │  
-  │ › [enter] Fork · [esc] Cancel                                                                                    │  
+  │ › Fork · Esc to cancel                                                                                           │  
   │ Cancel returns to the exact timeline selection and source preview.                                               │  
   │ No filter · source, checkpoint, and destination are one decision                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  

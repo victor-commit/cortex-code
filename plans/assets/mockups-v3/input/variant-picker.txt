@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · Thorough · keeps Claude Opus 4.8                                                                      │  
   │ Apply changes only the response variant; the base model stays the same.                                          │  
-  │ › [enter] Apply variant · [esc] Cancel                                                                           │  
-  │ [↑↓] Choose · each row explains the practical tradeoff                                                           │  
+  │ › Apply variant · Esc to Cancel                                                                                  │  
+  │ ↑↓ to Choose · each row explains the practical tradeoff                                                          │  
   │ No filter · three response variants fit on one screen                                                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

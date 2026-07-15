@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                                                                      
+    Recovery                                                                                                            
     Finish the release notes without losing the current work.                                                           
                                                                                                                         
     You · Summarize the remaining release notes and the still-open risks.                                               
@@ -33,8 +33,8 @@
   │ Automatic rate-limit wait                                                                                        │  
   │ Code retries once when the safe window ends.                                                                     │  
   │   Waiting · no primary action while the timer runs                                                               │  
-  │   [r] Retry now · optional                                                                                       │  
-  │   [esc] Cancel · stop automatic wait                                                                             │  
+  │  r for Retry now · optional                                                                                      │  
+  │  Esc to Cancel · stop automatic wait                                                                             │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    
