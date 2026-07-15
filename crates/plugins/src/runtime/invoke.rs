@@ -3016,10 +3016,21 @@ impl PluginRuntimeContext {
             })
             .unwrap_or_else(|| root.to_string_lossy().into_owned());
 
+        // Loopback health-check discovery opens real TCP sockets. Honor CORTEX_NO_NET
+        // before any such probe so `cortex run --command` (and every other load path)
+        // never issues connect() while the kill-switch is engaged. An explicit
+        // CORTEX_SERVER_URL is accepted without a socket probe because resolution is
+        // purely local string validation against the reserved 3200-3299 range.
         let server_url = std::env::var("CORTEX_SERVER_URL")
             .ok()
             .and_then(|raw| normalize_server_url(&raw))
-            .or_else(discover_loopback_server_url);
+            .or_else(|| {
+                if redaction::network_disabled() {
+                    None
+                } else {
+                    discover_loopback_server_url()
+                }
+            });
 
         Self {
             root,
@@ -3058,7 +3069,17 @@ fn normalize_server_url(raw: &str) -> Option<String> {
     }
 }
 
+/// Probe reserved loopback ports for a live cortex serve instance.
+///
+/// Callers must only invoke this when out-of-network is permitted; under
+/// `CORTEX_NO_NET=1` the plugin context resolves `server_url` to `None` instead
+/// of scanning ports (see `PluginRuntimeContext::resolve`).
 fn discover_loopback_server_url() -> Option<String> {
+    // Defense in depth: refuse to open sockets even if a future call site forgets
+    // the pre-check in `PluginRuntimeContext::resolve`.
+    if redaction::network_disabled() {
+        return None;
+    }
     for port in 3200..=3299 {
         if loopback_healthcheck(port) {
             return Some(format!("http://127.0.0.1:{port}"));
@@ -3068,6 +3089,10 @@ fn discover_loopback_server_url() -> Option<String> {
 }
 
 fn loopback_healthcheck(port: u16) -> bool {
+    // Fail closed under the network kill-switch: no connect attempt at all.
+    if redaction::network_disabled() {
+        return false;
+    }
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(10)) {
         Ok(stream) => stream,

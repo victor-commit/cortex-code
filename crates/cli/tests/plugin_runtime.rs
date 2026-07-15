@@ -888,3 +888,152 @@ export default async function plugin() {{
         "CORTEX_PURE=1 must suppress every plugin load side effect"
     );
 }
+
+/// Whether `strace` can trace a child here (it may be absent or `ptrace` may be restricted).
+fn strace_usable() -> bool {
+    let probe = Command::new("strace")
+        .args([
+            "-f",
+            "-e",
+            "trace=connect",
+            env!("CARGO_BIN_EXE_cortex"),
+            "--version",
+        ])
+        .output();
+    match probe {
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            out.status.success() && !stderr.to_lowercase().contains("ptrace")
+        }
+        Err(_) => false,
+    }
+}
+
+fn count_connect(trace: &str) -> usize {
+    trace.matches("connect(").count()
+}
+
+/// `CORTEX_NO_NET=1` must stop plugin session startup from performing loopback TCP
+/// discovery (or any other connect) on the `cortex run --command` branch.
+///
+/// Without the kill-switch, `RuntimeHost`/`PluginRuntimeContext` scans ports
+/// 3200-3299 via real `connect()` health checks even when no serve instance is
+/// listening. That must not happen under the network kill-switch.
+#[test]
+fn cortex_run_command_honors_no_net_before_plugin_loopback_discovery() {
+    if skip_without_runtime() {
+        return;
+    }
+    if !strace_usable() {
+        eprintln!("skipping strace assertion: strace unavailable or ptrace restricted");
+        return;
+    }
+
+    let sandbox = Sandbox::new("command-no-net");
+    let marker = sandbox.project.join("hook-ran");
+    write_plugin(
+        &sandbox.project.join("plugin.mjs"),
+        &format!(
+            r#"
+import {{ writeFile }} from "node:fs/promises";
+
+export default async function plugin() {{
+  return {{
+    "command.execute.before": async () => {{
+      await writeFile("{}", "command-hook");
+    }}
+  }};
+}}
+"#,
+            marker.display()
+        ),
+    );
+    std::fs::write(
+        sandbox.project.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n",
+    )
+    .expect("write config");
+
+    // Positive control: without the kill-switch the host probes loopback ports and
+    // issues real connect() syscalls while loading the configured plugin.
+    let mut open = Command::new("strace");
+    open.args([
+        "-f",
+        "-e",
+        "trace=connect",
+        env!("CARGO_BIN_EXE_cortex"),
+        "run",
+        "--command",
+        "echo",
+        "--command-arg",
+        "open-net",
+    ])
+    .current_dir(&sandbox.project)
+    .env("HOME", &sandbox.home)
+    .env("XDG_CONFIG_HOME", sandbox.home.join(".config"))
+    .env("CORTEX_DATA_DIR", sandbox.home.join(".local/share/cortex"))
+    .env_remove("CORTEX_NO_NET")
+    .env_remove("CORTEX_SERVER_URL")
+    .env_remove("OPENROUTER_API_KEY")
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let open_out = open.output().expect("spawn strace (network enabled)");
+    let open_trace = String::from_utf8_lossy(&open_out.stderr);
+    assert!(
+        count_connect(&open_trace) >= 1,
+        "without CORTEX_NO_NET plugin load must reach real connect() during loopback discovery:\n{open_trace}"
+    );
+
+    let _ = std::fs::remove_file(&marker);
+
+    // Kill-switch path: zero connect(), plugin still loads far enough for hooks.
+    let mut blocked = Command::new("strace");
+    blocked
+        .args([
+            "-f",
+            "-e",
+            "trace=connect",
+            env!("CARGO_BIN_EXE_cortex"),
+            "run",
+            "--command",
+            "echo",
+            "--command-arg",
+            "no-net-proof",
+        ])
+        .current_dir(&sandbox.project)
+        .env("HOME", &sandbox.home)
+        .env("XDG_CONFIG_HOME", sandbox.home.join(".config"))
+        .env("CORTEX_DATA_DIR", sandbox.home.join(".local/share/cortex"))
+        .env("CORTEX_NO_NET", "1")
+        .env_remove("CORTEX_SERVER_URL")
+        .env_remove("OPENROUTER_API_KEY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let blocked_out = blocked.output().expect("spawn strace (no-net)");
+    let blocked_trace = String::from_utf8_lossy(&blocked_out.stderr);
+    let blocked_stdout = String::from_utf8_lossy(&blocked_out.stdout);
+    // strace merges cortex stderr with its own connect trace; the process exits via
+    // cortex, so status is on the outer strace process (same as cortex's exit).
+    assert_eq!(
+        blocked_out.status.code(),
+        Some(0),
+        "local --command with a real plugin must still succeed under CORTEX_NO_NET: stdout={blocked_stdout} stderr={blocked_trace}"
+    );
+    assert_eq!(
+        blocked_stdout.trim(),
+        "no-net-proof",
+        "command echo must still run under the kill-switch"
+    );
+    assert_eq!(
+        count_connect(&blocked_trace),
+        0,
+        "under CORTEX_NO_NET=1 plugin load must issue zero connect() syscalls:\n{blocked_trace}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("hook marker written"),
+        "command-hook",
+        "local plugin must still load and run command.execute.before under NO_NET (discovery skipped, hooks still active)"
+    );
+}

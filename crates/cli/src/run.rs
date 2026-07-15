@@ -900,6 +900,12 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Ex
             return Exit::Config;
         }
     };
+    // Local command execution itself opens no sockets, but plugin session startup
+    // can resolve a loopback serve URL via TCP health checks on ports 3200-3299.
+    // Loading still proceeds under CORTEX_NO_NET so locked packages and offline-
+    // capable local plugins keep working; the host skips socket-opening discovery
+    // inside the plugin runtime when the kill-switch is engaged (aligned with the
+    // prompt path's "no sockets under CORTEX_NO_NET" contract).
     let plugin_state = match PluginState::load_or_disabled_for_surface_with_config(
         &run_config.plugins,
         pure_plugins,
