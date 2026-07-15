@@ -377,8 +377,11 @@ fn default_dark_theme_paints_an_explicit_base_bg_on_every_surface() {
 #[test]
 fn brand_hue_purity_holds_across_surfaces() {
     // Sanctioned status/diff tokens are the ONLY greens/reds permitted app-wide.
-    let sanctioned_green = [style::OKG, style::ADD_FG, style::GREEN];
-    let sanctioned_red = [style::ERR, style::DEL_FG, style::RED];
+    // Diff add/del tokens resolve through ThemeColors so a full theme switch recolors the payload
+    // without free-hand greens/reds outside the active palette.
+    let dark = ThemeColors::dark();
+    let sanctioned_green = [style::OKG, dark.diff_add_fg, style::GREEN, style::ADD_FG];
+    let sanctioned_red = [style::ERR, dark.diff_del_fg, style::RED, style::DEL_FG];
 
     for (name, buf, _) in all_surfaces() {
         for cell in buf.content() {

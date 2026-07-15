@@ -1196,8 +1196,12 @@ fn push_card_diff_rows(
                 break 'outer;
             }
             let (sign, fg, row_bg) = match dline.kind {
-                crate::diff::DiffLineKind::Added => ('+', style::ADD_FG, Some(style::ADD_BG)),
-                crate::diff::DiffLineKind::Removed => ('-', style::DEL_FG, Some(style::DEL_BG)),
+                crate::diff::DiffLineKind::Added => {
+                    ('+', theme.diff_add_fg, Some(theme.diff_add_bg))
+                }
+                crate::diff::DiffLineKind::Removed => {
+                    ('-', theme.diff_del_fg, Some(theme.diff_del_bg))
+                }
                 crate::diff::DiffLineKind::Context | crate::diff::DiffLineKind::Header => {
                     (' ', theme.text_dim, None)
                 }
@@ -1214,7 +1218,10 @@ fn push_card_diff_rows(
             place_segments(
                 &mut cells,
                 origin,
-                &[(lnum, Style::default().fg(style::LNUM).bg(row_bg_color))],
+                &[(
+                    lnum,
+                    Style::default().fg(theme.diff_line_number).bg(row_bg_color),
+                )],
             );
             place_segments(&mut cells, origin + 6, &[(sign.to_string(), row_style)]);
             let code_col = origin + 8;
@@ -3104,8 +3111,12 @@ fn diff_unified_hunk_lines(
                 return lines;
             }
             let (sign, fg, row_bg) = match dline.kind {
-                crate::diff::DiffLineKind::Added => ('+', style::ADD_FG, Some(style::ADD_BG)),
-                crate::diff::DiffLineKind::Removed => ('-', style::DEL_FG, Some(style::DEL_BG)),
+                crate::diff::DiffLineKind::Added => {
+                    ('+', theme.diff_add_fg, Some(theme.diff_add_bg))
+                }
+                crate::diff::DiffLineKind::Removed => {
+                    ('-', theme.diff_del_fg, Some(theme.diff_del_bg))
+                }
                 crate::diff::DiffLineKind::Context | crate::diff::DiffLineKind::Header => {
                     (' ', theme.text_dim, None)
                 }
@@ -3124,7 +3135,10 @@ fn diff_unified_hunk_lines(
             place_segments(
                 &mut cells,
                 origin,
-                &[(lnum, Style::default().fg(style::LNUM).bg(row_bg_color))],
+                &[(
+                    lnum,
+                    Style::default().fg(theme.diff_line_number).bg(row_bg_color),
+                )],
             );
             place_segments(&mut cells, origin + 6, &[(sign.to_string(), row_style)]);
             let code_col = origin + 8;
@@ -3187,8 +3201,12 @@ fn paint_split_half(
     theme: &style::ThemeColors,
 ) {
     let (sign, fg, bg) = match (kind, left) {
-        (crate::diff::DiffLineKind::Removed, true) => ('-', style::DEL_FG, Some(style::DEL_BG)),
-        (crate::diff::DiffLineKind::Added, false) => ('+', style::ADD_FG, Some(style::ADD_BG)),
+        (crate::diff::DiffLineKind::Removed, true) => {
+            ('-', theme.diff_del_fg, Some(theme.diff_del_bg))
+        }
+        (crate::diff::DiffLineKind::Added, false) => {
+            ('+', theme.diff_add_fg, Some(theme.diff_add_bg))
+        }
         (crate::diff::DiffLineKind::Context, _) => (' ', theme.text_dim, None),
         // A deletion has no right side and an addition no left side: leave an empty gutter.
         _ => return,
@@ -5459,8 +5477,16 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("add_me"))
             .expect("added code span");
-        assert_eq!(added_code.style.fg, Some(style::ADD_FG), "addition text ADD_FG");
-        assert_eq!(added_code.style.bg, Some(style::ADD_BG), "addition bg ADD_BG");
+        assert_eq!(
+            added_code.style.fg,
+            Some(theme.diff_add_fg),
+            "addition text uses theme.diff_add_fg"
+        );
+        assert_eq!(
+            added_code.style.bg,
+            Some(theme.diff_add_bg),
+            "addition bg uses theme.diff_add_bg"
+        );
 
         let removed = lines
             .iter()
@@ -5471,8 +5497,16 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("remove_me"))
             .expect("removed code span");
-        assert_eq!(removed_code.style.fg, Some(style::DEL_FG), "deletion text DEL_FG");
-        assert_eq!(removed_code.style.bg, Some(style::DEL_BG), "deletion bg DEL_BG");
+        assert_eq!(
+            removed_code.style.fg,
+            Some(theme.diff_del_fg),
+            "deletion text uses theme.diff_del_fg"
+        );
+        assert_eq!(
+            removed_code.style.bg,
+            Some(theme.diff_del_bg),
+            "deletion bg uses theme.diff_del_bg"
+        );
 
         // Context rows carry no red/green background.
         let context = lines
@@ -5480,15 +5514,23 @@ mod tests {
             .find(|l| plain(l).contains("keep_a"))
             .expect("context row");
         for span in &context.spans {
-            assert_ne!(span.style.bg, Some(style::ADD_BG), "context has no ADD_BG");
-            assert_ne!(span.style.bg, Some(style::DEL_BG), "context has no DEL_BG");
+            assert_ne!(
+                span.style.bg,
+                Some(theme.diff_add_bg),
+                "context has no add-row fill"
+            );
+            assert_ne!(
+                span.style.bg,
+                Some(theme.diff_del_bg),
+                "context has no del-row fill"
+            );
         }
 
         // A hunk row shows a right-justified LNUM line number, and the sign sits at origin+6.
-        let has_lnum = lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .any(|s| s.style.fg == Some(style::LNUM) && s.content.trim().parse::<usize>().is_ok());
+        let has_lnum = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
+            s.style.fg == Some(theme.diff_line_number)
+                && s.content.trim().parse::<usize>().is_ok()
+        });
         assert!(has_lnum, "a hunk row shows a LNUM line number");
         let added_plain = plain(added);
         let sign_char = added_plain.chars().nth(DIFF_HUNK_ORIGIN + 6);
@@ -6697,6 +6739,187 @@ mod tests {
     }
 
     #[test]
+    fn full_surface_recolors_on_every_builtin_theme() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Full-theming polish gate: switching the active theme recolors the whole TUI surface —
+        // not just the status-bar footer. Capture representative cells from transcript, composer,
+        // slash menu, command palette, and the footer for every built-in chrome theme.
+        for theme_name in ["dark", "light", "monokai", "ocean", "vscode"] {
+            let theme = style::ThemeColors::from_name(theme_name);
+
+            // 1) Transcript + home canvas + footer.
+            let mut home = app();
+            home.set_theme(theme_name.to_owned());
+            home.transcript
+                .push(Entry::User("full theming checkpoint".to_owned()));
+            let backend = TestBackend::new(92, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &home)).unwrap();
+            let cells = terminal.backend().buffer().content();
+            assert!(
+                cells.iter().any(|c| c.bg == theme.background),
+                "{theme_name}: transcript/canvas carries theme.background"
+            );
+            assert!(
+                cells.iter().any(|c| c.bg == theme.surface[0]),
+                "{theme_name}: footer carries theme.surface[0]"
+            );
+            if theme_name == "light" {
+                assert_ne!(
+                    theme.background,
+                    style::CANVAS,
+                    "light canvas is not the brand near-black"
+                );
+                assert!(
+                    !cells.iter().any(|c| c.bg == style::CANVAS),
+                    "light theme must not leave any cell on the dark brand canvas"
+                );
+            }
+
+            // 2) Composer / prompt border uses the themed focus accent.
+            let mut composer = app();
+            composer.set_theme(theme_name.to_owned());
+            for ch in "composer check".chars() {
+                composer.on_key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    crossterm::event::KeyModifiers::NONE,
+                ));
+            }
+            let backend = TestBackend::new(92, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| draw(frame, &composer)).unwrap();
+            let cells = terminal.backend().buffer().content();
+            assert!(
+                cells
+                    .iter()
+                    .any(|c| c.fg == theme.border_focus || c.fg == theme.primary),
+                "{theme_name}: composer paints the theme focus/primary accent"
+            );
+            assert!(
+                cells.iter().any(|c| c.bg == theme.background),
+                "{theme_name}: composer/rest of surface stay on the theme canvas"
+            );
+
+            // 3) Slash menu selection bar recolors with surface[3] + primary.
+            let mut slash = app();
+            slash.set_theme(theme_name.to_owned());
+            slash.input.set_value("/");
+            let slash_rows = slash_menu_lines(&slash, 60).expect("slash menu open");
+            assert!(
+                !slash_rows.is_empty(),
+                "{theme_name}: slash menu lists commands"
+            );
+            assert_eq!(
+                slash_rows[0].spans[0].style.bg,
+                Some(theme.surface[3]),
+                "{theme_name}: slash selection fill is theme.surface[3]"
+            );
+            assert_eq!(
+                slash_rows[0].spans[0].style.fg,
+                Some(theme.primary),
+                "{theme_name}: slash selection marker is theme.primary"
+            );
+
+            // 4) Command palette selected row recolors with the same selection tokens.
+            let mut palette = app();
+            palette.set_theme(theme_name.to_owned());
+            palette.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('p'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ));
+            let palette_spec = palette_modal_spec(&palette, &theme);
+            let palette_rows =
+                crate::modal::build_interior_lines(&palette_spec, 58, 6, None, &theme);
+            // rows[0]=search, rows[1]=rule, rows[2]=first (selected) command.
+            assert_eq!(
+                palette_rows[2].spans[0].style.bg,
+                Some(theme.surface[3]),
+                "{theme_name}: palette selection fill is theme.surface[3]"
+            );
+            assert_eq!(
+                palette_rows[2].spans[0].style.fg,
+                Some(theme.primary),
+                "{theme_name}: palette selection marker is theme.primary"
+            );
+
+            // 5) Diff add/del colors resolve through the active palette.
+            let file = crate::diff::compute_file_diff("t.rs", Some("old\n"), Some("new\n"))
+                .expect("file diff");
+            let rendered = file.render_with_theme(&theme);
+            let has_success = rendered.iter().flat_map(|l| l.spans.iter()).any(|s| {
+                s.style.fg == Some(theme.success) || s.style.fg == Some(theme.diff_add_fg)
+            });
+            let has_error = rendered.iter().flat_map(|l| l.spans.iter()).any(|s| {
+                s.style.fg == Some(theme.error) || s.style.fg == Some(theme.diff_del_fg)
+            });
+            assert!(
+                has_success,
+                "{theme_name}: added diff uses a themed success/add color"
+            );
+            assert!(
+                has_error,
+                "{theme_name}: removed diff uses a themed error/del color"
+            );
+        }
+    }
+
+    #[test]
+    fn light_theme_diff_viewer_uses_light_add_del_tokens() {
+        // Tool-card / accordion diffs must pull add/del from ThemeColors so a light conversation
+        // does not keep the dark-theme DEL_BG/ADD_BG fills.
+        let theme = style::ThemeColors::light();
+        let file = crate::diff::compute_file_diff(
+            "t.rs",
+            Some("keep\nremove_me\n"),
+            Some("keep\nadd_me\n"),
+        )
+        .expect("file diff");
+        let viewer = crate::app::DiffViewer {
+            files: vec![file],
+            selected_file: 0,
+            selected_hunk: 0,
+            mode: DiffViewMode::Unified,
+            focus: crate::app::DiffViewerFocus::Files,
+            expanded: vec![true],
+        };
+        let (lines, _) = diff_accordion_lines(&viewer, 80, &theme);
+        let added = lines
+            .iter()
+            .find(|l| plain(l).contains("add_me"))
+            .expect("addition row");
+        let added_code = added
+            .spans
+            .iter()
+            .find(|s| s.content.contains("add_me"))
+            .expect("added code");
+        assert_eq!(added_code.style.fg, Some(theme.diff_add_fg));
+        assert_eq!(added_code.style.bg, Some(theme.diff_add_bg));
+        assert_ne!(
+            added_code.style.bg,
+            Some(style::ADD_BG),
+            "light theme must not keep dark-theme ADD_BG"
+        );
+        let removed = lines
+            .iter()
+            .find(|l| plain(l).contains("remove_me"))
+            .expect("deletion row");
+        let removed_code = removed
+            .spans
+            .iter()
+            .find(|s| s.content.contains("remove_me"))
+            .expect("removed code");
+        assert_eq!(removed_code.style.fg, Some(theme.diff_del_fg));
+        assert_eq!(removed_code.style.bg, Some(theme.diff_del_bg));
+        assert_ne!(
+            removed_code.style.bg,
+            Some(style::DEL_BG),
+            "light theme must not keep dark-theme DEL_BG"
+        );
+    }
+
+    #[test]
     fn slash_palette_and_dialog_rows_use_theme_colors() {
         let mut a = app();
         a.set_theme("monokai".to_owned());
@@ -7887,18 +8110,18 @@ mod tests {
         assert!(text.contains("output"), "output header:\n{text}");
         assert!(text.contains("new_a") && text.contains("new_b"), "additions shown:\n{text}");
         assert!(text.contains("old_a"), "deletion shown:\n{text}");
-        // A row carries a right-justified line number in the LNUM tone.
-        let has_lnum = lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .any(|s| s.style.fg == Some(style::LNUM) && s.content.trim().parse::<usize>().is_ok());
+        // A row carries a right-justified line number in the theme gutter tone.
+        let has_lnum = lines.iter().flat_map(|l| l.spans.iter()).any(|s| {
+            s.style.fg == Some(theme.diff_line_number)
+                && s.content.trim().parse::<usize>().is_ok()
+        });
         assert!(has_lnum, "a diff row shows a LNUM line number:\n{text}");
     }
 
     #[test]
     fn expanded_diff_rows_use_red_and_green_backgrounds() {
-        // The only non-mono-orange coloring is inside the expanded diff payload: deletion rows use
-        // DEL_FG/DEL_BG, addition rows ADD_FG/ADD_BG, context rows carry no diff background.
+        // The only non-brand-accent coloring is inside the expanded diff payload: deletion rows use
+        // theme.diff_del_*, addition rows theme.diff_add_*, context rows carry no diff background.
         let theme = style::ThemeColors::dark();
         let card = diff_card();
         let mut lines = Vec::new();
@@ -7913,8 +8136,16 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("new_a"))
             .expect("added code span");
-        assert_eq!(added_code.style.fg, Some(style::ADD_FG), "addition text ADD_FG");
-        assert_eq!(added_code.style.bg, Some(style::ADD_BG), "addition bg ADD_BG");
+        assert_eq!(
+            added_code.style.fg,
+            Some(theme.diff_add_fg),
+            "addition text uses theme.diff_add_fg"
+        );
+        assert_eq!(
+            added_code.style.bg,
+            Some(theme.diff_add_bg),
+            "addition bg uses theme.diff_add_bg"
+        );
 
         let removed = lines
             .iter()
@@ -7925,8 +8156,16 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("old_a"))
             .expect("removed code span");
-        assert_eq!(removed_code.style.fg, Some(style::DEL_FG), "deletion text DEL_FG");
-        assert_eq!(removed_code.style.bg, Some(style::DEL_BG), "deletion bg DEL_BG");
+        assert_eq!(
+            removed_code.style.fg,
+            Some(theme.diff_del_fg),
+            "deletion text uses theme.diff_del_fg"
+        );
+        assert_eq!(
+            removed_code.style.bg,
+            Some(theme.diff_del_bg),
+            "deletion bg uses theme.diff_del_bg"
+        );
 
         // A context row (e.g. `line1`) has no red/green background.
         let context = lines
@@ -7934,8 +8173,16 @@ mod tests {
             .find(|l| plain(l).contains("line1"))
             .expect("a context row");
         for span in &context.spans {
-            assert_ne!(span.style.bg, Some(style::ADD_BG), "context has no ADD_BG");
-            assert_ne!(span.style.bg, Some(style::DEL_BG), "context has no DEL_BG");
+            assert_ne!(
+                span.style.bg,
+                Some(theme.diff_add_bg),
+                "context has no add-row fill"
+            );
+            assert_ne!(
+                span.style.bg,
+                Some(theme.diff_del_bg),
+                "context has no del-row fill"
+            );
         }
     }
 

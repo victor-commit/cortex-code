@@ -266,6 +266,16 @@ pub struct ThemeColors {
     pub search_hit: Color,
     /// Current search-hit background (distinct from search_hit).
     pub search_hit_current: Color,
+    /// Diff addition text color (the `+` line body / sign).
+    pub diff_add_fg: Color,
+    /// Diff addition row fill, painted full-width behind added lines.
+    pub diff_add_bg: Color,
+    /// Diff deletion text color (the `-` line body / sign).
+    pub diff_del_fg: Color,
+    /// Diff deletion row fill, painted full-width behind removed lines.
+    pub diff_del_bg: Color,
+    /// Diff line-number gutter color.
+    pub diff_line_number: Color,
 }
 
 impl ThemeColors {
@@ -294,6 +304,12 @@ impl ThemeColors {
             soft: SOFT,
             search_hit: HIT,
             search_hit_current: HITCUR,
+            // Brand-dark wave0 tokens: keep the high-contrast green/red pair that reads on near-black.
+            diff_add_fg: ADD_FG,
+            diff_add_bg: ADD_BG,
+            diff_del_fg: DEL_FG,
+            diff_del_bg: DEL_BG,
+            diff_line_number: LNUM,
         }
     }
 
@@ -327,6 +343,12 @@ impl ThemeColors {
             soft: Color::Rgb(240, 238, 232),
             search_hit: Color::Rgb(100, 120, 90),
             search_hit_current: Color::Rgb(0, 150, 100),
+            // Soft green/red row fills so added/removed lines stay legible on a white canvas.
+            diff_add_fg: Color::Rgb(0, 130, 40),
+            diff_add_bg: Color::Rgb(230, 246, 232),
+            diff_del_fg: Color::Rgb(185, 40, 40),
+            diff_del_bg: Color::Rgb(250, 232, 232),
+            diff_line_number: Color::Rgb(150, 150, 150),
         }
     }
 
@@ -360,6 +382,12 @@ impl ThemeColors {
             soft: Color::Rgb(18, 40, 64),
             search_hit: Color::Rgb(30, 60, 90),
             search_hit_current: Color::Rgb(0, 200, 200),
+            // Teal-tinted success / coral delete rows on the navy base.
+            diff_add_fg: Color::Rgb(90, 220, 180),
+            diff_add_bg: Color::Rgb(12, 48, 52),
+            diff_del_fg: Color::Rgb(255, 130, 130),
+            diff_del_bg: Color::Rgb(62, 28, 40),
+            diff_line_number: Color::Rgb(100, 130, 160),
         }
     }
 
@@ -393,6 +421,12 @@ impl ThemeColors {
             soft: Color::Rgb(50, 51, 44),
             search_hit: Color::Rgb(60, 61, 54),
             search_hit_current: Color::Rgb(166, 226, 46),
+            // Monokai classic: lime add / pink delete on a slightly lifted charcoal base.
+            diff_add_fg: Color::Rgb(166, 226, 46),
+            diff_add_bg: Color::Rgb(48, 62, 34),
+            diff_del_fg: Color::Rgb(249, 38, 114),
+            diff_del_bg: Color::Rgb(72, 34, 48),
+            diff_line_number: Color::Rgb(117, 113, 94),
         }
     }
 
@@ -426,6 +460,12 @@ impl ThemeColors {
             soft: Color::Rgb(42, 42, 40),
             search_hit: Color::Rgb(60, 60, 50),
             search_hit_current: Color::Rgb(0, 122, 204),
+            // VS Code Dark+ style gutter greens/reds for unified/split diffs.
+            diff_add_fg: Color::Rgb(137, 209, 133),
+            diff_add_bg: Color::Rgb(32, 48, 34),
+            diff_del_fg: Color::Rgb(244, 71, 71),
+            diff_del_bg: Color::Rgb(56, 32, 32),
+            diff_line_number: Color::Rgb(133, 133, 133),
         }
     }
 
@@ -725,7 +765,10 @@ mod tests {
         assert_eq!(t.ghost, GHOST);
         assert_eq!(t.border, ORANGE_D);
         assert_eq!(t.card_border, BORDER_BRAND);
-        assert_eq!(t.soft, SOFT, "working-band soft surface is the brand SOFT tint");
+        assert_eq!(
+            t.soft, SOFT,
+            "working-band soft surface is the brand SOFT tint"
+        );
         assert_eq!(t.success, OKG);
         assert_eq!(t.error, ERR);
         assert_eq!(t.search_hit, HIT, "search-hit bg is the brand HIT tint");
@@ -737,9 +780,51 @@ mod tests {
             t.search_hit, t.search_hit_current,
             "the current match bg is visibly distinct from other matches"
         );
+        // Wave0 cubic-diff tokens stay reachable via the theme (not free-hand constants alone).
+        assert_eq!(t.diff_add_fg, ADD_FG);
+        assert_eq!(t.diff_add_bg, ADD_BG);
+        assert_eq!(t.diff_del_fg, DEL_FG);
+        assert_eq!(t.diff_del_bg, DEL_BG);
+        assert_eq!(t.diff_line_number, LNUM);
         // `from_name("dark")` and the Default both resolve to the brand palette.
         assert_eq!(ThemeColors::from_name("dark"), t);
         assert_eq!(ThemeColors::default(), t);
+    }
+
+    #[test]
+    fn every_builtin_theme_defines_distinct_diff_roles() {
+        // Semantic add/del/gutter tokens must come from ThemeColors so light and dark themed
+        // diffs recolor without falling back to the brand-dark fixed constants.
+        for theme in [
+            ThemeColors::dark(),
+            ThemeColors::light(),
+            ThemeColors::monokai(),
+            ThemeColors::ocean_dark(),
+            ThemeColors::vscode(),
+        ] {
+            assert_ne!(
+                theme.diff_add_fg, theme.diff_del_fg,
+                "add and del text remain visually distinct"
+            );
+            assert_ne!(
+                theme.diff_add_bg, theme.diff_del_bg,
+                "add and del row fills remain visually distinct"
+            );
+            assert_ne!(
+                theme.diff_add_bg, theme.background,
+                "added rows read as a filled band, not plain canvas"
+            );
+            assert_ne!(
+                theme.diff_del_bg, theme.background,
+                "deleted rows read as a filled band, not plain canvas"
+            );
+        }
+
+        // A light theme must not reuse the near-black brand canvas for its add fill.
+        let light = ThemeColors::light();
+        assert_ne!(light.diff_add_bg, ADD_BG);
+        assert_ne!(light.diff_del_bg, DEL_BG);
+        assert_ne!(light.background, CANVAS);
     }
 
     #[test]
