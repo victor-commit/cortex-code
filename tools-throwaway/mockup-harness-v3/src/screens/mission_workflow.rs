@@ -4398,6 +4398,16 @@ fn render_reviewer_approved(
                 "direct",
                 "request changes opens an anchored reason dock on the same gate",
             ),
+            // Stay is the reversible no-op dismiss: keep the gate open without
+            // finishing the mission. Kind `cancel` records a visible return path
+            // for temporary ActionDock surfaces (VAL-V3-CROSS-002).
+            transition(
+                "action.mission.stay-on-review",
+                screen_id,
+                "reviewer-approved",
+                "cancel",
+                "stay keeps the human approval gate open and changes nothing",
+            ),
         ];
         if score_open {
             transitions.push(transition(
