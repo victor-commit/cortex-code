@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
@@ -24,7 +24,7 @@
                                                                                                                         
     Use pause, replan, or retry from the monitor if the hold is blocking progress.                                      
                                                                                                                         
-    [esc] Return to mission monitor                                                                                     
+    Esc to Return to mission monitor                                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         

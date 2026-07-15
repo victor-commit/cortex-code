@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
@@ -26,7 +26,7 @@
                                                                                                                         
     This detail is advisory and cannot mark the mission complete.                                                       
                                                                                                                         
-    [esc] Return to human completion                                                                                    
+    Esc to Return to human completion                                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         

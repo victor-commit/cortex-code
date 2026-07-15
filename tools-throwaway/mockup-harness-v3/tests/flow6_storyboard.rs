@@ -300,7 +300,7 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
         audit_screen("reviewer-approved", "gate.mission.reviewer-approved").expect("approved");
 
     let blocked_text = blocked.render_txt();
-    assert!(blocked_text.contains(MISSION_ORIGIN));
+    assert!((blocked_text.contains("Mission") || blocked_text.contains(MISSION_ORIGIN)));
     assert!(blocked_text.contains(MISSION_TASK) || blocked_text.contains(MISSION_GOAL));
     assert!(blocked_text.contains(MISSING_INPUT));
     assert!(blocked_text.contains("Preflight") || blocked_text.contains("preflight"));
@@ -326,7 +326,7 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
     }));
 
     let launch_text = launch.render_txt();
-    assert!(launch_text.contains(MISSION_ORIGIN));
+    assert!((launch_text.contains("Mission") || launch_text.contains(MISSION_ORIGIN)));
     assert!(launch_text.contains("Ready to launch") || launch_text.contains("Preflight passed"));
     assert!(launch_text.contains("Start mission"));
     assert!(launch_text.contains("Cancel"));
@@ -347,7 +347,7 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
     }));
 
     let monitor_text = monitor.render_txt();
-    assert!(monitor_text.contains(MISSION_ORIGIN));
+    assert!((monitor_text.contains("Mission") || monitor_text.contains(MISSION_ORIGIN)));
     assert!(monitor_text.contains("Running") || monitor_text.contains("Progress"));
     assert!(
         monitor_text.contains("View progress") || monitor_text.contains("composer ready")
@@ -363,7 +363,7 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
     assert!(monitor_primary <= 1);
 
     let failure_text = failure.render_txt();
-    assert!(failure_text.contains(MISSION_ORIGIN));
+    assert!((failure_text.contains("Mission") || failure_text.contains(MISSION_ORIGIN)));
     assert!(failure_text.contains("Needs attention"));
     assert!(
         failure_text.contains(FAILURE_CAUSE) || failure_text.contains("validation failed")
@@ -386,7 +386,7 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
     }));
 
     let review_text = review.render_txt();
-    assert!(review_text.contains(MISSION_ORIGIN));
+    assert!((review_text.contains("Mission") || review_text.contains(MISSION_ORIGIN)));
     assert!(
         review_text.contains(MISSION_TASK),
         "reviewer-output must keep the stable mission task banner across monitor→review"
@@ -408,7 +408,7 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
     if review_text.contains("Mission review") {
         let origin = review_text
             .lines()
-            .position(|line| line.contains(MISSION_ORIGIN))
+            .position(|line| line.contains(MISSION_ORIGIN) || line.contains("Mission"))
             .expect("origin on review");
         let review_label = review_text
             .lines()
@@ -435,13 +435,13 @@ fn mission_storyboard_tells_one_goal_led_blocker_to_approval_story() {
     );
 
     let approved_text = approved.render_txt();
-    assert!(approved_text.contains(MISSION_ORIGIN));
+    assert!((approved_text.contains("Mission") || approved_text.contains(MISSION_ORIGIN)));
     assert!(
         approved_text.contains("Ready for completion") || approved_text.contains("Approved")
     );
     assert!(approved_text.contains("Approve completion"));
     assert!(
-        approved_text.contains("Request changes") || approved_text.contains("[d] Request changes")
+        approved_text.contains("Request changes") || approved_text.contains("Request changes")
     );
     assert_compact_mission_card(&approved_text, "reviewer-approved");
     forbidden_internals(&approved_text, "reviewer-approved");

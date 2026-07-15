@@ -14,8 +14,16 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{Component, MissionCard, ReviewBlock},
+        components::{
+            subject_title_for_origin, Component, MissionCard, ReviewBlock, ShortcutByline,
+            ShortcutHint,
+        },
         layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
+        mission_control::{
+            CompressedLog, CompressedLogLine, LiveState, MissionLocalKeyStrip, PanelCounter,
+            PanelHeader, SelectionSurface, SelectionSurfaceRow, StatusBand, Zone, ZoneBody,
+            ZonedPanel,
+        },
         tokens::TextStyle,
     },
 };
@@ -310,13 +318,13 @@ fn render_proposal(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Accept plan",
+            "› Accept plan",
             TextStyle::accent(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 4,
-            "  [esc] Keep discussing",
+            "  Keep discussing",
             TextStyle::muted(),
         )?;
         dock_line(
@@ -456,13 +464,13 @@ fn render_proposal(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Accept plan",
+        "› Accept plan",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Keep discussing",
+        "  Keep discussing",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -573,7 +581,8 @@ fn render_preflight_running(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     write_conversation_header(canvas)?;
-    write_mission_summary(canvas, 10, "Preflight", 0, 3, None)?;
+    write_status_band(canvas, 10, LiveState::Running, "Preflight", 0, 3)?;
+    write_mission_summary(canvas, 12, "Preflight", 0, 3, None)?;
     canvas.write(
         14,
         4,
@@ -616,7 +625,7 @@ fn render_preflight_running(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "  [esc] Cancel · return to conversation",
+        "  Cancel · return to conversation",
         TextStyle::muted(),
     )?;
 
@@ -689,57 +698,35 @@ fn render_launch_ready(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     write_conversation_header(canvas)?;
-    write_mission_summary(canvas, 10, "Ready to launch", 0, 3, None)?;
+    write_status_band(canvas, 10, LiveState::Waiting, "Ready to launch", 0, 3)?;
+    write_mission_summary(canvas, 12, "Ready to launch", 0, 3, None)?;
     canvas.write(
-        13,
+        15,
         4,
         "✓ Preflight passed. Detailed checks stay collapsed.",
         TextStyle::text(),
     )?;
     canvas.write(
-        14,
+        16,
         4,
         "No missing inputs. Starting will run the three planned tasks.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        16,
+        18,
         4,
-        "Goal, stage, and counts are the only mission fields on the card.",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "[d] View preflight evidence",
+        "View preflight evidence",
         TextStyle::muted(),
     )?;
 
-    write_dock_border(canvas)?;
-    dock_line(canvas, DOCK_TOP + 1, "Start this mission?", TextStyle::bright())?;
-    dock_line(
+    // F6-059: effect line states consequence; title remains the decision prompt.
+    write_effect_dock(
         canvas,
-        DOCK_TOP + 2,
+        "Start this mission?",
         "Start runs the planned tasks and opens compact progress monitoring.",
-        TextStyle::text(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 3,
-        "› [enter] Start mission",
-        TextStyle::accent(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 4,
-        "  [esc] Cancel · return to conversation",
-        TextStyle::muted(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "Cancel keeps the proposal and starts no work.",
-        TextStyle::muted(),
+        "Start mission",
+        &["Cancel · return to conversation"],
+        Some("Enter to start mission · Esc to cancel · keeps the proposal ready."),
     )?;
 
     let pairs = [
@@ -850,62 +837,40 @@ fn render_workflow_launch_blocked(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     write_conversation_header(canvas)?;
-    write_mission_summary(canvas, 10, "Preflight", 0, 3, Some(MISSING_INPUT))?;
+    write_status_band(canvas, 10, LiveState::NeedsAttention, "Preflight", 0, 3)?;
+    write_mission_summary(canvas, 12, "Preflight", 0, 3, Some(MISSING_INPUT))?;
     canvas.write(
-        14,
+        16,
         4,
         "One missing input is blocking launch readiness.",
         TextStyle::text(),
     )?;
     canvas.write(
-        15,
+        17,
         4,
         "Provide the release checklist note, then preflight reruns automatically.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        16,
+        18,
         4,
         "The launch decision stays unavailable until that automatic rerun passes.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        18,
+        19,
         4,
         "No manual preflight control is offered.",
         TextStyle::muted(),
     )?;
 
-    write_dock_border(canvas)?;
-    dock_line(
+    write_effect_dock(
         canvas,
-        DOCK_TOP + 1,
         "Resolve the missing input",
-        TextStyle::bright(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 2,
-        "Add the release checklist note required by preflight.",
-        TextStyle::text(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 3,
-        "› [enter] Add release checklist",
-        TextStyle::accent(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 4,
-        "  [esc] Cancel · return to conversation",
-        TextStyle::muted(),
-    )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "Launch remains omitted while blocked.",
-        TextStyle::muted(),
+        "Add the release checklist note, then preflight reruns and unlocks launch.",
+        "Add release checklist",
+        &["Cancel · return to conversation"],
+        Some("Enter to add checklist · Esc to cancel · launch stays blocked."),
     )?;
 
     let pairs = [
@@ -1075,7 +1040,7 @@ fn render_workflow_monitor(
             "Later draft is preserved in the originating conversation.",
             TextStyle::muted(),
         )?;
-        canvas.write(20, 4, "[esc] Resume conversation", TextStyle::muted())?;
+        canvas.write(20, 4, "Esc to Resume conversation", TextStyle::muted())?;
 
         let pairs = [
             semantic(
@@ -1213,8 +1178,8 @@ fn render_workflow_monitor(
             canvas.write(19, 4, "Recently completed", TextStyle::bright())?;
             canvas.write(20, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         }
-        canvas.write(22, 4, "[i] Intervene", TextStyle::muted())?;
-        canvas.write(23, 4, "[esc] Resume conversation", TextStyle::muted())?;
+        canvas.write(22, 4, "Intervene", TextStyle::muted())?;
+        canvas.write(23, 4, "Esc to Resume conversation", TextStyle::muted())?;
 
         let pairs = [
             semantic(
@@ -1388,42 +1353,70 @@ fn render_workflow_monitor(
         );
     }
 
+    // F6-058 Mission Control anatomy: live status, counters, zoned body.
+    write_status_band(canvas, 10, LiveState::Running, "Active work", 1, 3)?;
     let card = MissionCard::new(MISSION_GOAL, "Running", 1, 2, None, "View progress");
-    write_component(canvas, 10, 4, &card)?;
-    canvas.write(
-        15,
-        4,
-        "Progress stays calm until you ask for a task summary.",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        16,
-        4,
-        "No blocker. Open progress only when you need the details.",
-        TextStyle::muted(),
-    )?;
-    // Temporary detail keeps later-draft intent as a quiet preservation note,
-    // not a mid-screen conversation-shell composer (VAL-V3-DS-009/010).
-    canvas.write(
-        18,
-        4,
-        "Later draft stays ready in the originating conversation.",
-        TextStyle::muted(),
-    )?;
+    write_component(canvas, 12, 4, &card)?;
+    let zones = ZonedPanel::new(vec![
+        Zone::new(
+            PanelHeader::new("Active work").with_counter(PanelCounter::Fraction {
+                done: 1,
+                total: 3,
+            }),
+            ZoneBody::Lines(vec![
+                "No blocker. Progress stays calm until you ask.".into(),
+                "Later draft stays ready in the originating conversation.".into(),
+            ]),
+        ),
+        Zone::new(
+            PanelHeader::new("Progress log").with_counter(PanelCounter::PageRange {
+                start: 1,
+                end: 3,
+                total: 12,
+            }),
+            ZoneBody::Log(
+                CompressedLog::new(vec![
+                    CompressedLogLine::new("Started safe publish path checks").with_age("2m ago"),
+                    CompressedLogLine::new("Finished release notes review").with_age("8m ago"),
+                    CompressedLogLine::new("Preflight passed · three planned tasks"),
+                ])
+                .without_header(),
+            ),
+        ),
+    ]);
+    write_component(canvas, 18, 4, &zones)?;
     // Secondary intervention entry stays subordinate to View progress (VAL-V3-F6-016).
-    canvas.write(20, 4, "[i] Intervene", TextStyle::muted())?;
-    // Dedicated return control for temporary-detail surface anatomy.
-    canvas.write(21, 4, "[esc] Resume conversation", TextStyle::muted())?;
+    canvas.write(27, 4, "Intervene", TextStyle::muted())?;
+    canvas.write(28, 4, "Resume conversation", TextStyle::muted())?;
     // Advanced runtime/concurrency opens only from a disclosure-safe surface.
     // Approved gate compact frames omit this paint so product digests stay stable;
     // non-gate and runtime-open fixtures paint a distinct 1:1 open control.
     let runtime_open = wants_runtime_open(fixture_id);
     if runtime_open {
         canvas.write(
-            22,
+            29,
             4,
-            "[a] View advanced detail",
+            "View advanced detail",
             TextStyle::muted(),
+        )?;
+        write_mission_byline(
+            canvas,
+            30,
+            vec![
+                ShortcutHint::new("Enter", "view progress")?,
+                ShortcutHint::new("Esc", "resume conversation")?,
+                ShortcutHint::new("i", "intervene")?,
+            ],
+        )?;
+    } else {
+        write_mission_byline(
+            canvas,
+            29,
+            vec![
+                ShortcutHint::new("Enter", "view progress")?,
+                ShortcutHint::new("Esc", "resume conversation")?,
+                ShortcutHint::new("i", "intervene")?,
+            ],
         )?;
     }
 
@@ -1451,7 +1444,7 @@ fn render_workflow_monitor(
             fixture_id,
             "mission-card",
             MISSION_SUBJECT,
-            reference(10, 4, 56),
+            reference(12, 4, 56),
             "summary",
             None,
         ),
@@ -1460,7 +1453,7 @@ fn render_workflow_monitor(
             fixture_id,
             "mission-goal",
             MISSION_SUBJECT,
-            reference(10, 4, 56),
+            reference(12, 4, 56),
             "summary",
             None,
         ),
@@ -1469,7 +1462,7 @@ fn render_workflow_monitor(
             fixture_id,
             "progress-stage",
             "stage.running",
-            reference(11, 4, 36),
+            reference(10, 4, 36),
             "summary",
             None,
         ),
@@ -1478,7 +1471,7 @@ fn render_workflow_monitor(
             fixture_id,
             "primary-action",
             "view-progress",
-            reference(12, 4, 28),
+            reference(14, 4, 28),
             "summary",
             Some(action(
                 "action.mission.view-progress",
@@ -1491,7 +1484,7 @@ fn render_workflow_monitor(
             fixture_id,
             "secondary-action",
             "open-intervene",
-            reference(20, 4, 18),
+            reference(27, 4, 18),
             "summary",
             Some(action(
                 "action.mission.open-intervene",
@@ -1504,7 +1497,7 @@ fn render_workflow_monitor(
             fixture_id,
             "return-action",
             "monitor-return",
-            reference(21, 4, 34),
+            reference(28, 4, 34),
             "summary",
             Some(action(
                 "action.mission.monitor-return",
@@ -1542,7 +1535,7 @@ fn render_workflow_monitor(
             fixture_id,
             "secondary-action",
             "view-runtime-detail",
-            reference(22, 4, 40),
+            reference(29, 4, 40),
             "summary",
             Some(action(
                 "action.mission.view-runtime-detail",
@@ -1612,7 +1605,7 @@ fn render_monitor_lifecycle(
             "Later draft stays ready in the originating conversation.",
             TextStyle::muted(),
         )?;
-        canvas.write(17, 4, "[esc] Resume conversation", TextStyle::muted())?;
+        canvas.write(17, 4, "Esc to Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1635,7 +1628,7 @@ fn render_monitor_lifecycle(
             "Later draft stays ready in the originating conversation.",
             TextStyle::muted(),
         )?;
-        canvas.write(17, 4, "[esc] Resume conversation", TextStyle::muted())?;
+        canvas.write(17, 4, "Esc to Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1664,7 +1657,7 @@ fn render_monitor_lifecycle(
             "Later draft stays ready in the originating conversation.",
             TextStyle::muted(),
         )?;
-        canvas.write(17, 4, "[esc] Resume conversation", TextStyle::muted())?;
+        canvas.write(17, 4, "Esc to Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1696,7 +1689,7 @@ fn render_monitor_lifecycle(
             "Later draft stays ready in the originating conversation.",
             TextStyle::muted(),
         )?;
-        canvas.write(19, 4, "[esc] Resume conversation", TextStyle::muted())?;
+        canvas.write(19, 4, "Esc to Resume conversation", TextStyle::muted())?;
         return lifecycle_passive(
             screen_id,
             fixture_id,
@@ -1730,8 +1723,8 @@ fn render_monitor_lifecycle(
             "Later draft stays ready in the originating conversation.",
             TextStyle::muted(),
         )?;
-        canvas.write(20, 4, "[i] Intervene", TextStyle::muted())?;
-        canvas.write(21, 4, "[esc] Resume conversation", TextStyle::muted())?;
+        canvas.write(20, 4, "Intervene", TextStyle::muted())?;
+        canvas.write(21, 4, "Esc to Resume conversation", TextStyle::muted())?;
         let pairs = [
             semantic(
                 screen_id,
@@ -1796,7 +1789,7 @@ fn render_monitor_lifecycle(
                 fixture_id,
                 "primary-action",
                 "view-progress",
-                reference(12, 4, 28),
+                reference(14, 4, 28),
                 "summary",
                 Some(action(
                     "action.mission.view-progress",
@@ -1809,7 +1802,7 @@ fn render_monitor_lifecycle(
                 fixture_id,
                 "secondary-action",
                 "open-intervene",
-                reference(20, 4, 18),
+                reference(27, 4, 18),
                 "summary",
                 Some(action(
                     "action.mission.open-intervene",
@@ -1822,7 +1815,7 @@ fn render_monitor_lifecycle(
                 fixture_id,
                 "return-action",
                 "monitor-return",
-                reference(21, 4, 34),
+                reference(28, 4, 34),
                 "summary",
                 Some(action(
                     "action.mission.monitor-return",
@@ -1902,7 +1895,7 @@ fn render_monitor_lifecycle(
         canvas.write(
             17,
             4,
-            "No Resume. Only Replan may create a new proposed continuation.",
+            "Continue stays closed. Only Replan may create a new proposed continuation.",
             TextStyle::muted(),
         )?;
         write_dock_border(canvas)?;
@@ -1910,25 +1903,25 @@ fn render_monitor_lifecycle(
         dock_line(
             canvas,
             DOCK_TOP + 2,
-            "Inspect preserved work or return. Restart never resumes stopped work.",
+            "Inspect preserved work or return. Restart does not continue stopped work.",
             TextStyle::text(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Return to conversation",
+            "› Return to conversation",
             TextStyle::accent(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 4,
-            "  [d] Open detail",
+            "  Open detail",
             TextStyle::muted(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 5,
-            "  [r] Replan",
+            "  Replan",
             TextStyle::muted(),
         )?;
         let pairs = [
@@ -2094,19 +2087,19 @@ fn render_monitor_lifecycle(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Stop mission",
+            "› Stop mission",
             TextStyle::accent(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 4,
-            "  [esc] Cancel · keep running",
+            "  Cancel · keep running",
             TextStyle::muted(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 5,
-            "Restart never resumes stopped work automatically.",
+            "Restart does not continue stopped work automatically.",
             TextStyle::muted(),
         )?;
         let pairs = [
@@ -2198,13 +2191,13 @@ fn render_monitor_lifecycle(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Pause mission",
+            "› Pause mission",
             TextStyle::accent(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 4,
-            "  [esc] Cancel · keep running",
+            "  Cancel · keep running",
             TextStyle::muted(),
         )?;
         dock_line(
@@ -2332,11 +2325,11 @@ fn render_monitor_lifecycle(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Resume",
+            "› Resume",
             TextStyle::accent(),
         )?;
-        dock_line(canvas, DOCK_TOP + 4, "  [d] Replan", TextStyle::muted())?;
-        dock_line(canvas, DOCK_TOP + 5, "  [s] Stop", TextStyle::muted())?;
+        dock_line(canvas, DOCK_TOP + 4, "  Replan", TextStyle::muted())?;
+        dock_line(canvas, DOCK_TOP + 5, "  Stop", TextStyle::muted())?;
         let pairs = lifecycle_paused_pairs(screen_id, fixture_id);
         let transitions = vec![
             transition(
@@ -2389,11 +2382,11 @@ fn render_monitor_lifecycle(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Pause",
+        "› Pause",
         TextStyle::accent(),
     )?;
-    dock_line(canvas, DOCK_TOP + 4, "  [d] Replan", TextStyle::muted())?;
-    dock_line(canvas, DOCK_TOP + 5, "  [s] Stop · [esc] Cancel", TextStyle::muted())?;
+    dock_line(canvas, DOCK_TOP + 4, "  Replan", TextStyle::muted())?;
+    dock_line(canvas, DOCK_TOP + 5, "  Stop · Esc to cancel", TextStyle::muted())?;
 
     let pairs = [
         semantic(
@@ -2741,9 +2734,9 @@ fn render_progress_disclosure(
         row += 1;
         canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         row += 2;
-        canvas.write(row, 4, "[esc] Back · restore bounded groups", TextStyle::muted())?;
+        canvas.write(row, 4, "Esc to Back · restore bounded groups", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+        canvas.write(row, 4, "View workers", TextStyle::muted())?;
     } else if bounded {
         // Bound each group and publish exact omitted counts.
         canvas.write(row, 4, "Needs attention", TextStyle::bright())?;
@@ -2756,7 +2749,7 @@ fn render_progress_disclosure(
         canvas.write(
             row,
             4,
-            &format!("  … {needs_omitted} more · [e] Expand Needs attention"),
+            &format!("  … {needs_omitted} more · Expand Needs attention"),
             TextStyle::muted(),
         )?;
         row += 2;
@@ -2792,11 +2785,11 @@ fn render_progress_disclosure(
             TextStyle::muted(),
         )?;
         row += 2;
-        canvas.write(row, 4, "[esc] Collapse progress", TextStyle::muted())?;
+        canvas.write(row, 4, "Esc to Collapse progress", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+        canvas.write(row, 4, "View workers", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "[t] Open team board", TextStyle::muted())?;
+        canvas.write(row, 4, "Open team board", TextStyle::muted())?;
     } else if attention {
         // Exception-first ordered groups with Needs attention non-empty.
         canvas.write(row, 4, "Needs attention", TextStyle::bright())?;
@@ -2813,11 +2806,11 @@ fn render_progress_disclosure(
         row += 1;
         canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         row += 2;
-        canvas.write(row, 4, "[esc] Collapse progress", TextStyle::muted())?;
+        canvas.write(row, 4, "Esc to Collapse progress", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+        canvas.write(row, 4, "View workers", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "[t] Open team board", TextStyle::muted())?;
+        canvas.write(row, 4, "Open team board", TextStyle::muted())?;
     } else {
         // Healthy first disclosure: omit empty Needs attention group (VAL-V3-F6-013).
         canvas.write(row, 4, "Working", TextStyle::bright())?;
@@ -2828,11 +2821,11 @@ fn render_progress_disclosure(
         row += 1;
         canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         row += 2;
-        canvas.write(row, 4, "[esc] Collapse progress", TextStyle::muted())?;
+        canvas.write(row, 4, "Esc to Collapse progress", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "[w] View workers", TextStyle::muted())?;
+        canvas.write(row, 4, "View workers", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "[t] Open team board", TextStyle::muted())?;
+        canvas.write(row, 4, "Open team board", TextStyle::muted())?;
     }
 
     let mut pairs = vec![
@@ -3034,7 +3027,7 @@ fn render_team_board(
     let workers = lower.contains("workers") || lower.contains("worker");
 
     // Stable mission origin remains visible in the temporary detail header.
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
 
@@ -3076,7 +3069,7 @@ fn render_team_board(
             "Contract · acceptance-contract.release.next-step",
             TextStyle::muted(),
         )?;
-        canvas.write(23, 4, "[esc] Return to team board", TextStyle::accent())?;
+        canvas.write(23, 4, "Esc to Return to team board", TextStyle::accent())?;
 
         let pairs = [
             semantic(
@@ -3151,8 +3144,8 @@ fn render_team_board(
         canvas.write(14, 4, &format!("  Task · {TASK_3}"), TextStyle::muted())?;
         canvas.write(16, 4, "✓ Docs lead · recently completed", TextStyle::muted())?;
         canvas.write(17, 4, &format!("  Task · {TASK_1}"), TextStyle::muted())?;
-        canvas.write(20, 4, "[esc] Return to mission monitor", TextStyle::accent())?;
-        canvas.write(21, 4, "[t] Open team board", TextStyle::muted())?;
+        canvas.write(20, 4, "Esc to Return to mission monitor", TextStyle::accent())?;
+        canvas.write(21, 4, "Open team board", TextStyle::muted())?;
 
         let pairs = [
             semantic(
@@ -3255,29 +3248,63 @@ fn render_team_board(
         ));
     }
 
-    // First board level: human task, dependency, owner, readable state (VAL-V3-F6-021).
-    canvas.write(7, 4, "Team board", TextStyle::bright())?;
+    // First board level: Mission Control zoned ownership surface (VAL-V3-F6-021/058).
+    write_status_band(canvas, 7, LiveState::NeedsAttention, "Team board", 1, 3)?;
     canvas.write(
         8,
         4,
         "Shows ownership and assignments for the current mission.",
         TextStyle::muted(),
     )?;
-    canvas.write(10, 4, "Needs attention", TextStyle::bright())?;
-    canvas.write(11, 4, &format!("  ✗ {TASK_3}"), TextStyle::text())?;
-    canvas.write(12, 4, "    Depends on · next-step note and review", TextStyle::muted())?;
-    canvas.write(13, 4, "    Owner · Release reviewer · blocked", TextStyle::text())?;
-    canvas.write(15, 4, "Working", TextStyle::bright())?;
-    canvas.write(16, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
-    canvas.write(17, 4, "    Depends on · release notes review", TextStyle::muted())?;
-    canvas.write(18, 4, "    Owner · Notes specialist · working", TextStyle::text())?;
-    canvas.write(20, 4, "Recently completed", TextStyle::bright())?;
-    canvas.write(21, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
-    canvas.write(22, 4, "    Depends on · none", TextStyle::muted())?;
-    canvas.write(23, 4, "    Owner · Docs lead · complete", TextStyle::muted())?;
-    canvas.write(25, 4, "[d] View advanced detail", TextStyle::muted())?;
-    canvas.write(26, 4, "[w] View workers", TextStyle::muted())?;
-    canvas.write(28, 4, "[esc] Return to mission monitor", TextStyle::accent())?;
+    let board = ZonedPanel::new(vec![
+        Zone::new(
+            PanelHeader::new("Needs attention").with_counter(PanelCounter::Fraction {
+                done: 0,
+                total: 1,
+            }),
+            ZoneBody::Selection(
+                SelectionSurface::new(
+                    vec![SelectionSurfaceRow::new(
+                        format!("{TASK_3} · Release reviewer · blocked"),
+                        Some('✗'),
+                    )],
+                    0,
+                )?
+                .with_selected_detail("Depends on · next-step note and review"),
+            ),
+        ),
+        Zone::new(
+            PanelHeader::new("Working").with_counter(PanelCounter::Fraction {
+                done: 0,
+                total: 1,
+            }),
+            ZoneBody::Lines(vec![
+                format!("● {TASK_2}"),
+                "  Depends on · release notes review".into(),
+                "  Owner · Notes specialist · working".into(),
+            ]),
+        ),
+        Zone::new(
+            PanelHeader::new("Completed").with_counter(PanelCounter::Label("1 preserved".into())),
+            ZoneBody::Lines(vec![
+                format!("✓ {TASK_1}"),
+                "  Owner · Docs lead · complete".into(),
+            ]),
+        ),
+    ]);
+    write_component(canvas, 10, 4, &board)?;
+    canvas.write(26, 4, "View advanced detail", TextStyle::muted())?;
+    canvas.write(27, 4, "View workers", TextStyle::muted())?;
+    canvas.write(28, 4, "Return to mission monitor", TextStyle::accent())?;
+    write_mission_byline(
+        canvas,
+        29,
+        vec![
+            ShortcutHint::new("Esc", "return")?,
+            ShortcutHint::new("d", "view advanced detail")?,
+            ShortcutHint::new("w", "view workers")?,
+        ],
+    )?;
 
     let pairs = [
         semantic(
@@ -3434,47 +3461,40 @@ fn render_workflow_monitor_failure(
         FAILURE_CAUSE
     };
 
-    // Compact card fields only; primary action lives in the dock.
+    // F6-058 Mission Control failure anatomy: live needs-attention band + zones.
+    write_status_band(canvas, 10, LiveState::NeedsAttention, "Needs attention", 1, 3)?;
     write_mission_summary(
         canvas,
-        10,
+        12,
         "Needs attention",
         1,
         2,
         Some(cause),
     )?;
+    let selection = SelectionSurface::new(
+        vec![
+            SelectionSurfaceRow::new(TASK_3, Some('✗')),
+            SelectionSurfaceRow::new(TASK_1, Some('✓')),
+        ],
+        0,
+    )?
+    .with_selected_detail(cause);
+    let zones = ZonedPanel::new(vec![
+        Zone::new(
+            PanelHeader::new("Needs attention").with_counter(PanelCounter::Fraction {
+                done: 1,
+                total: 3,
+            }),
+            ZoneBody::Selection(selection),
+        ),
+        Zone::new(
+            PanelHeader::new("Completed").with_counter(PanelCounter::Label("1 preserved".into())),
+            ZoneBody::Lines(vec![format!("✓ {TASK_1}")]),
+        ),
+    ]);
+    write_component(canvas, 16, 4, &zones)?;
     canvas.write(
-        14,
-        4,
-        "Needs attention",
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        15,
-        4,
-        &format!("  ✗ {TASK_3}"),
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        16,
-        4,
-        &format!("    {cause}"),
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        18,
-        4,
-        "Recently completed",
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        19,
-        4,
-        &format!("  ✓ {TASK_1}"),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        21,
+        24,
         4,
         if retry_eligible {
             "Retry is eligible for this task. Validation will rerun for the affected scope."
@@ -3486,99 +3506,33 @@ fn render_workflow_monitor_failure(
         TextStyle::muted(),
     )?;
 
-    write_dock_border(canvas)?;
     if retry_eligible {
-        dock_line(
+        write_effect_dock(
             canvas,
-            DOCK_TOP + 1,
-            "Retry eligible failed work",
-            TextStyle::bright(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 2,
+            "Retry the failed work",
             &format!("Retry · {TASK_3}. Fresh validation will rerun for this scope."),
-            TextStyle::text(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 3,
-            "› [enter] Retry task",
-            TextStyle::accent(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 4,
-            "  [d] Create a fix task",
-            TextStyle::muted(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 5,
-            "  [esc] Resume conversation",
-            TextStyle::muted(),
+            "Retry task",
+            &["Create a fix task", "Resume conversation"],
+            None,
         )?;
     } else if missing_input {
-        dock_line(
+        write_effect_dock(
             canvas,
-            DOCK_TOP + 1,
-            "Missing input blocks repair",
-            TextStyle::bright(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 2,
-            "Add the missing checklist note. Retry is not offered until input arrives.",
-            TextStyle::text(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 3,
-            "› [enter] Add missing input",
-            TextStyle::accent(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 4,
-            "  [d] Open evidence",
-            TextStyle::muted(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 5,
-            "  [esc] Resume conversation",
-            TextStyle::muted(),
+            "Add the missing checklist note",
+            "Add the note so completed work stays, then preflight can re-run.",
+            "Add missing input",
+            &["Open evidence", "Resume conversation"],
+            None,
         )?;
     } else {
-        dock_line(
+        // F6-059: lead with what the repair does.
+        write_effect_dock(
             canvas,
-            DOCK_TOP + 1,
             "Repair the validation failure",
-            TextStyle::bright(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 2,
             "Create planned fix work from this failure and re-run validation.",
-            TextStyle::text(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 3,
-            "› [enter] Create a fix task",
-            TextStyle::accent(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 4,
-            "  [d] Open evidence",
-            TextStyle::muted(),
-        )?;
-        dock_line(
-            canvas,
-            DOCK_TOP + 5,
-            "  [esc] Resume conversation",
-            TextStyle::muted(),
+            "Create a fix task",
+            &["Open evidence", "Resume conversation"],
+            None,
         )?;
     }
 
@@ -3917,7 +3871,7 @@ fn render_reviewer_output(
     // Keep the stable mission task band and You-line continuous with monitor and
     // approved frames. "Mission review" is a labeled surface section under that
     // identity, never an unlabeled second journey title that drops task/You.
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Mission review", TextStyle::muted())?;
@@ -3950,22 +3904,22 @@ fn render_reviewer_output(
     canvas.write(
         21,
         4,
-        "[d] View validation summary",
+        "View validation summary",
         TextStyle::muted(),
     )?;
     if score_open {
-        canvas.write(22, 4, "[q] View quality report", TextStyle::muted())?;
+        canvas.write(22, 4, "View quality report", TextStyle::muted())?;
         canvas.write(
             24,
             4,
-            "[esc] Return to mission monitor",
+            "Esc to Return to mission monitor",
             TextStyle::muted(),
         )?;
     } else {
         canvas.write(
             23,
             4,
-            "[esc] Return to mission monitor",
+            "Esc to Return to mission monitor",
             TextStyle::muted(),
         )?;
     }
@@ -4174,7 +4128,7 @@ fn render_reviewer_approved(
     )?;
     if score_open && !request_changes_dock {
         // Disclosure-safe, non-dock secondary so dock geometry stay-lines remain fixed.
-        canvas.write(20, 4, "[q] View quality report", TextStyle::muted())?;
+        canvas.write(20, 4, "View quality report", TextStyle::muted())?;
     }
 
     write_dock_border(canvas)?;
@@ -4194,13 +4148,13 @@ fn render_reviewer_approved(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Submit reason",
+            "› Submit reason",
             TextStyle::accent(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 4,
-            "  [esc] Cancel · keep approval gate",
+            "  Cancel · keep approval gate",
             TextStyle::muted(),
         )?;
         dock_line(
@@ -4225,19 +4179,19 @@ fn render_reviewer_approved(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Approve completion",
+            "› Approve completion",
             TextStyle::accent(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 4,
-            "  [d] Request changes",
+            "  Request changes",
             TextStyle::muted(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 5,
-            "  [esc] Stay on this review",
+            "  Stay on this review",
             TextStyle::muted(),
         )?;
     }
@@ -4484,7 +4438,7 @@ fn render_verification_ladder(
         return render_verification_stage_evidence(canvas, screen_id, fixture_id);
     }
 
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Validation stages", TextStyle::bright())?;
@@ -4542,19 +4496,19 @@ fn render_verification_ladder(
     canvas.write(
         28,
         4,
-        "[e] Open detailed evidence for the held-out failure",
+        "Open detailed evidence for the held-out failure",
         TextStyle::muted(),
     )?;
     canvas.write(
         29,
         4,
-        "[t] View tool evidence",
+        "View tool evidence",
         TextStyle::muted(),
     )?;
     canvas.write(
         31,
         4,
-        "[esc] Return to mission failure",
+        "Esc to Return to mission failure",
         TextStyle::accent(),
     )?;
 
@@ -4675,7 +4629,7 @@ fn render_verification_stage_evidence(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Stage evidence · Held-out checks", TextStyle::bright())?;
@@ -4743,7 +4697,7 @@ fn render_verification_stage_evidence(
     canvas.write(
         25,
         4,
-        "[esc] Return to validation stages",
+        "Esc to Return to validation stages",
         TextStyle::accent(),
     )?;
 
@@ -4812,7 +4766,7 @@ fn render_intent_scorer_pass(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Quality report · pass", TextStyle::bright())?;
@@ -4871,7 +4825,7 @@ fn render_intent_scorer_pass(
     canvas.write(
         28,
         4,
-        "[esc] Return to human completion",
+        "Esc to Return to human completion",
         TextStyle::accent(),
     )?;
 
@@ -4949,7 +4903,7 @@ fn render_intent_scorer_fail(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Quality report · needs repair", TextStyle::bright())?;
@@ -5007,13 +4961,13 @@ fn render_intent_scorer_fail(
     canvas.write(
         26,
         4,
-        "› [enter] Create a fix task",
+        "› Create a fix task",
         TextStyle::accent(),
     )?;
     canvas.write(
         28,
         4,
-        "[esc] Return to review outcome",
+        "Esc to Return to review outcome",
         TextStyle::muted(),
     )?;
 
@@ -5104,7 +5058,7 @@ fn render_concurrency_metrics(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Runtime detail", TextStyle::bright())?;
@@ -5162,7 +5116,7 @@ fn render_concurrency_metrics(
     canvas.write(
         26,
         4,
-        "[esc] Return to mission monitor",
+        "Esc to Return to mission monitor",
         TextStyle::accent(),
     )?;
 
@@ -5249,7 +5203,7 @@ fn render_tool_envelope(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Tool evidence", TextStyle::bright())?;
@@ -5333,7 +5287,7 @@ fn render_tool_envelope(
     canvas.write(
         27,
         4,
-        "[esc] Return to validation stages",
+        "Esc to Return to validation stages",
         TextStyle::accent(),
     )?;
 
@@ -5406,7 +5360,13 @@ fn render_tool_envelope(
 }
 
 fn write_conversation_header(canvas: &mut Canvas) -> Result<(), String> {
-    canvas.write(2, 4, MISSION_ORIGIN, TextStyle::muted())?;
+    // Painted subject only (N-12). Audit identity still stores MISSION_ORIGIN.
+    canvas.write(
+        2,
+        4,
+        subject_title_for_origin(MISSION_ORIGIN),
+        TextStyle::muted(),
+    )?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -5421,6 +5381,8 @@ fn write_conversation_header(canvas: &mut Canvas) -> Result<(), String> {
 
 /// Compact mission payload without the card's action row.
 /// Dock screens keep the primary action in the bottom decision dock only.
+/// Stage phrasing still includes complete/remaining counters for existing
+/// contract scans (`0 complete · 3 remaining`).
 fn write_mission_summary(
     canvas: &mut Canvas,
     first_row: u16,
@@ -5443,6 +5405,88 @@ fn write_mission_summary(
             &format!("Needs attention: {blocker}"),
             TextStyle::text(),
         )?;
+    }
+    Ok(())
+}
+
+/// Paint a Mission Control live status band under the conversation header.
+fn write_status_band(
+    canvas: &mut Canvas,
+    row: u16,
+    state: LiveState,
+    stage: &str,
+    done: usize,
+    total: usize,
+) -> Result<(), String> {
+    let band = StatusBand::new(state)
+        .with_stage(stage)
+        .with_fraction(done, total)?;
+    write_component(canvas, row, 4, &band)
+}
+
+/// Mission-local prose byline (temporary detail / mission strip only).
+fn write_mission_byline(
+    canvas: &mut Canvas,
+    row: u16,
+    hints: Vec<ShortcutHint>,
+) -> Result<(), String> {
+    let strip = MissionLocalKeyStrip::new(ShortcutByline::new(hints)?);
+    write_component(canvas, row, 4, &strip)
+}
+
+/// Bottom decision dock with action-effect first, chevron primary, no brackets.
+fn write_effect_dock(
+    canvas: &mut Canvas,
+    title: &str,
+    effect: &str,
+    primary: &str,
+    secondary: &[&str],
+    footer: Option<&str>,
+) -> Result<(), String> {
+    write_dock_border(canvas)?;
+    dock_line(canvas, DOCK_TOP + 1, title, TextStyle::bright())?;
+    dock_line(canvas, DOCK_TOP + 2, effect, TextStyle::text())?;
+    dock_line(
+        canvas,
+        DOCK_TOP + 3,
+        &format!("› {primary}"),
+        TextStyle::accent(),
+    )?;
+    if let Some(first) = secondary.first() {
+        dock_line(
+            canvas,
+            DOCK_TOP + 4,
+            &format!("  {first}"),
+            TextStyle::muted(),
+        )?;
+    }
+    if let Some(note) = footer {
+        dock_line(canvas, DOCK_TOP + 5, note, TextStyle::muted())?;
+    } else if secondary.len() > 1 {
+        dock_line(
+            canvas,
+            DOCK_TOP + 5,
+            &format!("  {}", secondary[1]),
+            TextStyle::muted(),
+        )?;
+    } else {
+        let esc_verb = secondary
+            .first()
+            .copied()
+            .unwrap_or("cancel")
+            .trim_start_matches("Cancel · ")
+            .trim_start_matches("Cancel")
+            .trim();
+        let byline = ShortcutByline::enter_esc(
+            primary,
+            if esc_verb.is_empty() {
+                "cancel"
+            } else {
+                esc_verb
+            },
+        )?
+        .render();
+        dock_line(canvas, DOCK_TOP + 5, &byline, TextStyle::muted())?;
     }
     Ok(())
 }

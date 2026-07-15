@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
@@ -8,15 +8,15 @@
     Code                                                                                                                
     I can run that as a small mission with three connected tasks.                                                       
                                                                                                                         
+    ○ Waiting · Ready to launch  0/3                                                                                    
+                                                                                                                        
     Prepare the release safely and review the result.                                                                   
     Ready to launch · 0 complete · 3 remaining                                                                          
                                                                                                                         
     ✓ Preflight passed. Detailed checks stay collapsed.                                                                 
     No missing inputs. Starting will run the three planned tasks.                                                       
                                                                                                                         
-    Goal, stage, and counts are the only mission fields on the card.                                                    
-    [d] View preflight evidence                                                                                         
-                                                                                                                        
+    View preflight evidence                                                                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Start this mission?                                                                                              │  
   │ Start runs the planned tasks and opens compact progress monitoring.                                              │  
-  │ › [enter] Start mission                                                                                          │  
-  │   [esc] Cancel · return to conversation                                                                          │  
-  │ Cancel keeps the proposal and starts no work.                                                                    │  
+  │ › Start mission                                                                                                  │  
+  │   Cancel · return to conversation                                                                                │  
+  │ Enter to start mission · Esc to cancel · keeps the proposal ready.                                               │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

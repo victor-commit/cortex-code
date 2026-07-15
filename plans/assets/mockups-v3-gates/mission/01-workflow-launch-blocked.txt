@@ -1,12 +1,14 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
     Code                                                                                                                
     I can run that as a small mission with three connected tasks.                                                       
+                                                                                                                        
+    ✗ Needs attention · Preflight  0/3                                                                                  
                                                                                                                         
     Prepare the release safely and review the result.                                                                   
     Preflight · 0 complete · 3 remaining                                                                                
@@ -15,9 +17,7 @@
     One missing input is blocking launch readiness.                                                                     
     Provide the release checklist note, then preflight reruns automatically.                                            
     The launch decision stays unavailable until that automatic rerun passes.                                            
-                                                                                                                        
     No manual preflight control is offered.                                                                             
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +31,10 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Resolve the missing input                                                                                        │  
-  │ Add the release checklist note required by preflight.                                                            │  
-  │ › [enter] Add release checklist                                                                                  │  
-  │   [esc] Cancel · return to conversation                                                                          │  
-  │ Launch remains omitted while blocked.                                                                            │  
+  │ Add the release checklist note, then preflight reruns and unlocks launch.                                        │  
+  │ › Add release checklist                                                                                          │  
+  │   Cancel · return to conversation                                                                                │  
+  │ Enter to add checklist · Esc to cancel · launch stays blocked.                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

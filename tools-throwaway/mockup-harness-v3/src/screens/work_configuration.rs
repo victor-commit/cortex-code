@@ -11,7 +11,7 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        components::{ENTRY_CODE_BANNER},
+        components::{subject_title_for_origin, ENTRY_CODE_BANNER},
         layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
@@ -2233,7 +2233,7 @@ fn render_mode_switch(
     let gate_origin = is_gate_fixture(fixture_id);
     let skills_access = fixture_id.contains("skills");
     if gate_origin {
-        canvas.write(3, 4, FLOW3_CURRENT_ORIGIN, TextStyle::muted())?;
+        canvas.write(3, 4, subject_title_for_origin(FLOW3_CURRENT_ORIGIN), TextStyle::muted())?;
         canvas.write(4, 4, FLOW3_SETUP_TASK, TextStyle::bright())?;
     } else {
         canvas.write(

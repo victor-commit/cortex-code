@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
@@ -19,10 +19,10 @@
     Enter to create a fix task                                                                                          
     Checklist and deeper evidence stay collapsed until you open them.                                                   
                                                                                                                         
-    [d] View validation summary                                                                                         
-    [q] View quality report                                                                                             
+    View validation summary                                                                                             
+    View quality report                                                                                                 
                                                                                                                         
-    [esc] Return to mission monitor                                                                                     
+    Esc to Return to mission monitor                                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         

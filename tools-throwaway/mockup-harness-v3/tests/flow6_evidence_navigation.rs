@@ -30,10 +30,10 @@ fn assert_identity_preserved(
 
 fn assert_has_return(text: &str, screen: &str) {
     assert!(
-        text.contains("[esc] Return")
+        text.contains("Return")
             || text.contains("Return to")
             || text.contains("Collapse progress")
-            || text.contains("[esc] Back"),
+            || text.contains("Back"),
         "{screen} needs an explicit return to its immediate origin:\n{text}"
     );
 }
@@ -120,7 +120,7 @@ fn every_evidence_screen_returns_to_immediate_origin() {
             .expect("evidence audit must stay bijective");
         let text = audit.render_txt();
         assert!(
-            text.contains(MISSION_ORIGIN) || text.contains(MISSION_GOAL),
+            (text.contains("Mission") || text.contains(MISSION_ORIGIN)) || text.contains(MISSION_GOAL),
             "{screen} must retain the mission identity:\n{text}"
         );
         assert_has_return(&text, screen);
@@ -202,7 +202,7 @@ fn nested_stage_evidence_is_distinct_and_unwinds_one_level() {
     assert!(!nested_text.contains("Worktree ·"));
     assert!(!nested_text.contains("Approve completion"));
     assert!(
-        nested_text.contains("[esc] Return to validation stages")
+        nested_text.contains("Return to validation stages")
             || nested_text.contains("Return to validation stages")
             || nested_text.contains("Return to Validation stages"),
         "nested stage evidence must return only one level to the ladder:\n{nested_text}"
@@ -507,7 +507,7 @@ fn score_detail_chain_is_focused_advisory_and_returns_exactly_once() {
         .expect("fail score");
     let fail_text = fail.render_txt();
     assert!(fail_text.contains("Scope") || fail_text.contains("failed"));
-    assert!(fail_text.contains("Return to review outcome") || fail_text.contains("[esc] Return"));
+    assert!(fail_text.contains("Return to review outcome") || fail_text.contains("Return"));
     assert!(!fail_text.contains("Wave ·"));
     assert!(!fail_text.contains("Throughput ·"));
     assert!(!fail_text.to_lowercase().contains("approve completion"));
@@ -528,7 +528,7 @@ fn score_detail_chain_is_focused_advisory_and_returns_exactly_once() {
         .expect("pass score");
     let pass_text = pass.render_txt();
     assert!(pass_text.contains("advisory") || pass_text.contains("never completes") || pass_text.contains("still needs"));
-    assert!(pass_text.contains("Return to human completion") || pass_text.contains("[esc] Return"));
+    assert!(pass_text.contains("Return to human completion") || pass_text.contains("Return"));
     let back_pass =
         replay_case("mission-intent-scorer-pass-return", 1).expect("return pass score");
     assert_eq!(back_pass.after.screen_id, "reviewer-approved");

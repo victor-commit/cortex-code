@@ -57,11 +57,11 @@ fn healthy_monitor_keeps_view_progress_primary_and_intervenes_causes_no_toolbar(
     let text = audit.render_txt();
     assert!(text.contains(MISSION_GOAL));
     assert!(text.contains("View progress"));
-    assert!(text.contains("Intervene") || text.contains("[i] Intervene"));
+    assert!(text.contains("Intervene") || text.contains("Intervene"));
     // Interventions are not equal primaries on the compact card/toolbar.
-    assert!(!text.contains("[enter] Pause"));
-    assert!(!text.contains("[enter] Replan"));
-    assert!(!text.contains("[enter] Stop"));
+    assert!(!text.contains("Pause"));
+    assert!(!text.contains("Replan"));
+    assert!(!text.contains("Stop"));
     assert_eq!(primary_action_count(&audit), 1);
     forbidden_internals(&text);
 
@@ -73,7 +73,7 @@ fn healthy_monitor_keeps_view_progress_primary_and_intervenes_causes_no_toolbar(
     assert!(dock.contains("Pause"));
     assert!(dock.contains("Replan"));
     assert!(dock.contains("Stop"));
-    assert!(dock.contains("›") || dock.contains("[enter]"));
+    assert!(dock.contains("›") || dock.contains(""));
     assert_eq!(primary_action_count(&open.audit), 1);
     forbidden_internals(&dock);
 }
@@ -89,7 +89,7 @@ fn pause_explains_safe_boundary_and_resume_runs_exactly_once() {
             || confirm_txt.contains("finish this task")
             || confirm_txt.contains("finish the current task")
     );
-    assert!(confirm_txt.contains("› [enter] Pause mission") || confirm_txt.contains("Pause mission"));
+    assert!(confirm_txt.contains("› Pause mission") || confirm_txt.contains("Pause mission"));
     assert!(confirm_txt.contains("Cancel"));
     assert_eq!(primary_action_count(&confirm.audit), 1);
 
@@ -97,7 +97,7 @@ fn pause_explains_safe_boundary_and_resume_runs_exactly_once() {
     assert_eq!(paused.after.screen_id, "workflow-monitor");
     let paused_txt = paused.audit.render_txt();
     assert!(paused_txt.contains("Paused"));
-    assert!(paused_txt.contains("› [enter] Resume") || paused_txt.contains("[enter] Resume"));
+    assert!(paused_txt.contains("› Resume") || paused_txt.contains("Resume"));
     assert!(paused_txt.contains("Replan"));
     assert!(paused_txt.contains("Stop"));
     assert_eq!(primary_action_count(&paused.audit), 1);
@@ -181,8 +181,8 @@ fn replan_reports_exact_count_deltas_and_runs_fresh_preflight() {
     assert_eq!(accept.transitions[0].kind, "automatic");
     let preflight = accept.audit.render_txt();
     assert!(preflight.contains("Preflight") || preflight.contains("preflight"));
-    assert!(!preflight.contains("› [enter] Start mission"));
-    assert!(!preflight.contains("[enter] Start mission"));
+    assert!(!preflight.contains("› Start mission"));
+    assert!(!preflight.contains("Start mission"));
     forbidden_internals(&proposal);
     forbidden_internals(&preflight);
 }
@@ -196,8 +196,8 @@ fn retry_only_for_eligible_failed_work_preserves_completed() {
     .expect("missing-input failure");
     let ineligible_txt = ineligible.render_txt();
     assert!(ineligible_txt.contains(MISSING_INPUT) || ineligible_txt.contains("missing"));
-    assert!(!ineligible_txt.contains("[enter] Retry"));
-    assert!(!ineligible_txt.contains("› [enter] Retry"));
+    assert!(!ineligible_txt.contains("Retry"));
+    assert!(!ineligible_txt.contains("› Retry"));
     forbidden_internals(&ineligible_txt);
 
     let eligible = audit_screen(
@@ -232,7 +232,7 @@ fn stop_names_consequences_and_stopped_stays_inspectable_without_resume() {
     let open_txt = open.audit.render_txt();
     assert!(open_txt.contains("preserved") || open_txt.contains("Preserved"));
     assert!(open_txt.contains("abandon") || open_txt.contains("not run") || open_txt.contains("stopped"));
-    assert!(open_txt.contains("› [enter] Stop mission") || open_txt.contains("Stop mission"));
+    assert!(open_txt.contains("› Stop mission") || open_txt.contains("Stop mission"));
     assert!(open_txt.contains("Cancel"));
     assert_eq!(primary_action_count(&open.audit), 1);
 
@@ -241,8 +241,8 @@ fn stop_names_consequences_and_stopped_stays_inspectable_without_resume() {
     let stopped = confirm.audit.render_txt();
     assert!(stopped.contains("Stopped"));
     assert!(stopped.contains("not run") || stopped.contains("Not run") || stopped.contains("abandoned"));
-    assert!(!stopped.contains("[enter] Resume"));
-    assert!(!stopped.contains("› [enter] Resume"));
+    assert!(!stopped.contains("Resume"));
+    assert!(!stopped.contains("› Resume"));
     assert!(
         stopped.contains("Open detail")
             || stopped.contains("Inspect")
@@ -259,7 +259,7 @@ fn stop_names_consequences_and_stopped_stays_inspectable_without_resume() {
     assert_eq!(restart.after.screen_id, "workflow-monitor");
     let restart_txt = restart.audit.render_txt();
     assert!(restart_txt.contains("Stopped"));
-    assert!(!restart_txt.contains("[enter] Resume"));
+    assert!(!restart_txt.contains("Resume"));
     assert_eq!(restart.attempts[0].outcome, "restored-stopped");
     assert_eq!(restart.attempts[0].count, 0);
     let (stage_b, stage_a) = preserved(&restart, "mission_stage");

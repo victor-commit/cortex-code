@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
@@ -25,7 +25,7 @@
                                                                                                                         
     Raw JSON, transport fields, and secret values stay out of this view.                                                
                                                                                                                         
-    [esc] Return to validation stages                                                                                   
+    Esc to Return to validation stages                                                                                  
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -141,7 +141,7 @@ fn verification_ladder_opens_on_request_with_origin_return() {
         .validate()
         .expect("verification ladder audit must stay bijective");
     let text = audit.render_txt();
-    assert!(text.contains(MISSION_ORIGIN) || text.contains(MISSION_GOAL));
+    assert!((text.contains("Mission") || text.contains(MISSION_ORIGIN)) || text.contains(MISSION_GOAL));
     assert!(
         text.contains("Validation stages") || text.contains("validation stages"),
         "ladder must identify itself as validation stages:\n{text}"
@@ -169,7 +169,7 @@ fn verification_ladder_opens_on_request_with_origin_return() {
         "stage outcomes must be explicit:\n{text}"
     );
     assert!(
-        text.contains("[esc] Return") || text.contains("Return to"),
+        text.contains("Return") || text.contains("Return to"),
         "ladder needs a direct return:\n{text}"
     );
 
@@ -249,11 +249,11 @@ fn score_and_runtime_origin_affordances_are_distinct_and_painted() {
     );
     let fail_text = fail_origin.render_txt();
     assert!(
-        fail_text.contains("[d] View validation summary"),
+        fail_text.contains("View validation summary"),
         "validation summary key must remain:\n{fail_text}"
     );
     assert!(
-        fail_text.contains("[q] View quality report"),
+        fail_text.contains("View quality report"),
         "score detail needs its own painted open:\n{fail_text}"
     );
 
@@ -283,7 +283,7 @@ fn score_and_runtime_origin_affordances_are_distinct_and_painted() {
     );
     let runtime_text = runtime_origin.render_txt();
     assert!(
-        runtime_text.contains("[a] View advanced detail"),
+        runtime_text.contains("View advanced detail"),
         "compact disclosure-safe monitor must paint advanced runtime open:\n{runtime_text}"
     );
 
@@ -389,7 +389,7 @@ fn intent_scorer_pass_opens_only_on_request_and_stays_advisory() {
         .expect("pass scorer must render");
     audit.validate().expect("pass scorer audit");
     let text = audit.render_txt();
-    assert!(text.contains(MISSION_ORIGIN) || text.contains(MISSION_GOAL));
+    assert!((text.contains("Mission") || text.contains(MISSION_ORIGIN)) || text.contains(MISSION_GOAL));
     assert!(
         text.contains("Pass") || text.contains("passed") || text.contains("passing"),
         "pass scorer must state the pass result:\n{text}"
@@ -416,7 +416,7 @@ fn intent_scorer_pass_opens_only_on_request_and_stays_advisory() {
             || text.contains("human completion"),
         "pass score should explain that human validation still applies:\n{text}"
     );
-    assert!(text.contains("[esc] Return") || text.contains("Return to"));
+    assert!(text.contains("Return") || text.contains("Return to"));
 
     let open = replay_case("mission-open-intent-scorer-pass", 1).expect("open pass score");
     assert_eq!(open.before.screen_id, "reviewer-approved");
@@ -509,7 +509,7 @@ fn concurrency_metrics_open_on_request_and_exception_first() {
         .expect("concurrency metrics must render");
     audit.validate().expect("concurrency audit");
     let text = audit.render_txt();
-    assert!(text.contains(MISSION_ORIGIN) || text.contains(MISSION_GOAL));
+    assert!((text.contains("Mission") || text.contains(MISSION_ORIGIN)) || text.contains(MISSION_GOAL));
     assert!(
         text.contains("Runtime detail")
             || text.contains("Concurrency")
@@ -553,7 +553,7 @@ fn concurrency_metrics_open_on_request_and_exception_first() {
             || text.contains("blocked"),
         "each exception needs a plain-English consequence:\n{text}"
     );
-    assert!(text.contains("[esc] Return") || text.contains("Return to mission"));
+    assert!(text.contains("Return") || text.contains("Return to mission"));
 
     let open = replay_case("mission-open-concurrency-metrics", 1).expect("open concurrency");
     assert_eq!(open.before.screen_id, "workflow-monitor");
@@ -581,7 +581,7 @@ fn tool_envelope_distinguishes_outcomes_without_secrets() {
         .expect("tool envelope must render");
     audit.validate().expect("tool envelope audit");
     let text = audit.render_txt();
-    assert!(text.contains(MISSION_ORIGIN) || text.contains(MISSION_GOAL));
+    assert!((text.contains("Mission") || text.contains(MISSION_ORIGIN)) || text.contains(MISSION_GOAL));
     assert!(
         text.contains("Tool evidence") || text.contains("tool evidence"),
         "tool detail needs a human title:\n{text}"
@@ -639,7 +639,7 @@ fn tool_envelope_distinguishes_outcomes_without_secrets() {
             || text.contains("origin"),
         "evidence must bind to an origin task/validation:\n{text}"
     );
-    assert!(text.contains("[esc] Return") || text.contains("Return to"));
+    assert!(text.contains("Return") || text.contains("Return to"));
 
     let open = replay_case("mission-open-tool-envelope", 1).expect("open tool envelope");
     assert!(

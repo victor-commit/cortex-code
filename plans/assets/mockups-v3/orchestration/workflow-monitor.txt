@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
@@ -8,27 +8,27 @@
     Code                                                                                                                
     I can run that as a small mission with three connected tasks.                                                       
                                                                                                                         
+    ● Running · Active work  1/3                                                                                        
+                                                                                                                        
     Prepare the release safely and review the result.                                                                   
     Running · 1 complete · 2 remaining                                                                                  
     › View progress                                                                                                     
     Enter to view progress                                                                                              
                                                                                                                         
-    Progress stays calm until you ask for a task summary.                                                               
-    No blocker. Open progress only when you need the details.                                                           
                                                                                                                         
+    Active work · 1/3                                                                                                   
+    No blocker. Progress stays calm until you ask.                                                                      
     Later draft stays ready in the originating conversation.                                                            
                                                                                                                         
-    [i] Intervene                                                                                                       
-    [esc] Resume conversation                                                                                           
-    [a] View advanced detail                                                                                            
+    Progress log · 1-3 of 12                                                                                            
+      Started safe publish path checks · 2m ago                                                                         
+      Finished release notes review · 8m ago                                                                            
+      Preflight passed · three planned tasks                                                                            
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+    Intervene                                                                                                           
+    Resume conversation                                                                                                 
+    View advanced detail                                                                                                
+    Enter to view progress · Esc to resume conversation · i to intervene                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         

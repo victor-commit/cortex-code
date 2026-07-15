@@ -52,17 +52,17 @@ fn mission_proposal_is_conversational_with_accept_plan_only() {
         .validate()
         .expect("proposal audit must stay bijective");
     let text = audit.render_txt();
-    assert!(text.contains(MISSION_ORIGIN));
+    assert!(text.contains("Mission")); // subject title; origin id remains in audit
     assert!(text.contains(MISSION_GOAL));
     assert!(text.contains("Mission proposal"));
     assert!(text.contains(TASK_1));
     assert!(text.contains(TASK_2));
     assert!(text.contains(TASK_3));
     assert!(text.contains("Depends on"));
-    assert!(text.contains("› [enter] Accept plan"));
-    assert!(text.contains("[esc] Keep discussing"));
+    assert!(text.contains("› Accept plan") || text.contains("Enter to accept plan"));
+    assert!(text.contains("Keep discussing") || text.contains("Esc to"));
     assert!(!text.contains("Start mission"));
-    assert!(!text.contains("[enter] Start"));
+    assert!(!text.contains("Start"));
     assert!(!text.to_lowercase().contains("launch the mission"));
     forbidden_internals(&text);
     assert_eq!(
@@ -129,7 +129,7 @@ fn accept_plan_starts_automatic_preflight_without_launch() {
     let text = replay.audit.render_txt();
     assert!(text.contains("Preflight"));
     assert!(text.contains("automatically") || text.contains("Automatic preflight"));
-    assert!(!text.contains("› [enter] Start mission"));
+    assert!(!text.contains("Start mission"));
     assert!(!text.contains("Run preflight"));
     assert!(!text.contains("Start preflight"));
     forbidden_internals(&text);
@@ -147,8 +147,8 @@ fn successful_preflight_launch_is_compact_with_collapsed_evidence() {
     assert!(text.contains("Ready to launch"));
     assert!(text.contains("0 complete · 3 remaining"));
     assert!(text.contains("✓ Preflight passed"));
-    assert!(text.contains("[d] View preflight evidence"));
-    assert!(text.contains("› [enter] Start mission"));
+    assert!(text.contains("View preflight evidence"));
+    assert!(text.contains("› Start mission"));
     assert!(!text.contains("Needs attention"));
     assert!(!text.contains("architecture.md"));
     assert!(!text.contains("acceptance-contract"));
@@ -186,8 +186,8 @@ fn launch_card_shows_only_allowed_fields_and_pending_decision() {
     assert!(text.contains("Ready to launch · 0 complete · 3 remaining"));
     assert!(text.contains("Start this mission?"));
     assert!(text.contains("Start runs the planned tasks"));
-    assert!(text.contains("› [enter] Start mission"));
-    assert!(text.contains("[esc] Cancel · return to conversation"));
+    assert!(text.contains("› Start mission"));
+    assert!(text.contains("Cancel · return to conversation"));
     assert!(!text.contains("Needs attention:"));
     assert!(!text.contains("worker"));
     assert!(!text.contains("budget"));
@@ -216,10 +216,10 @@ fn blocked_launch_surfaces_one_missing_input_action() {
     let text = audit.render_txt();
     assert!(text.contains(MISSION_GOAL));
     assert!(text.contains("Preflight · 0 complete · 3 remaining"));
-    assert!(text.contains(MISSING_INPUT) || text.contains("Needs attention:"));
-    assert!(text.contains("› [enter] Add release checklist"));
+    assert!(text.contains(MISSING_INPUT) || text.contains("Needs attention"));
+    assert!(text.contains("› Add release checklist"));
     assert!(text.contains("preflight reruns automatically") || text.contains("automatically"));
-    assert!(!text.contains("› [enter] Start mission"));
+    assert!(!text.contains("Start mission"));
     assert!(!text.contains("Start mission"));
     assert!(!text.contains("Run preflight"));
     assert!(!text.contains("Re-run preflight"));
@@ -259,7 +259,7 @@ fn resolving_missing_input_reruns_preflight_ready_or_blocked() {
     assert_eq!(ready.transitions[0].kind, "automatic");
     assert_eq!(ready.attempts[0].outcome, "launch-ready");
     let ready_text = ready.audit.render_txt();
-    assert!(ready_text.contains("› [enter] Start mission"));
+    assert!(ready_text.contains("› Start mission"));
     assert!(!ready_text.contains("Launch remains omitted"));
 
     let blocked = replay_case("mission-resolve-input-still-blocked", 1)
@@ -268,7 +268,7 @@ fn resolving_missing_input_reruns_preflight_ready_or_blocked() {
     assert_eq!(blocked.after.screen_id, "workflow-launch-blocked");
     assert_eq!(blocked.attempts[0].outcome, "still-blocked");
     let blocked_text = blocked.audit.render_txt();
-    assert!(!blocked_text.contains("› [enter] Start mission"));
+    assert!(!blocked_text.contains("› Start mission"));
     assert!(blocked_text.contains("Add release checklist"));
     assert!(!blocked_text.contains("Run preflight"));
 }
@@ -296,8 +296,8 @@ fn launch_decision_is_explicit_bottom_dock_and_not_modal() {
     );
     assert!(!text.to_lowercase().contains("modal"));
     assert!(!text.to_lowercase().contains("popup"));
-    assert!(text.contains("› [enter] Start mission"));
-    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
+    assert!(text.contains("› Start mission"));
+    assert!(text.contains("Esc to") || text.contains("Cancel · return to conversation") || text.contains("Enter to start mission"));
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn start_mission_enters_monitor_with_stable_identity() {
     assert!(text.contains("1 complete · 2 remaining"));
     assert!(text.contains("View progress"));
     assert!(!text.contains("Start this mission?"));
-    assert!(!text.contains("› [enter] Start mission"));
+    assert!(!text.contains("Start mission"));
     forbidden_internals(&text);
 }
 

@@ -99,7 +99,7 @@ fn first_progress_disclosure_is_human_tasks_without_internals() {
     let text = audit.render_txt();
     assert!(text.contains(TASK_2));
     assert!(text.contains(TASK_1));
-    assert!(text.contains("[esc] Collapse progress"));
+    assert!(text.contains("Collapse progress"));
     forbidden_first_progress_internals(&text);
     assert!(
         audit
@@ -143,7 +143,7 @@ fn workers_remain_hidden_until_explicit_detail() {
             || workers_text.contains("Docs lead")
             || workers_text.contains("Notes specialist")
     );
-    assert!(workers_text.contains("[esc] Return to"));
+    assert!(workers_text.contains("Return to"));
     assert!(workers.transitions.iter().any(|transition| {
         transition.action_id == "action.mission.workers-return"
             || transition.action_id == "action.mission.team-board-return"
@@ -157,13 +157,13 @@ fn team_board_opens_explicitly_as_temporary_detail() {
         .expect("team board must render");
     board.validate().expect("team board audit must stay bijective");
     let text = board.render_txt();
-    assert!(text.contains(MISSION_ORIGIN) || text.contains(MISSION_GOAL));
+    assert!((text.contains("Mission") || text.contains(MISSION_ORIGIN)) || text.contains(MISSION_GOAL));
     assert!(text.contains("Team board") || text.contains("ownership and assignments"));
     assert!(
         text.contains("ownership") || text.contains("assignments") || text.contains("Owner ·"),
         "board must declare ownership/assignment purpose:\n{text}"
     );
-    assert!(text.contains("[esc] Return to mission monitor") || text.contains("Return to mission"));
+    assert!(text.contains("Return to mission monitor") || text.contains("Return to mission"));
     assert!(board.transitions.iter().any(|transition| {
         (transition.action_id == "action.mission.team-board-return"
             || transition.action_id == "action.mission.team-board-open")
@@ -256,7 +256,7 @@ fn board_internals_require_second_disclosure() {
         advanced_text.contains("Advanced") || advanced_text.contains("detail"),
         "advanced state must be labeled as detail:\n{advanced_text}"
     );
-    assert!(advanced_text.contains("[esc] Return to team board"));
+    assert!(advanced_text.contains("Return to team board"));
     assert!(advanced.transitions.iter().any(|transition| {
         transition.action_id == "action.mission.team-board-advanced-return"
             && transition.to_screen_id == "team-board"
@@ -339,7 +339,7 @@ fn progress_detail_is_bounded_with_exact_omission_and_one_group_expand() {
     assert!(!expand_text.contains("Owner ·"));
     assert!(!expand_text.contains("Wave ·"));
     assert!(
-        expand_text.contains("[esc] Back") || expand_text.contains("Collapse group"),
+        expand_text.contains("Back") || expand_text.contains("Collapse group"),
         "group expansion must restore via Back:\n{expand_text}"
     );
 

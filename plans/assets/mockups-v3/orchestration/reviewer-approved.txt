@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Mission · current conversation                                                                                      
+    Mission                                                                                                             
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
@@ -18,7 +18,7 @@
                                                                                                                         
     Detailed checks stay collapsed. Human approval still required.                                                      
                                                                                                                         
-    [q] View quality report                                                                                             
+    View quality report                                                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Approve mission completion?                                                                                      │  
   │ Only the human approval finishes the mission and restores chat.                                                  │  
-  │ › [enter] Approve completion                                                                                     │  
-  │   [d] Request changes                                                                                            │  
-  │   [esc] Stay on this review                                                                                      │  
+  │ › Approve completion                                                                                             │  
+  │   Request changes                                                                                                │  
+  │   Stay on this review                                                                                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    
