@@ -127,7 +127,7 @@ const HELP_ACTIONS: [HelpAction; 10] = [
     HelpAction {
         group: "Navigate",
         label: "Open action palette",
-        shortcut: "Ctrl+K",
+        shortcut: "ctrl+k",
         effect: "Search every action from one dock",
     },
     HelpAction {
@@ -157,13 +157,13 @@ const HELP_ACTIONS: [HelpAction; 10] = [
     HelpAction {
         group: "Inspect",
         label: "Open review findings",
-        shortcut: "Ctrl+R",
+        shortcut: "ctrl+r",
         effect: "Inspect the current review scope",
     },
     HelpAction {
         group: "Inspect",
         label: "Search transcript",
-        shortcut: "Ctrl+F",
+        shortcut: "ctrl+f",
         effect: "Find matching turns without leaving the chat",
     },
 ];

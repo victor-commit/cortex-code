@@ -306,13 +306,23 @@ fn help_is_temporary_detail_with_task_grouped_shortcuts_and_return() {
             "help must group human-readable actions by task (missing group signal near {group})"
         );
     }
-    // Includes palette trigger and curated shortcuts.
+    // Includes palette trigger and curated shortcuts (VAL-V3-DS-008: lowercase chords).
     assert!(
-        text.contains("Ctrl+K")
-            || text.contains("Ctrl-K")
-            || text.contains("ctrl+k")
-            || text.contains("palette"),
-        "palette trigger must appear for the action set"
+        text.contains("ctrl+k"),
+        "palette trigger must appear as lowercase chord ctrl+k (VAL-V3-DS-008)"
+    );
+    assert!(
+        text.contains("ctrl+r") && text.contains("ctrl+f"),
+        "help review/search chords must be lowercase ctrl+r and ctrl+f"
+    );
+    assert!(
+        !text.contains("Ctrl+K")
+            && !text.contains("Ctrl+R")
+            && !text.contains("Ctrl+F")
+            && !text.contains("Ctrl-K")
+            && !text.contains("Ctrl-R")
+            && !text.contains("Ctrl-F"),
+        "uppercase Ctrl+* chords are forbidden; chords must be lowercase"
     );
     assert!(
         text.contains("/help") || text.contains("Help"),
@@ -325,6 +335,11 @@ fn help_is_temporary_detail_with_task_grouped_shortcuts_and_return() {
     assert!(
         text.contains("Filter") || text.contains("filter") || text.contains("Type to filter"),
         "local filter field required"
+    );
+    assert!(
+        text.contains("only place for grouped shortcuts")
+            || text.contains("temporary reference is the only place"),
+        "help must remain the sole multi-shortcut reference surface"
     );
 
     assert!(audit.events.iter().any(|event| {

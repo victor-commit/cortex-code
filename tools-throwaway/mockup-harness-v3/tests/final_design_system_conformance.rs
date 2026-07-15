@@ -663,6 +663,16 @@ fn every_canonical_state_keeps_minimal_statusline_and_local_keys() {
                 "{label}: duplicate statusline events"
             );
         }
+
+        // VAL-V3-DS-008: chords are lowercase everywhere, including the temporary help view.
+        for (idx, row) in text.lines().enumerate() {
+            if row.contains("Ctrl+") || row.contains("Ctrl-") || row.contains("CTRL+") {
+                panic!(
+                    "{label}: uppercase chord on line {idx} (VAL-V3-DS-008 requires lowercase): `{}`",
+                    row.trim()
+                );
+            }
+        }
     }
 }
 

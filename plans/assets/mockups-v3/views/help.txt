@@ -13,15 +13,15 @@
       Open file mention · @ · Insert a project file reference                                                           
       Open slash commands · / · Choose export, help, queue, or actions                                                  
     Navigate                                                                                                            
-      Open action palette · Ctrl+K · Search every action from one dock                                                  
+      Open action palette · ctrl+k · Search every action from one dock                                                  
       Jump to latest turn · End · Return the transcript to the newest reply                                             
     Manage                                                                                                              
       Open queued prompts · /queue · Reorder, remove, or run the next prompt                                            
       Export conversation · /export · Save a read-only copy of this chat                                                
     Inspect                                                                                                             
       Open this reference · /help · Browse task-grouped shortcuts                                                       
-      Open review findings · Ctrl+R · Inspect the current review scope                                                  
-      Search transcript · Ctrl+F · Find matching turns without leaving the chat                                         
+      Open review findings · ctrl+r · Inspect the current review scope                                                  
+      Search transcript · ctrl+f · Find matching turns without leaving the chat                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
