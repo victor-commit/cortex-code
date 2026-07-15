@@ -575,26 +575,27 @@ fn initial_status() -> Status {
     let effective = settings::ConfigInputs::from_process(BTreeMap::new())
         .ok()
         .and_then(|inputs| settings::load(inputs).ok());
+    status_from_effective(effective.as_ref())
+}
 
+/// Map an optional effective config into the footer status fields (model/agent/mode/variant).
+/// Extracted so hermetic tests can build status without mutating process environment.
+fn status_from_effective(effective: Option<&settings::EffectiveConfig>) -> Status {
     let model = effective
-        .as_ref()
         .map(|cfg| cfg.model().to_owned())
         .unwrap_or_else(|| settings::DEFAULT_MODEL.to_owned());
 
     let agent = effective
-        .as_ref()
         .map(|cfg| cfg.agent().to_owned())
         .unwrap_or_else(|| settings::DEFAULT_AGENT.to_owned());
 
     let mode = effective
-        .as_ref()
         .and_then(|cfg| cfg.get("mode"))
         .and_then(|value| value.as_str())
         .unwrap_or("build")
         .to_owned();
 
     let variant = effective
-        .as_ref()
         .and_then(|cfg| cfg.get("variant"))
         .and_then(|value| value.as_str())
         .unwrap_or("default")
@@ -612,6 +613,19 @@ fn initial_status() -> Status {
 #[cfg(test)]
 mod tests {
     use super::is_esc_prefixed_vertical_arrow;
+    use super::status_from_effective;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> (PathBuf, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("cortex-tui-status-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let project = root.join("project");
+        fs::create_dir_all(&project).expect("project dir");
+        (root, project)
+    }
 
     #[test]
     fn detects_vertical_arrow_suffixes() {
@@ -631,5 +645,64 @@ mod tests {
         assert!(!is_esc_prefixed_vertical_arrow("[1;3C"));
         assert!(!is_esc_prefixed_vertical_arrow("[xA"));
         assert!(!is_esc_prefixed_vertical_arrow("A"));
+    }
+
+    // VAL-CROSS-011 / VAL-CROSS-014 (TUI status bootstrap): project-layer model + agent populate
+    // the footer status identically to headless/server config resolution.
+    #[test]
+    fn status_from_effective_honors_project_model_and_agent() {
+        let (root, project) = scratch("project-layers");
+        fs::write(
+            project.join("cortex.toml"),
+            "model = \"anthropic/claude-sonnet-4\"\nagent = \"plan\"\n",
+        )
+        .expect("write project config");
+        let inputs = settings::ConfigInputs {
+            home: Some(root.clone()),
+            xdg_config_home: None,
+            cwd: project,
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        };
+        let effective = settings::load(inputs).expect("load project config");
+        let status = status_from_effective(Some(&effective));
+        assert_eq!(
+            status.model, "anthropic/claude-sonnet-4",
+            "TUI status should surface the project-layer model"
+        );
+        assert_eq!(
+            status.agent, "plan",
+            "TUI status should surface the project-layer default agent"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // VAL-CROSS-013 (TUI half): CORTEX_MODEL beats the project file for the status binding.
+    #[test]
+    fn status_from_effective_honors_cortex_model_env_over_project_file() {
+        let (root, project) = scratch("env-model");
+        fs::write(
+            project.join("cortex.toml"),
+            "model = \"anthropic/claude-sonnet-4\"\nagent = \"plan\"\n",
+        )
+        .expect("write project config");
+        let inputs = settings::ConfigInputs {
+            home: Some(root.clone()),
+            xdg_config_home: None,
+            cwd: project,
+            env: vec![(
+                "CORTEX_MODEL".to_owned(),
+                "google/gemini-2.5-flash".to_owned(),
+            )],
+            cli_overrides: BTreeMap::new(),
+        };
+        let effective = settings::load(inputs).expect("load with env override");
+        let status = status_from_effective(Some(&effective));
+        assert_eq!(
+            status.model, "google/gemini-2.5-flash",
+            "CORTEX_MODEL must beat the project file in TUI status"
+        );
+        assert_eq!(status.agent, "plan");
+        let _ = fs::remove_dir_all(&root);
     }
 }

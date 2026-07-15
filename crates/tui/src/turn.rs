@@ -1227,6 +1227,47 @@ mod tests {
         );
     }
 
+    // VAL-CROSS-012 (TUI half): a project-layer `deny bash 'rm *'` is concatenated into the same
+    // layered ruleset a TUI turn builds for the build agent, so `rm victim.txt` classifies as
+    // Deny (no interactive ask; no side-effect path opens). Hermetic ConfigInputs bind HOME
+    // to the scratch tree so the project walk includes `scratch.project/cortex.toml`.
+    #[test]
+    fn project_bash_rm_deny_blocks_without_prompt_on_tui_engine() {
+        let scratch = Scratch::new("project-rm-deny");
+        scratch.write_project_config(
+            "[[permission]]\ntool = \"bash\"\npattern = \"rm *\"\naction = \"deny\"\n",
+        );
+        let inputs = settings::ConfigInputs {
+            home: Some(scratch.root.clone()),
+            xdg_config_home: None,
+            cwd: scratch.project.clone(),
+            env: Vec::new(),
+            cli_overrides: BTreeMap::new(),
+        };
+        let base = default_ruleset();
+        let project = permissions::load_layered(&inputs).expect("load project permission layers");
+        let ruleset = permissions::Ruleset::from_layers([base, project]);
+        let engine = permissions::PermissionEngine::new(ruleset);
+        assert_eq!(
+            engine.classify("bash", "rm victim.txt"),
+            permissions::Action::Deny,
+            "project deny bash rm * must classify as Deny for a concrete rm subject"
+        );
+        assert_eq!(
+            engine.evaluate(&permissions::PermissionRequest::new(
+                "bash",
+                "rm victim.txt"
+            )),
+            permissions::Outcome::Denied
+        );
+        // Non-rm bash is not covered by the deny rule and remains ask-gated on the base.
+        assert_eq!(
+            engine.classify("bash", "echo hi"),
+            permissions::Action::Ask,
+            "project rm deny must not blanket-deny unrelated bash"
+        );
+    }
+
     #[test]
     fn permission_posture_reflects_the_real_agent_mode() {
         use crate::glyphs::SEPARATOR;
