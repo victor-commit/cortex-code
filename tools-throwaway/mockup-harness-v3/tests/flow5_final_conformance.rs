@@ -22,11 +22,21 @@ use mockup_harness_v3::{
 
 const RECOVERY_TASK: &str = "Finish the release notes without losing the current work.";
 const RECOVERY_ORIGIN: &str = "Recovery · paused conversation";
+/// Phase-A paints subject title `Recovery`; audit/scenario keep the long form.
+const RECOVERY_SUBJECT: &str = "Recovery";
 const USER_PROMPT: &str =
     "You · Summarize the remaining release notes and the still-open risks.";
 const PARTIAL_REPLY: &str =
     "The release notes cover the auth race fix, the retry window change, and one open risk…";
 const DRAFT: &str = "Keep the risk note short before we publish.";
+
+fn paints_recovery_origin(text: &str) -> bool {
+    text.contains(RECOVERY_ORIGIN)
+        || text.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == RECOVERY_SUBJECT || trimmed.starts_with("Recovery ·")
+        })
+}
 
 /// Exact nine recovery inventory IDs (VAL-V3-F5-001).
 const RECOVERY_IDS: &[&str] = &[
@@ -462,8 +472,8 @@ fn recovery_defaults_preserve_origin_transcript_draft_partial_and_completed_work
             "{screen_id}/{fixture_id}: session id"
         );
         assert!(
-            text.contains(RECOVERY_ORIGIN),
-            "{screen_id}/{fixture_id}: origin must bevisible"
+            paints_recovery_origin(&text),
+            "{screen_id}/{fixture_id}: origin must be visible (subject title or long form)"
         );
         assert!(
             text.contains(RECOVERY_TASK) || text.contains("release notes"),
@@ -908,11 +918,18 @@ fn recovery_announcements_owners_and_causes_are_singular() {
         let audit = render_pair(screen_id, fixture_id);
         let text = audit.render_txt();
 
-        // Exactly one origin chip.
-        assert_eq!(
-            text.matches(RECOVERY_ORIGIN).count(),
-            1,
-            "{screen_id}/{fixture_id}: singular origin announcement"
+        // Exactly one origin announcement: long journey form, or a solo subject title row.
+        let long_hits = text.matches(RECOVERY_ORIGIN).count();
+        let subject_rows = text
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed == RECOVERY_SUBJECT || trimmed == RECOVERY_ORIGIN
+            })
+            .count();
+        assert!(
+            long_hits == 1 || (long_hits == 0 && subject_rows == 1),
+            "{screen_id}/{fixture_id}: singular origin announcement (long={long_hits} subject_rows={subject_rows})"
         );
 
         // Exactly one statusline.

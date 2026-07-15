@@ -8,6 +8,7 @@ use mockup_harness_v3::{audit::audit_screen, scenario::replay_case};
 
 const RECOVERY_TASK: &str = "Finish the release notes without losing the current work.";
 const RECOVERY_ORIGIN: &str = "Recovery · paused conversation";
+const RECOVERY_SUBJECT: &str = "Recovery";
 const USER_PROMPT: &str =
     "You · Summarize the remaining release notes and the still-open risks.";
 const PARTIAL_REPLY: &str =
@@ -56,7 +57,11 @@ fn interrupt_is_neutral_with_visible_seam_and_retained_partial() {
     audit.validate().expect("interrupt audit");
 
     let text = audit.render_txt();
-    assert!(text.contains(RECOVERY_ORIGIN));
+    assert!(
+        text.contains(RECOVERY_ORIGIN)
+            || text.lines().any(|line| line.trim() == RECOVERY_SUBJECT),
+        "recovery origin/subject must paint"
+    );
     assert!(text.contains(RECOVERY_TASK));
     assert!(text.contains(USER_PROMPT) || text.contains(ORIGINAL_PROMPT));
     assert!(text.contains(PARTIAL_REPLY), "partial answer retained");

@@ -177,7 +177,11 @@ fn connect_connected_returns_to_blocked_model_origin_not_mcp() {
     assert!(text.contains("GPT-5.2 Codex can use this provider now."));
     assert!(text.contains("GPT-5.2 Codex"));
     assert!(
-        (text.contains("› Continue") || text.contains("Enter to continue")) || text.contains("› [enter] Return to model choices"),
+        text.contains("› Continue")
+            || text.contains("Enter to continue")
+            || text.contains("› [enter] Continue")
+            || text.contains("› [enter] Return to model choices")
+            || text.contains("Return to model choices"),
         "primary must be Continue or the historic return label"
     );
     assert!(

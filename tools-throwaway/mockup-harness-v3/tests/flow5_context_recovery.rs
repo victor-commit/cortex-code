@@ -7,6 +7,7 @@ use mockup_harness_v3::{audit::audit_screen, scenario::replay_case};
 
 const RECOVERY_TASK: &str = "Finish the release notes without losing the current work.";
 const RECOVERY_ORIGIN: &str = "Recovery · paused conversation";
+const RECOVERY_SUBJECT: &str = "Recovery";
 const USER_PROMPT: &str =
     "You · Summarize the remaining release notes and the still-open risks.";
 const PARTIAL_REPLY: &str =
@@ -50,7 +51,11 @@ fn error_context_preserves_refactor_state_and_states_plain_exhaustion() {
         text.contains(USER_PROMPT) || text.contains(RECOVERY_TASK),
         "active user request must remain visible"
     );
-    assert!(text.contains(RECOVERY_ORIGIN));
+    assert!(
+        text.contains(RECOVERY_ORIGIN)
+            || text.lines().any(|line| line.trim() == RECOVERY_SUBJECT),
+        "recovery origin/subject must paint"
+    );
     assert!(text.contains(COMPLETED_EDITS), "completed edits stay visible");
     assert!(text.contains(PENDING_TASK), "pending task stays visible");
     assert!(text.contains(PARTIAL_REPLY), "partial answer stays visible");

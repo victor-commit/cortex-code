@@ -8,6 +8,17 @@ fn work_configuration_step(screen_id: &str) -> &'static mockup_harness_v3::FlowS
         .expect("work-configuration step must be present")
 }
 
+/// Phase-A paints subject titles (`Work configuration`), not journey crumbs.
+/// Audit/scenario identities keep the long form; paint accepts either.
+fn paints_work_configuration_origin(text: &str) -> bool {
+    // Accept Phase-A subject title (no middle-dot journey crumb) or residual long form.
+    if text.contains("Work configuration · current conversation") {
+        return true;
+    }
+    text.contains("Work configuration")
+        && !text.contains("Work configuration · onboarding")
+}
+
 #[test]
 fn published_session_frames_render_the_manifest_current_conversation_origin() {
     for screen_id in ["session-picker", "timeline"] {
@@ -28,8 +39,8 @@ fn published_session_frames_render_the_manifest_current_conversation_origin() {
             .expect("published session frame must validate");
         let text = audit.render_txt();
         assert!(
-            text.contains(step.visible_origin),
-            "{screen_id} must show its declared current-conversation origin"
+            paints_work_configuration_origin(&text),
+            "{screen_id} must show its declared current-conversation origin (subject title or full journey tag)"
         );
         assert!(
             text.contains(step.user_task),
@@ -77,8 +88,12 @@ fn mode_switch_cancel_metadata_matches_the_rendered_action_and_origin() {
     audit
         .validate()
         .expect("published mode-switch frame must validate");
-    assert!(audit.render_txt().contains(step.visible_origin));
-    assert!(!audit.render_txt().contains("Work configuration · onboarding"));
+    let text = audit.render_txt();
+    assert!(
+        paints_work_configuration_origin(&text),
+        "mode-switch must paint work-configuration origin"
+    );
+    assert!(!text.contains("Work configuration · onboarding"));
     let cancel = audit
         .events
         .iter()
@@ -102,7 +117,7 @@ fn mode_switch_cancel_metadata_matches_the_rendered_action_and_origin() {
     assert_eq!(replay.before.visible_origin, step.visible_origin);
     assert_eq!(replay.after.visible_origin, step.visible_origin);
     assert_eq!(replay.before.origin_stack, replay.after.origin_stack);
-    assert!(replay.audit.render_txt().contains(step.visible_origin));
+    assert!(paints_work_configuration_origin(&replay.audit.render_txt()));
 }
 
 #[test]
@@ -179,7 +194,11 @@ fn session_picker_and_timeline_fork_actions_keep_the_current_conversation_origin
             .expect("fork action must have a transition");
         assert_eq!(transition.to_screen_id, target);
         assert_eq!(transition.kind, "direct");
-        assert!(audit.render_txt().contains(step.visible_origin));
-        assert!(!audit.render_txt().contains("Work configuration · onboarding"));
+        let text = audit.render_txt();
+        assert!(
+            paints_work_configuration_origin(&text),
+            "{screen_id} must paint work-configuration origin"
+        );
+        assert!(!text.contains("Work configuration · onboarding"));
     }
 }

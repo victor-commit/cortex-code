@@ -141,7 +141,22 @@ fn published_onboarding_and_model_frames_bind_the_declared_origin_and_continuati
     let model_audit = audit_screen(model_picker.screen_id, model_picker.fixture_id)
         .expect("declared model-picker fixture must render");
     let model_text = model_audit.render_txt();
-    assert!(model_text.contains("Work configuration · onboarding"));
+    // Phase-A paints subject titles / first-run subject, not journey crumbs.
+    // Manifest/audit identity keeps the chapter-true long form.
+    assert!(
+        model_text.contains("First-run setup")
+            || model_text.contains("Work configuration")
+            || model_text.contains("Work configuration · onboarding"),
+        "model-picker must paint an onboarding-chapter subject title"
+    );
+    assert!(
+        !model_text.contains("Work configuration · current conversation"),
+        "onboarding-chapter model-picker must not paint mature current-conversation crumb"
+    );
+    assert!(
+        !model_text.contains("Work configuration · onboarding"),
+        "model-picker must not reintroduce banned journey crumb paint"
+    );
     assert!(model_text.contains("Your first conversation is waiting for this choice."));
     assert!(!model_text.contains("Continue the paused conversation."));
     let model_choice = model_audit
@@ -215,9 +230,33 @@ fn work_configuration_chapters_use_chapter_true_origin_and_task() {
             assert!(text.contains("Set up your first conversation"));
             assert!(!text.contains("Work configuration · current conversation"));
         } else {
+            // Phase-A subject title paint; audit identity remains the long `origin` form.
+            let paints_identity = match screen_id {
+                "model-picker" => {
+                    text.contains("First-run setup")
+                        || text.contains("Work configuration")
+                        || text.contains(origin)
+                }
+                _ => {
+                    text.contains("Work configuration")
+                        || text.contains(origin)
+                }
+            };
             assert!(
-                text.contains(origin),
-                "{screen_id} must render chapter-true origin `{origin}`"
+                paints_identity,
+                "{screen_id} must render chapter-true origin (subject title or `{origin}`)"
+            );
+            // Subject-title path must not paint the opposite chapter crumb when Phase-A is sealed.
+            if origin == "Work configuration · onboarding" {
+                assert!(
+                    !text.contains("Work configuration · current conversation"),
+                    "{screen_id} first-setup chapter must not paint current-conversation crumb"
+                );
+            }
+            assert!(
+                !text.contains("Work configuration · onboarding")
+                    && !text.contains("Work configuration · current conversation"),
+                "{screen_id} must not reintroduce banned journey-crumb paint"
             );
         }
         if matches!(

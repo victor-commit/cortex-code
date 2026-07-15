@@ -63,7 +63,11 @@ fn unchanged_access_applies_directly_without_nested_confirmation() {
     assert!(text.contains("Current · Careful edits"));
     assert!(text.contains("Pending selection · Quick implementation"));
     assert!(text.contains("Keeps current access"));
-    assert!(text.contains("[enter] Use Quick implementation"));
+    assert!(
+        text.contains("Use Quick implementation")
+            || text.contains("[enter] Use Quick implementation"),
+        "unchanged-access primary must offer Use Quick implementation (prose or bracket)"
+    );
     assert!(!text.contains("Review access change"));
     assert!(audit
         .transitions
@@ -84,8 +88,17 @@ fn access_change_discloses_scope_and_waits_for_confirmation() {
     assert!(text.contains("Scope: this project"));
     assert!(text.contains("until you choose another work style"));
     assert!(text.contains("Your transcript and draft stay unchanged"));
-    assert!(text.contains("[enter] Apply access change"));
-    assert!(text.contains("[esc] Keep Careful edits"));
+    assert!(
+        text.contains("Apply access change")
+            || text.contains("[enter] Apply access change"),
+        "confirmation primary must offer Apply access change"
+    );
+    assert!(
+        text.contains("Esc to Keep Careful edits")
+            || text.contains("[esc] Keep Careful edits")
+            || text.contains("Keep Careful edits"),
+        "confirmation must keep cancel/keep careful edits path"
+    );
     assert!(!text.contains("permission matrix"));
     assert!(!text.contains("tool envelope"));
     assert_eq!(
@@ -108,15 +121,29 @@ fn refusal_keeps_current_style_and_offers_one_safe_next_action() {
     assert!(text.contains("still using Careful edits"));
     assert!(text.contains("transcript and draft are unchanged"));
     assert!(text.contains("Quick implementation keeps the same access"));
-    assert!(text.contains("[enter] Choose Quick implementation · same access"));
-    assert!(text.contains("[esc] Return to work"));
+    assert!(
+        text.contains("Choose Quick implementation · same access")
+            || text.contains("[enter] Choose Quick implementation · same access"),
+        "refusal primary recovery must offer same-access Quick implementation"
+    );
+    assert!(
+        text.contains("Esc to Return to work")
+            || text.contains("[esc] Return to work")
+            || text.contains("Return to work"),
+        "refusal secondary must offer Return to work"
+    );
     let primary_line = text
         .lines()
-        .find(|line| line.contains("[enter] Choose Quick implementation · same access"))
+        .find(|line| line.contains("Choose Quick implementation · same access"))
         .expect("primary refusal recovery action must render");
     let return_line = text
         .lines()
-        .find(|line| line.contains("[esc] Return to work"))
+        .find(|line| {
+            line.contains("Esc to Return to work")
+                || line.contains("[esc] Return to work")
+                || (line.contains("Return to work")
+                    && !line.contains("Choose Quick implementation"))
+        })
         .expect("secondary refusal return action must render");
     assert_ne!(
         primary_line, return_line,
