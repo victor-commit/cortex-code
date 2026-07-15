@@ -64,7 +64,22 @@ fn expected_flat_bottom(row: u16) -> u32 {
     row as u32 * CELL_HEIGHT + CELL_BASELINE as u32 - 1
 }
 
+/// Clears the whole probe row so residual fixture glyphs cannot bleed into
+/// envelope scans (narrow punctuation especially). Then places `text` starting
+/// at `PROBE_COL_START`.
 fn place_probe_string(audit: &mut mockup_harness_v3::audit::AuditDocument, text: &str) {
+    for cell in audit.styled_cells.iter_mut() {
+        if cell.row == PROBE_ROW {
+            *cell = StyledCell {
+                row: PROBE_ROW,
+                column: cell.column,
+                glyph: ' ',
+                style: TextStyle::text(),
+                absolute_fg: None,
+                absolute_bg: None,
+            };
+        }
+    }
     for (offset, glyph) in text.chars().enumerate() {
         let column = PROBE_COL_START + offset as u16;
         let cell = audit
@@ -188,52 +203,70 @@ fn mixed_height_latin_registers_to_shared_baseline() {
     }
 }
 
-/// Proves the old bbox-centering formula is no longer used: bottoms of '.', 'w',
-/// and 'A' would differ by several pixels under centering but align under baseline.
+/// Proves production placement is origin+baseline, not legacy bbox centering.
+///
+/// Hardcoding a single absolute y for '.' is brittle: short punctuation has
+/// noisy anti-alias coverage and neighbor-bleed risk under cell envelope scans.
+/// Instead compare *dispersions*: mixed-height non-descender bottoms must share
+/// a ≤1 px envelope under live rasterization, while the same metrics under
+/// bbox-centering must scatter by more than that (and worse than baseline).
 #[test]
 fn rejects_legacy_bbox_centering_registration() {
-    let sample = "Aw.";
+    // Spaced non-descenders of different coverage heights (A≈12, w/m≈9, i≈13).
+    // Spaces between glyphs keep envelope scans free of horizontal bleed.
+    // Period inherits its baseline check from mixed_height (xmin + ≤1 bottom).
+    let sample = "A w m i";
     let (image, canvas) = rasterize_probe(sample, "home");
     let expected_flat = expected_flat_bottom(PROBE_ROW);
 
-    // Under legacy centering, heights (A=12, w=9, .=3) place bottoms at
-    // cell_y + (21+height)/2 - 1 which scatters widely. Baseline placement
-    // keeps all three bottoms at expected_flat (±1).
-    let mut bottoms = Vec::new();
+    let mut baseline_bottoms: Vec<(char, u32)> = Vec::new();
     for (offset, ch) in sample.chars().enumerate() {
+        if ch == ' ' {
+            continue;
+        }
         let col = PROBE_COL_START + offset as u16;
         let (_top, bottom) = cell_ink_envelope(&image, col, PROBE_ROW, canvas)
             .unwrap_or_else(|| panic!("glyph '{ch}' produced no ink"));
-        bottoms.push((ch, bottom));
+        baseline_bottoms.push((ch, bottom));
         assert!(
             (bottom as i32 - expected_flat as i32).abs() <= 1,
-            "'{ch}' bottom={bottom} is offline for CELL_BASELINE (expected≈{expected_flat})"
+            "'{ch}' bottom={bottom} is offline for CELL_BASELINE (expected≈{expected_flat}); \
+             production render_audit_png must keep origin+baseline placement"
         );
     }
-    let min_b = bottoms.iter().map(|(_, b)| *b).min().unwrap();
-    let max_b = bottoms.iter().map(|(_, b)| *b).max().unwrap();
+    let basemin = baseline_bottoms.iter().map(|(_, b)| *b).min().unwrap();
+    let basemax = baseline_bottoms.iter().map(|(_, b)| *b).max().unwrap();
+    let baseline_dispersion = basemax - basemin;
     assert!(
-        max_b - min_b <= 1,
-        "legacy bbox-centering yields multi-px bottom scatter for A/w/.; got {bottoms:?}"
+        baseline_dispersion <= 1,
+        "baseline-registered bottoms must share a ≤1px envelope; got {baseline_bottoms:?}"
     );
 
-    // Explicit counterfactual: compute centered bottoms for these metrics and
-    // require they do NOT all equal the observed bottoms (proves we did not
-    // accidentally keep centering if metrics ever match by chance).
+    // Counterfactual: same metrics under bbox-centering of each glyph bitmap
+    // inside the cell. Heights differ (A=12, w=9, m=9, i=13) so centered
+    // bottoms scatter; production must remain tighter than that scatter.
     let (regular, _) = embedded_fonts().expect("embedded fonts");
-    let mut centered_bottoms = Vec::new();
-    for ch in sample.chars() {
+    let mut centered_bottoms: Vec<(char, i32)> = Vec::new();
+    for ch in sample.chars().filter(|c| *c != ' ') {
         let (m, _) = regular.rasterize(ch, 16.0);
-        let base_y = PROBE_ROW as i32 * CELL_HEIGHT as i32 + (CELL_HEIGHT as i32 - m.height as i32) / 2;
+        let base_y =
+            PROBE_ROW as i32 * CELL_HEIGHT as i32 + (CELL_HEIGHT as i32 - m.height as i32) / 2;
         let centered_bottom = base_y + m.height as i32 - 1;
-        centered_bottoms.push(centered_bottom);
+        centered_bottoms.push((ch, centered_bottom));
     }
-    let cmin = *centered_bottoms.iter().min().unwrap();
-    let cmax = *centered_bottoms.iter().max().unwrap();
+    let cmin = centered_bottoms.iter().map(|(_, b)| *b).min().unwrap();
+    let cmax = centered_bottoms.iter().map(|(_, b)| *b).max().unwrap();
+    let centered_dispersion = (cmax - cmin) as u32;
     assert!(
-        cmax - cmin > 1,
+        centered_dispersion > 1,
         "fontdue metrics changed: centered bottoms no longer scatter ({centered_bottoms:?}); \
          re-check probe sensitivity"
+    );
+    assert!(
+        baseline_dispersion < centered_dispersion,
+        "origin+baseline must be tighter than bbox-centering; \
+         baseline_dispersion={baseline_dispersion} centered_dispersion={centered_dispersion} \
+         baseline={baseline_bottoms:?} centered={centered_bottoms:?}"
     );
 }
 
