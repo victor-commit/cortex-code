@@ -280,6 +280,11 @@ const ORIGIN_SCENARIOS: &[(&str, &str, &str)] = &[
         "workflow-monitor",
     ),
     (
+        "mission-failure-return",
+        "workflow-monitor-failure",
+        "chat-turn",
+    ),
+    (
         "mission-fix-working",
         "workflow-monitor",
         "workflow-monitor",
@@ -461,6 +466,7 @@ const CANCEL_LIKE: &[&str] = &[
     "mission-tool-envelope-return",
     "mission-stage-evidence-return",
     "mission-team-board-advanced-return",
+    "mission-failure-return",
 ];
 
 fn gallery_root() -> PathBuf {
@@ -1059,6 +1065,95 @@ fn complete_mission_transition_graph_is_reversible_and_origin_preserving() {
             step.screen_id
         );
     }
+
+    // VAL-V3-F6-051 focus: workflow-monitor-failure paints Resume conversation 1:1
+    // to a cancel/return transition, and Open evidence is single-bound.
+    let failure = render_pair(
+        "workflow-monitor-failure",
+        "gate.mission.workflow-monitor-failure",
+    );
+    let failure_text = failure.render_txt();
+    assert!(
+        failure_text.contains("[esc] Resume conversation"),
+        "failure must paint Resume conversation:\n{failure_text}"
+    );
+    assert!(
+        failure_text.contains("[d] Open evidence"),
+        "failure must paint Open evidence:\n{failure_text}"
+    );
+
+    let resume_events: Vec<_> = failure
+        .events
+        .iter()
+        .filter(|event| {
+            event.action.as_ref().is_some_and(|action| {
+                action.action_id == "action.mission.monitor-failure-return"
+                    || action.label == "Resume conversation"
+            })
+        })
+        .collect();
+    assert_eq!(
+        resume_events.len(),
+        1,
+        "Resume conversation must bind exactly one action: {:?}",
+        resume_events
+            .iter()
+            .map(|e| e.action.as_ref().map(|a| a.action_id.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        resume_events[0].action.as_ref().unwrap().action_id,
+        "action.mission.monitor-failure-return"
+    );
+    assert!(
+        failure.transitions.iter().any(|t| {
+            t.action_id == "action.mission.monitor-failure-return"
+                && t.to_screen_id == "chat-turn"
+                && t.kind == "cancel"
+        }),
+        "Resume conversation must map to cancel return chat-turn: {:?}",
+        failure.transitions
+    );
+
+    let open_evidence_ids: HashSet<_> = failure
+        .events
+        .iter()
+        .filter_map(|event| {
+            event.action.as_ref().and_then(|action| {
+                (action.label == "Open evidence").then_some(action.action_id.clone())
+            })
+        })
+        .collect();
+    assert_eq!(
+        open_evidence_ids.len(),
+        1,
+        "Open evidence must not dual-bind labels: {open_evidence_ids:?}"
+    );
+    assert!(
+        open_evidence_ids.contains("action.mission.view-validation-stages"),
+        "Open evidence must bind view-validation-stages only: {open_evidence_ids:?}"
+    );
+    assert!(
+        !open_evidence_ids.contains("action.mission.open-evidence"),
+        "open-evidence must not share the painted Open evidence label"
+    );
+
+    let resume_case = replay_case("mission-failure-return", 1)
+        .expect("public mission-failure-return case must exist");
+    assert_eq!(resume_case.before.screen_id, "workflow-monitor-failure");
+    assert_eq!(resume_case.after.screen_id, "chat-turn");
+    assert_eq!(
+        resume_case.actions[0].action_id,
+        "action.mission.monitor-failure-return"
+    );
+    assert_eq!(resume_case.transitions[0].kind, "cancel");
+    assert_eq!(resume_case.before.user_task, resume_case.after.user_task);
+    assert_eq!(resume_case.before.session_id, resume_case.after.session_id);
+    assert_eq!(
+        resume_case.before.visible_origin,
+        resume_case.after.visible_origin
+    );
+    assert!(!resume_case.after.draft.is_empty() || !resume_case.after.focus.is_empty());
 }
 
 #[test]

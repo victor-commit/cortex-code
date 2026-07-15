@@ -334,6 +334,7 @@ mission-stop-open
 mission-stop-confirm
 mission-stop-cancel
 mission-stopped-return
+mission-failure-return
 mission-stopped-replan
 mission-restart-running
 mission-restart-paused

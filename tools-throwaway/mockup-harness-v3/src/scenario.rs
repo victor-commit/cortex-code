@@ -1615,6 +1615,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
         "mission-stop-confirm" => mission_stop_confirm(),
         "mission-stop-cancel" => mission_stop_cancel(),
         "mission-stopped-return" => mission_stopped_return(),
+        "mission-failure-return" => mission_failure_return(),
         "mission-stopped-replan" => mission_stopped_replan(),
         "mission-restart-running" => mission_restart_stage("running"),
         "mission-restart-paused" => mission_restart_stage("paused"),
@@ -3062,6 +3063,7 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | "mission-stop-confirm"
             | "mission-stop-cancel"
             | "mission-stopped-return"
+            | "mission-failure-return"
             | "mission-stopped-replan"
             | "mission-restart-running"
             | "mission-restart-paused"
@@ -3215,7 +3217,8 @@ pub fn replay_case(case_id: &str, tick: u32) -> Result<CaseReplay, String> {
             | ("mission-restart-stopped", "workflow-monitor") => {
                 "workflow-monitor.stopped".to_owned()
             }
-            ("mission-stopped-return", "chat-turn") => {
+            ("mission-stopped-return", "chat-turn")
+            | ("mission-failure-return", "chat-turn") => {
                 "case.mission.complete.after.chat-turn.tick.1".to_owned()
             }
             ("mission-restart-running", "workflow-monitor") => {
@@ -7372,6 +7375,87 @@ fn mission_stopped_return() -> (
         "mission-stop",
         "returned",
         "stopped state retained; conversation composer restored without auto resume",
+    );
+    (before, after, action, transition, attempt, effect)
+}
+
+/// VAL-V3-F6-051: painted [esc] Resume conversation on workflow-monitor-failure is a
+/// real cancel/return that restores the prior conversation without dual-binding
+/// open-evidence onto that row.
+fn mission_failure_return() -> (
+    ScenarioState,
+    ScenarioState,
+    ActionEvidence,
+    TransitionTrace,
+    AttemptEvidence,
+    SideEffectEvidence,
+) {
+    let mut before = state(
+        "workflow-monitor-failure",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+        ],
+        FLOW6_DRAFT,
+        "mission-failure",
+        "resume-conversation",
+        "mission-failure",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        0,
+    );
+    apply_flow6_identity(&mut before);
+    before.scroll_anchor = "mission-failure".to_owned();
+    before.state_hash = state_hash(&before);
+    let mut after = state(
+        "chat-turn",
+        vec![
+            "chat-turn",
+            "workflow-monitor",
+            "workflow-monitor-failure",
+        ],
+        FLOW6_DRAFT,
+        "composer",
+        "composer",
+        "composer",
+        Some(FLOW6_PENDING),
+        "return-to-conversation",
+        1,
+    );
+    copy_flow6_identity(&before, &mut after);
+    after.focus = "composer".to_owned();
+    after.selection = "composer".to_owned();
+    after.pending_action = None;
+    after.scroll_anchor = "composer".to_owned();
+    // Origin stack equality across cancel/return (preserves prior mission context identity).
+    after.origin_stack = before.origin_stack.clone();
+    after.state_hash = state_hash(&after);
+    let action = ActionEvidence {
+        action_id: "action.mission.monitor-failure-return".to_owned(),
+        label: "Resume conversation".to_owned(),
+        enabled: true,
+        automatic: false,
+    };
+    let transition = TransitionTrace {
+        action_id: action.action_id.clone(),
+        from_screen_id: before.screen_id.clone(),
+        to_screen_id: after.screen_id.clone(),
+        kind: "cancel".to_owned(),
+        path: "resume conversation restores the originating conversation with preserved failure context"
+            .to_owned(),
+    };
+    let attempt = AttemptEvidence {
+        attempt_id: "attempt.mission.monitor-failure-return.0".to_owned(),
+        owner_id: FLOW6_PENDING.to_owned(),
+        count: 0,
+        outcome: "returned".to_owned(),
+    };
+    let effect = simulated_effect(
+        "effect.mission.monitor-failure-return",
+        "mission-failure",
+        "returned",
+        "failure state retained; conversation composer and draft restored without discarding work",
     );
     (before, after, action, transition, attempt, effect)
 }

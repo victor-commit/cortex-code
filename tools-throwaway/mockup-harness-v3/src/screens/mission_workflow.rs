@@ -3582,6 +3582,29 @@ fn render_workflow_monitor_failure(
         )?;
     }
 
+    // Secondary evidence uses exactly one action on the painted [d] row.
+    // Resume conversation is a real cancel return (VAL-V3-F6-051), never dual-bound.
+    let resume_return = semantic(
+        screen_id,
+        fixture_id,
+        "return-action",
+        "monitor-failure-return",
+        reference(DOCK_TOP + 5, 4, 34),
+        "summary",
+        Some(action(
+            "action.mission.monitor-failure-return",
+            "Resume conversation",
+            false,
+        )),
+    );
+    let resume_transition = transition(
+        "action.mission.monitor-failure-return",
+        screen_id,
+        "chat-turn",
+        "cancel",
+        "resume conversation restores the originating conversation with preserved failure context",
+    );
+
     let pairs = if retry_eligible {
         vec![
             semantic(
@@ -3651,6 +3674,7 @@ fn render_workflow_monitor_failure(
                     false,
                 )),
             ),
+            resume_return.clone(),
         ]
     } else if missing_input {
         vec![
@@ -3707,15 +3731,16 @@ fn render_workflow_monitor_failure(
                 screen_id,
                 fixture_id,
                 "secondary-action",
-                "open-evidence",
+                "view-validation-stages",
                 reference(DOCK_TOP + 4, 4, 24),
                 "summary",
                 Some(action(
-                    "action.mission.open-evidence",
+                    "action.mission.view-validation-stages",
                     "Open evidence",
                     false,
                 )),
             ),
+            resume_return.clone(),
         ]
     } else {
         vec![
@@ -3777,6 +3802,8 @@ fn render_workflow_monitor_failure(
                     false,
                 )),
             ),
+            // Single painted [d] Open evidence: open validation stages only.
+            // Do not dual-bind a second open-evidence action to the same label.
             semantic(
                 screen_id,
                 fixture_id,
@@ -3790,19 +3817,7 @@ fn render_workflow_monitor_failure(
                     false,
                 )),
             ),
-            semantic(
-                screen_id,
-                fixture_id,
-                "secondary-action",
-                "open-evidence",
-                reference(DOCK_TOP + 4, 4, 24),
-                "summary",
-                Some(action(
-                    "action.mission.open-evidence",
-                    "Open evidence",
-                    false,
-                )),
-            ),
+            resume_return.clone(),
         ]
     };
     let mut pairs = pairs;
@@ -3822,6 +3837,7 @@ fn render_workflow_monitor_failure(
                 "direct",
                 "creating a fix task records the failure as planned repair work",
             ),
+            resume_transition.clone(),
         ]
     } else if missing_input {
         vec![
@@ -3833,12 +3849,13 @@ fn render_workflow_monitor_failure(
                 "missing input resolution stays blocked until the checklist note is provided",
             ),
             transition(
-                "action.mission.open-evidence",
+                "action.mission.view-validation-stages",
                 screen_id,
                 "verification-ladder",
                 "direct",
                 "evidence disclosure opens the validation stages for the same failure",
             ),
+            resume_transition.clone(),
         ]
     } else {
         vec![
@@ -3856,13 +3873,7 @@ fn render_workflow_monitor_failure(
                 "direct",
                 "validation stages open only from an explicit evidence action",
             ),
-            transition(
-                "action.mission.open-evidence",
-                screen_id,
-                "verification-ladder",
-                "direct",
-                "evidence disclosure opens the validation stages for the same failure",
-            ),
+            resume_transition.clone(),
         ]
     };
     if fixture_id.contains("gate.mission.workflow-monitor-failure") {

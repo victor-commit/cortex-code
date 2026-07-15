@@ -115,6 +115,39 @@ fn failure_is_exception_first_with_create_fix_task_primary() {
             && transition.to_screen_id == "workflow-monitor"
             && (transition.kind == "direct" || transition.kind == "automatic")
     }));
+    // VAL-V3-F6-051: painted Resume maps 1:1 to cancel/return; Open evidence is singular.
+    assert!(text.contains("[esc] Resume conversation"));
+    assert!(
+        audit.events.iter().any(|event| {
+            event.action.as_ref().is_some_and(|action| {
+                action.action_id == "action.mission.monitor-failure-return"
+                    && action.label == "Resume conversation"
+            })
+        }),
+        "Resume conversation event must exist"
+    );
+    assert!(
+        audit.transitions.iter().any(|transition| {
+            transition.action_id == "action.mission.monitor-failure-return"
+                && transition.to_screen_id == "chat-turn"
+                && transition.kind == "cancel"
+        }),
+        "Resume conversation must cancel/return to chat-turn"
+    );
+    let open_label_ids: Vec<_> = audit
+        .events
+        .iter()
+        .filter_map(|event| {
+            event.action.as_ref().and_then(|action| {
+                (action.label == "Open evidence").then_some(action.action_id.as_str())
+            })
+        })
+        .collect();
+    assert_eq!(
+        open_label_ids,
+        vec!["action.mission.view-validation-stages"],
+        "Open evidence must be single-bound"
+    );
 }
 
 #[test]
