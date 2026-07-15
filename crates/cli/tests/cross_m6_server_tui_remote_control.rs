@@ -28,10 +28,10 @@ fn live_key() -> Option<String> {
 }
 
 fn tuistory_available() -> bool {
-    match Command::new("tuistory").arg("--version").output() {
-        Ok(output) if output.status.success() => true,
-        _ => false,
-    }
+    matches!(
+        Command::new("tuistory").arg("--version").output(),
+        Ok(output) if output.status.success()
+    )
 }
 
 fn scratch_dir(tag: &str) -> PathBuf {
@@ -401,6 +401,9 @@ struct TuistorySession {
 }
 
 impl TuistorySession {
+    // Integration harness needs distinct path/env/server/session knobs; keep the
+    // explicit parameter list rather than introducing a throwaway config bundle.
+    #[allow(clippy::too_many_arguments)]
     fn launch(
         name: String,
         cortex: &Path,
