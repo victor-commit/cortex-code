@@ -406,6 +406,212 @@ async fn tool_using_turn_surfaces_correlated_tool_lifecycle_events() {
     );
 }
 
+// VAL-SERVER-024: a turn that needs approval emits permission.asked on /event naming the gated
+// action/pattern so remote clients can reply via the permission routes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn permission_ask_turn_emits_permission_asked_on_event_stream() {
+    let scratch = Scratch::new("server-event-permission-ask");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        r#"
+[[permission]]
+tool = "bash"
+pattern = "*"
+action = "ask"
+"#,
+    )
+    .expect("write project config");
+
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(PermissionPendingProvider::default());
+    let state = server::ServerState::with_provider(scratch.db_path(), provider)
+        .with_event_bus(bus)
+        .with_cwd(workspace)
+        .with_config_env(Vec::new());
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+    let mut stream = subscribe(&app).await;
+
+    let app_turn = app.clone();
+    let session_id = session.id.clone();
+    let turn = tokio::spawn(async move {
+        app_turn
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{session_id}/message"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"text":"run a gated shell command"}"#))
+                    .expect("request"),
+            )
+            .await
+            .expect("message response")
+    });
+
+    let events = collect_until_kind(&mut stream, "permission.asked", Duration::from_secs(5)).await;
+    assert!(
+        events.iter().any(|event| {
+            event["kind"] == "permission.asked"
+                && (event["session_id"] == session.id || event["session_id"].is_null())
+                && event["tool"] == "bash"
+                && event["pattern"]
+                    .as_str()
+                    .is_some_and(|pattern| !pattern.is_empty())
+                && event["request"].as_str().is_some_and(|request| {
+                    request.contains("echo") || request.contains("permission")
+                })
+        }),
+        "SSE must surface a permission.asked frame naming the gated bash action: {events:?}"
+    );
+
+    // Approve the pending ask so the turn completes cleanly (and does not leave worker hangs).
+    let mut pending = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let pending_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/permission/pending")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("pending response");
+        assert_eq!(pending_response.status(), StatusCode::OK);
+        let pending_body: serde_json::Value = json_body(pending_response).await;
+        pending = pending_body["pending"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if !pending.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !pending.is_empty(),
+        "permission ask should register a pending entry"
+    );
+    let permission_id = pending[0]["id"].as_str().expect("permission id").to_owned();
+    let reply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/permission/reply")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{permission_id}","decision":"allow"}}"#
+                )))
+                .expect("request"),
+        )
+        .await
+        .expect("permission reply");
+    assert_eq!(reply.status(), StatusCode::OK);
+
+    let response = turn.await.expect("turn join");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+}
+
+// VAL-SERVER-025: every non-empty data: frame parses as JSON, and dropping a subscriber mid-stream
+// leaves the server healthy so a subsequent turn still fans out events to a fresh subscriber.
+#[tokio::test]
+async fn dropping_subscriber_mid_stream_leaves_server_healthy_for_next_turn() {
+    let scratch = Scratch::new("server-event-disconnect");
+    let bus = Arc::new(EventBus::new());
+    let provider = Arc::new(StreamingEchoProvider);
+    let state = server::ServerState::with_provider(scratch.db_path(), provider).with_event_bus(bus);
+    let app = server::app_with_state(state);
+    let session = create_session(&app).await;
+
+    // First subscriber attaches, then we drop its body mid-turn to simulate a client disconnect.
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/event")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("first event response");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert_sse_content_type(&first_response);
+    drop(first_response);
+
+    let first_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"count please"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("first message response");
+    assert_eq!(first_turn.status(), StatusCode::OK);
+
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("health response");
+    assert_eq!(
+        health.status(),
+        StatusCode::OK,
+        "server stays healthy after dropping the SSE subscriber mid-stream"
+    );
+    let health_body: serde_json::Value = json_body(health).await;
+    assert_eq!(health_body["status"], "ok");
+
+    // A brand-new subscriber still receives correlated frames for a subsequent turn.
+    let mut second = subscribe(&app).await;
+    let second_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/session/{}/message", session.id))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"count again"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("second message response");
+    assert_eq!(second_turn.status(), StatusCode::OK);
+
+    let events = collect_until_kind(&mut second, "turn.done", Duration::from_secs(5)).await;
+    assert!(
+        !events.is_empty(),
+        "new subscriber must still receive frames after a prior disconnect: {events:?}"
+    );
+    for event in &events {
+        assert!(
+            event.is_object(),
+            "every delivered frame must parse as JSON: {event:?}"
+        );
+    }
+    assert!(
+        events
+            .iter()
+            .any(|event| event["kind"] == "assistant.text_delta"
+                && event["session_id"] == session.id),
+        "post-disconnect subscriber must receive correlated text deltas: {events:?}"
+    );
+}
+
 #[tokio::test]
 async fn command_route_surfaces_correlated_tool_lifecycle_events() {
     let scratch = Scratch::new("server-event-command");
@@ -1751,6 +1957,57 @@ impl Provider for StreamingEchoProvider {
                     reason: FinishReason::Stop,
                 },
             ];
+            Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct PermissionPendingProvider {
+    calls: AtomicUsize,
+}
+
+impl Provider for PermissionPendingProvider {
+    fn stream<'a>(
+        &'a self,
+        request: LlmRequest,
+    ) -> BoxFuture<'a, Result<LlmStream, llm::LlmError>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let has_tool_result = request
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool);
+            let events = if !has_tool_result {
+                vec![
+                    LlmEvent::ToolCall(ToolCall {
+                        id: "call_permission".to_owned(),
+                        name: "bash".to_owned(),
+                        arguments: r#"{"command":"echo cortex-sse-permission-marker"}"#.to_owned(),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::ToolCalls,
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta {
+                        text: "permission resolved".to_owned(),
+                    },
+                    LlmEvent::Usage(Usage {
+                        input_tokens: 5,
+                        output_tokens: 3,
+                        total_tokens: 8,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        reasoning_output_tokens: None,
+                        cost: Some(0.000_001),
+                    }),
+                    LlmEvent::Done {
+                        reason: FinishReason::Stop,
+                    },
+                ]
+            };
             Ok(Box::pin(futures_util::stream::iter(events)) as LlmStream)
         })
     }
