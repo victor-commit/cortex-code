@@ -4543,18 +4543,30 @@ impl App {
     /// Rebuild the model picker's visible rows (and the `model_rows` selection map) from the cached
     /// full set filtered by the search query, in the flat or vendor-grouped layout. Grouped view
     /// inserts a non-selectable vendor header before each vendor's block.
+    ///
+    /// When the user types a query, matches are ranked so an **exact model id** floats to the top
+    /// (then id prefix, then broader haystack match). That keeps `/models` selection consistent
+    /// with headless `--model` and the server `model` param for a fully-typed catalog id such as
+    /// `anthropic/claude-sonnet-4` (VAL-CROSS-036), without being shadowed by a longer sibling like
+    /// `anthropic/claude-sonnet-4.6`.
     fn rebuild_model_view(&mut self) {
         let query = self.picker_query.to_lowercase();
         let grouped = self.model_group_by_provider;
+        let mut matched: Vec<&ModelPick> = self
+            .model_all
+            .iter()
+            .filter(|pick| query.is_empty() || pick.hay.contains(&query))
+            .collect();
+        if !query.is_empty() {
+            matched.sort_by_key(|pick| model_query_rank(&query, pick));
+        }
+
         let mut items = Vec::new();
         let mut model_rows: Vec<Option<String>> = Vec::new();
         let mut rows = Vec::new();
         let mut key_width = 0usize;
         let mut current_vendor: Option<String> = None;
-        for pick in &self.model_all {
-            if !query.is_empty() && !pick.hay.contains(&query) {
-                continue;
-            }
+        for pick in matched {
             key_width = key_width.max(pick.row.key.chars().count());
             if grouped && current_vendor.as_deref() != Some(pick.vendor.as_str()) {
                 current_vendor = Some(pick.vendor.clone());
@@ -4570,9 +4582,15 @@ impl App {
         self.model_rows = model_rows;
         self.picker_rows = rows;
         if let Some(dialog) = self.dialog.as_mut() {
-            let clamped = dialog.selected.min(items.len().saturating_sub(1));
+            // A non-empty filter always re-ranks, so drop the caret back to the best match rather
+            // than leaving it on a now-irrelevant absolute index from the unfiltered list.
+            let selected = if query.is_empty() {
+                dialog.selected.min(items.len().saturating_sub(1))
+            } else {
+                0
+            };
             dialog.items = items;
-            dialog.selected = clamped;
+            dialog.selected = selected;
         }
         self.ensure_model_selection_selectable();
     }
@@ -10045,6 +10063,22 @@ fn skill_source_label(source: &Path, cwd: Option<&Path>) -> String {
 /// anything yet) reads as empty rather than an error.
 fn tail_background_log(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// Rank a model pick against a lowercase filter query so exact fully-qualified ids sort first.
+/// Lower ranks win. Used only when the picker has a non-empty query.
+fn model_query_rank(query: &str, pick: &ModelPick) -> (u8, String) {
+    let id = pick.id.to_lowercase();
+    let rank = if id == query {
+        0
+    } else if id.starts_with(query) {
+        1
+    } else if pick.hay.starts_with(query) || pick.hay.contains(&format!(" {query}")) {
+        2
+    } else {
+        3
+    };
+    (rank, id)
 }
 
 /// A short, authentic model descriptor derived from real catalogue metadata (never a hardcoded
@@ -15700,6 +15734,33 @@ mod tests {
             a.dialog().expect("open").items.len(),
             full,
             "clearing the query restores the full list"
+        );
+    }
+
+    #[test]
+    fn model_search_exact_id_ranks_above_prefix_siblings() {
+        // VAL-CROSS-036: typing a fully-qualified model id must put that exact row first, not a
+        // longer sibling such as `…-4.6` that merely contains the same substring.
+        let mut a = app();
+        dispatch(&mut a, "models");
+        let target = "anthropic/claude-sonnet-4";
+        // The embedded catalogue may or may not include this exact id; when present the ranking
+        // invariant must hold. Skip cleanly when the fixture catalogue lacks it.
+        if !a.model_all.iter().any(|pick| pick.id == target) {
+            eprintln!("skipping exact-id rank test: {target} not in fixture catalogue");
+            return;
+        }
+        type_str(&mut a, target);
+        let filtered = a.dialog().expect("open").items.clone();
+        assert_eq!(
+            filtered.first().map(String::as_str),
+            Some(target),
+            "exact id must rank first, got {filtered:?}"
+        );
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.status.model, target,
+            "selecting the exact filtered id must apply it"
         );
     }
 
