@@ -1,5 +1,6 @@
 use std::{fs, path::Path, process::Command};
 
+use mockup_harness_v3::chrome::components::subject_title_for_origin;
 use mockup_harness_v3::{
     audit::{audit_screen, sha256_hex},
     flow_manifests,
@@ -110,7 +111,7 @@ fn input_and_approval_storyboard_declares_every_ordered_edge_and_return() {
         .expect("file mention must expose the submit bridge");
     assert!(mention
         .render_txt()
-        .contains("[enter] Submit prepared prompt"));
+        .contains("Submit prepared prompt"));
     assert!(mention.transitions.iter().any(|transition| {
         transition.action_id == "action.file-mention.submit-prepared-prompt"
             && transition.to_screen_id == "permission-shell"
@@ -429,7 +430,7 @@ fn terminal_chat_turn_keeps_paused_retry_origin_after_staging_finish() {
         "audit JSON must retain exact session.retry-review.18 continuity"
     );
     assert!(
-        !finish_text.contains("Daily work · current conversation"),
+        !(finish_text.contains("Current conversation") || finish_text.contains("Daily work · current conversation")),
         "the Flow 2 terminal destination must not fall back to Daily work identity"
     );
     assert!(
@@ -440,7 +441,7 @@ fn terminal_chat_turn_keeps_paused_retry_origin_after_staging_finish() {
     let published = audit_screen("chat-turn", "flow2.input-and-approval.stable")
         .expect("the Flow 2 terminal chat-turn fixture must render");
     let published_text = published.render_txt();
-    assert!(published_text.contains("Input and approval · paused conversation"));
+    assert!(published_text.contains("Paused conversation") || (published_text.contains("Paused conversation") || published_text.contains("Input and approval · paused conversation")));
     assert!(published_text.contains("Check the retry path before we merge."));
     assert!(published_text.contains("Session · retry-path review · same paused turn"));
     assert_eq!(
@@ -452,7 +453,7 @@ fn terminal_chat_turn_keeps_paused_retry_origin_after_staging_finish() {
         "session.retry-review.18"
     );
     assert!(!published_text.contains("session.retry-review.18"));
-    assert!(!published_text.contains("Daily work · current conversation"));
+    assert!(!(published_text.contains("Current conversation") || published_text.contains("Daily work · current conversation")));
     assert!(!published_text.contains(
         "Find where the server applies the rate limit and explain the safe path."
     ));
@@ -495,7 +496,7 @@ fn input_and_approval_pause_window_keeps_one_task_you_and_draft_chain() {
             "{screen} must keep the immutable submitted prompt identity"
         );
         assert!(
-            text.contains("Input and approval · paused conversation"),
+            (text.contains("Paused conversation") || (text.contains("Paused conversation") || text.contains("Input and approval · paused conversation"))),
             "{screen} must keep the paused Input and approval origin chip"
         );
         assert!(
@@ -616,7 +617,11 @@ fn chat_turn_fixture_parity_is_fail_closed_across_journeys() {
         assert_eq!(identity.user_task, task, "{fixture}");
         assert_eq!(identity.session_id, session, "{fixture}");
         assert_eq!(identity.conversation_id, conversation, "{fixture}");
-        assert!(text.contains(origin), "{fixture} origin must be visible");
+        let painted = subject_title_for_origin(origin);
+        assert!(
+            text.contains(painted) || text.contains(origin),
+            "{fixture} origin must be visible as subject title or legacy chrome"
+        );
         assert!(text.contains(task), "{fixture} task must be visible");
         // No cross-journey bleed on the shared screen.
         for (other_fixture, other_origin, other_task, _, _) in cases {
@@ -653,7 +658,7 @@ fn chat_turn_fixture_parity_is_fail_closed_across_journeys() {
             "hostile fixture {hostile} must name fail-closed classification: {err}"
         );
         assert!(
-            !err.contains("Daily work · current conversation"),
+            !(err.contains("Current conversation") || err.contains("Daily work · current conversation")),
             "failure path must not silently claim Daily work success"
         );
     }
@@ -698,9 +703,11 @@ fn declared_chat_turn_storyboard_fixtures_reject_cross_identity_bleed() {
         let identity = audit.conversation.as_ref().expect("identity required");
         assert_eq!(identity.visible_origin, origin);
         assert_eq!(step.visible_origin, origin);
+        let painted = subject_title_for_origin(origin);
+        let txt = audit.render_txt();
         assert!(
-            audit.render_txt().contains(origin),
-            "{flow_name} TXT must keep declared origin"
+            txt.contains(painted) || txt.contains(origin),
+            "{flow_name} TXT must keep declared origin (subject title ok)"
         );
     }
 }

@@ -142,6 +142,73 @@ pub fn reject_journey_breadcrumb_title(title: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Map audit journey-origin identity strings to human **painted** subject titles (N-12).
+///
+/// Audit `visible_origin` may still carry journey tags for continuity gates; primary
+/// on-screen titles MUST call this (or paint a human subject directly) so users never
+/// see storyboard crumbs like `Daily work · …`.
+pub fn subject_title_for_origin(journey_or_subject: &str) -> &'static str {
+    let trimmed = journey_or_subject.trim();
+    match trimmed {
+        "Daily work · current conversation" => "Current conversation",
+        "Input and approval · paused conversation" => "Paused conversation",
+        "Work configuration · current conversation" => "Work configuration",
+        "Work configuration · onboarding" => "First-run setup",
+        "Provider and MCP · connect" | "Provider and MCP · connections" => "Connections",
+        "Recovery · paused conversation" => "Recovery",
+        "Mission · current conversation" => "Mission",
+        // Already-human subjects and unknown custom titles pass through via a small set
+        // of known fixtures; callers with non-static copy should paint their own subject.
+        "Current conversation" => "Current conversation",
+        "Paused conversation" => "Paused conversation",
+        "Work configuration" => "Work configuration",
+        "First-run setup" => "First-run setup",
+        "Connections" => "Connections",
+        "Recovery" => "Recovery",
+        "Mission" => "Mission",
+        _ if is_journey_breadcrumb_title(trimmed) => {
+            // Last-resort stripping so unknown journey crumbs never paint raw.
+            if let Some((_, subject)) = trimmed.split_once('·') {
+                let s = subject.trim();
+                if !s.is_empty() {
+                    // Leak a stable static for the handful of dynamic subjects used
+                    // in screens by returning common tails; Fall through nonempty tails.
+                    return match s {
+                        "current conversation" => "Current conversation",
+                        "paused conversation" => "Paused conversation",
+                        "onboarding" => "First-run setup",
+                        other if other.eq_ignore_ascii_case("connect") => "Connections",
+                        _ => "Conversation",
+                    };
+                }
+            }
+            "Conversation"
+        }
+        _ => "Conversation",
+    }
+}
+
+/// Compact Claude-style user-turn surface text: soft SURFACE wash + bright body (F-9).
+///
+/// Pads one column on each side when space remains so the wash reads as a true surface
+/// rather than a bare label. Callers own vertical spacing; this paints a single row.
+pub fn user_turn_surface_line(text: &str) -> Result<ComponentLine, String> {
+    let body = text.trim();
+    if body.is_empty() {
+        return Err("user turn surface requires text".to_owned());
+    }
+    if contains_bracket_key_atom(body) {
+        return Err("user turn surface may not use bracket key atoms".to_owned());
+    }
+    if is_journey_breadcrumb_title(body) {
+        return Err("user turn surface may not be a journey breadcrumb title".to_owned());
+    }
+    Ok(ComponentLine::new(
+        format!(" {body} "),
+        TextStyle::user_turn(),
+    ))
+}
+
 /// Fail closed when composer chrome leaks implementation meta (N-13).
 pub fn reject_composer_debug_meta(text: &str) -> Result<(), String> {
     let lower = text.to_ascii_lowercase();

@@ -13,7 +13,9 @@ use crate::{
     },
     chrome::{
         components::{
-            ActivityRow, ActivityState, Component, DisclosureBlock, DisclosureState,
+            subject_title_for_origin, user_turn_surface_line, ActivityRow, ActivityState,
+            Component, DisclosureBlock, DisclosureState, ENTRY_CODE_BANNER, ShortcutByline,
+            ShortcutHint,
         },
         layout::{CANVAS_ROWS, StatusLine},
         tokens::TextStyle,
@@ -331,7 +333,14 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
             _ => (DAILY_WORK_ORIGIN, DAILY_WORK_TASK),
         },
     };
-    canvas.write(2, 4, visible_origin, TextStyle::muted())?;
+    // Primary painted title names the human subject (N-12). Audit visible_origin
+    // keeps journey identity for continuity gates; it is not painted as chrome.
+    canvas.write(
+        2,
+        4,
+        subject_title_for_origin(visible_origin),
+        TextStyle::muted(),
+    )?;
     canvas.write(3, 4, user_task, TextStyle::bright())?;
 
     let (candidates, events, transitions) = match screen_id {
@@ -964,7 +973,7 @@ fn render_diff_applied_turn(
 ) -> Result<ScreenEvidence, String> {
     let diff = diff_evidence_for_fixture(fixture_id)
         .ok_or_else(|| "applied diff result is missing exact file evidence".to_owned())?;
-    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, FLOW2_YOU_LINE)?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1173,27 +1182,29 @@ fn render_home(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(6, 4, "Recent work", TextStyle::bright())?;
+    // F-6: restrained copper ASCII Code brand on home (and onboarding).
+    for (offset, line) in ENTRY_CODE_BANNER.iter().enumerate() {
+        canvas.write(5 + offset as u16, 4, line, TextStyle::accent())?;
+    }
+    // One real resume object: title + one fact + local Enter to resume byline.
+    canvas.write(13, 4, "Recent work", TextStyle::bright())?;
     canvas.write(
-        8,
+        15,
         4,
-        "You traced the login timeout and added a safer session check.",
+        "Login timeout · safer session check ready",
         TextStyle::text(),
     )?;
-    canvas.write(
-        10,
-        4,
-        "The session check is ready to continue from here.",
-        TextStyle::muted(),
-    )?;
-    composer(canvas, "Ask Code to continue", None)?;
+    let resume_byline =
+        ShortcutByline::new(vec![ShortcutHint::new("Enter", "resume")?])?.render();
+    canvas.write(16, 4, &resume_byline, TextStyle::muted())?;
+    composer(canvas, "Ask Code…", None)?;
 
     let surface = semantic(
         screen_id,
         fixture_id,
         "surface",
         "conversation-shell",
-        reference(6, 4, 15),
+        reference(13, 4, 15),
         "summary",
         None,
     );
@@ -1202,7 +1213,7 @@ fn render_home(
         fixture_id,
         "transcript",
         "recent-work",
-        reference(8, 4, 78),
+        reference(15, 4, 48),
         "summary",
         None,
     );
@@ -1210,8 +1221,8 @@ fn render_home(
         screen_id,
         fixture_id,
         "entry-brand",
-        "absent",
-        reference(6, 4, 15),
+        "code-ascii-banner",
+        reference(5, 4, 39),
         "summary",
         None,
     );
@@ -1671,7 +1682,7 @@ fn permission_outcome_transcript(
     detail_three: &str,
     composer_label: &str,
 ) -> Result<(), String> {
-    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, FLOW2_YOU_LINE)?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(9, 4, heading, TextStyle::text())?;
     canvas.write(11, 4, result, TextStyle::text())?;
@@ -1717,7 +1728,7 @@ fn render_mission_return_chat_turn(
         canvas.write(
             14,
             4,
-            "[d] Inspect mission details",
+            "Enter to inspect mission details",
             TextStyle::muted(),
         )?;
         canvas.write(
@@ -1969,7 +1980,7 @@ fn render_chat_turn(
     } else {
         daily_user_request(fixture_id)
     };
-    canvas.write(4, 4, user_line, TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, user_line)?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
 
     if open_turn_prestream {
@@ -2454,7 +2465,7 @@ fn render_inspector_restored_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         10,
@@ -2538,7 +2549,7 @@ fn render_daily_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -2637,7 +2648,7 @@ fn render_streaming(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -2757,7 +2768,7 @@ fn render_interrupted_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -2879,7 +2890,7 @@ fn render_tool_running(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -3018,7 +3029,7 @@ fn render_tool_success(
         || fixture_id.starts_with("case.tool-success-expand")
         || fixture_id.starts_with("case.tool-success-collapse");
 
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -3038,14 +3049,14 @@ fn render_tool_success(
     canvas.write(
         15,
         4,
-        "Tool finished · continue this same response with the full answer.",
+        "Shared guard applied · ready for the full answer.",
         TextStyle::muted(),
     )?;
     if disclosure_fixture {
         canvas.write(
             17,
             4,
-            "› Result details · 3 focused matches  [enter] Expand",
+            "› Result details · 3 focused matches · Enter to expand",
             TextStyle::text(),
         )?;
     }
@@ -3160,7 +3171,7 @@ fn render_rich_response(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -3208,7 +3219,7 @@ fn render_rich_response(
     canvas.write(22, 6, "    apply_rate_limit(&session)?;", TextStyle::text())?;
     canvas.write(23, 6, "    Ok(session)", TextStyle::text())?;
     canvas.write(24, 6, "}", TextStyle::text())?;
-    canvas.write(26, 6, "[c] Copy code", TextStyle::accent())?;
+    canvas.write(26, 6, "c to copy code", TextStyle::accent())?;
     composer(canvas, "Reply to Code", Some("Send reply"))?;
 
     let request = semantic(
@@ -3296,7 +3307,7 @@ fn render_tool_interrupted_chat_turn(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     let completed = ActivityRow::new(
         "Checked session rules",
@@ -3403,7 +3414,7 @@ fn render_reasoning_collapsed(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     let disclosure = DisclosureBlock::new(
         "Why this answer · checked the shared rate-limit guard path",
@@ -3496,7 +3507,7 @@ fn render_reasoning(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     let disclosure = DisclosureBlock::new(
         "Why this answer · checked the shared rate-limit guard path",
@@ -3594,7 +3605,7 @@ fn render_tool_success_expanded(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -3613,7 +3624,7 @@ fn render_tool_success_expanded(
     canvas.write(
         14,
         4,
-        "▾ Result details · 3 focused matches  [enter] Collapse",
+        "▾ Result details · 3 focused matches · Enter to collapse",
         TextStyle::text(),
     )?;
     canvas.write(
@@ -3637,7 +3648,7 @@ fn render_tool_success_expanded(
     canvas.write(
         19,
         4,
-        "Tool finished · continue this same response with the full answer.",
+        "Shared guard applied · ready for the full answer.",
         TextStyle::muted(),
     )?;
     composer(canvas, "Reply to Code", Some("Continue response"))?;
@@ -3717,7 +3728,7 @@ fn render_tool_calls(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
         9,
@@ -3744,7 +3755,7 @@ fn render_tool_calls(
     canvas.write(
         15,
         6,
-        "Tests assert the wrong recovery message. [r] Retry tests",
+        "Tests assert the wrong recovery message. · r to retry tests",
         TextStyle::text(),
     )?;
     let running = ActivityRow::new(
@@ -3870,7 +3881,7 @@ fn render_tool_task(
     canvas.write(
         13,
         4,
-        "› Task details · expand findings  [enter] Expand",
+        "› Task details · expand findings · Enter to expand",
         TextStyle::text(),
     )?;
     let tests = ActivityRow::new(
@@ -4019,7 +4030,7 @@ fn render_tool_task_expanded(
     canvas.write(
         13,
         4,
-        "▾ Task details · findings for this audit  [enter] Collapse",
+        "▾ Task details · findings for this audit · Enter to collapse",
         TextStyle::text(),
     )?;
     canvas.write(
@@ -4911,7 +4922,7 @@ fn render_compact(
     canvas.write(
         17,
         4,
-        "› 18 earlier turns stay available  [enter] Expand full history",
+        "› 18 earlier turns stay available · Enter to expand full history",
         TextStyle::text(),
     )?;
     composer(canvas, "Resume from the compacted summary", Some("Send reply"))?;
@@ -5039,7 +5050,7 @@ fn render_chat_long_scroll(
         canvas.write(
             15,
             4,
-            "▾ Full history open  [enter] Return to compact summary",
+            "▾ Full history open · Enter to return to compact summary",
             TextStyle::text(),
         )?;
         canvas.write(
@@ -5225,7 +5236,7 @@ fn render_chat_long_scroll(
         canvas.write(
             21,
             4,
-            "› Jump to latest  [enter] Return to the newest turn and composer",
+            "› Jump to latest · Enter to return to the newest turn",
             TextStyle::bright(),
         )?;
         canvas.write(
@@ -5379,25 +5390,35 @@ fn composer(
         &format!("╭{}╮", "─".repeat(114)),
         TextStyle::muted(),
     )?;
-    canvas.write(
-        COMPOSER_TOP + 1,
-        2,
-        &format!("│ › {placeholder}"),
-        TextStyle::bright(),
-    )?;
+    // Jewel draft line. Mentions keep accent when `@` is present (F-10).
+    if placeholder.contains('@') {
+        canvas.write(COMPOSER_TOP + 1, 2, "│ › ", TextStyle::bright())?;
+        paint_composer_body(canvas, COMPOSER_TOP + 1, 6, placeholder)?;
+    } else {
+        canvas.write(
+            COMPOSER_TOP + 1,
+            2,
+            &format!("│ › {placeholder}"),
+            TextStyle::bright(),
+        )?;
+    }
     canvas.write(
         COMPOSER_BOTTOM,
         2,
         &format!("╰{}╯", "─".repeat(114)),
         TextStyle::muted(),
     )?;
+    // Local prose byline only — never bracket chords (N-11 / F-8 / F-10).
     if let Some(action_label) = action_label {
-        canvas.write(
-            COMPOSER_BOTTOM - 1,
-            4,
-            &format!("[enter] {action_label}"),
-            TextStyle::accent(),
-        )?;
+        let enter_verb = if action_label.eq_ignore_ascii_case("Send reply") {
+            "send"
+        } else if action_label.eq_ignore_ascii_case("Continue response") {
+            "continue"
+        } else {
+            action_label
+        };
+        let byline = ShortcutByline::new(vec![ShortcutHint::new("Enter", enter_verb)?])?.render();
+        canvas.write(COMPOSER_BOTTOM - 1, 4, &byline, TextStyle::muted())?;
     }
     Ok(())
 }
@@ -5414,12 +5435,9 @@ fn composer_with_draft(
         &format!("╭{}╮", "─".repeat(114)),
         TextStyle::muted(),
     )?;
-    canvas.write(
-        COMPOSER_TOP + 1,
-        2,
-        &format!("│ › {draft}"),
-        TextStyle::bright(),
-    )?;
+    canvas.write(COMPOSER_TOP + 1, 2, "│ › ", TextStyle::bright())?;
+    paint_composer_body(canvas, COMPOSER_TOP + 1, 6, draft)?;
+    // Content chips keep attachment brackets (allowed); they are not key chords.
     canvas.write(
         COMPOSER_TOP + 2,
         2,
@@ -5433,12 +5451,58 @@ fn composer_with_draft(
         TextStyle::muted(),
     )?;
     if let Some(action_label) = action_label {
-        canvas.write(
-            COMPOSER_BOTTOM - 1,
-            4,
-            &format!("[enter] {action_label}"),
-            TextStyle::accent(),
-        )?;
+        let byline = ShortcutByline::new(vec![ShortcutHint::new(
+            "Enter",
+            if action_label.eq_ignore_ascii_case("Send reply") {
+                "send"
+            } else {
+                action_label
+            },
+        )?])?
+        .render();
+        canvas.write(COMPOSER_BOTTOM - 1, 4, &byline, TextStyle::muted())?;
+    }
+    Ok(())
+}
+
+/// Write a user-turn line with SURFACE wash when the text fits.
+fn paint_user_turn(canvas: &mut Canvas, row: u16, column: u16, text: &str) -> Result<(), String> {
+    let line = user_turn_surface_line(text)?;
+    canvas.write(row, column, &line.text, line.style)
+}
+
+/// Paint composer body, applying ACCENT only to `@mention` spans (budget-safe).
+fn paint_composer_body(
+    canvas: &mut Canvas,
+    row: u16,
+    column: u16,
+    text: &str,
+) -> Result<(), String> {
+    let mut col = column;
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@' {
+            let start = i;
+            i += 1;
+            while i < chars.len()
+                && (chars[i].is_ascii_alphanumeric()
+                    || matches!(chars[i], '/' | '_' | '.' | '-' | '█'))
+            {
+                i += 1;
+            }
+            let mention: String = chars[start..i].iter().collect();
+            canvas.write(row, col, &mention, TextStyle::accent())?;
+            col += mention.chars().count() as u16;
+        } else {
+            let start = i;
+            while i < chars.len() && chars[i] != '@' {
+                i += 1;
+            }
+            let plain: String = chars[start..i].iter().collect();
+            canvas.write(row, col, &plain, TextStyle::bright())?;
+            col += plain.chars().count() as u16;
+        }
     }
     Ok(())
 }
@@ -5517,7 +5581,7 @@ fn render_streaming_interaction(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let mode = streaming_mode(fixture_id);
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
 
     match mode {
@@ -5567,7 +5631,7 @@ fn render_streaming_interaction(
             canvas.write(
                 COMPOSER_TOP + 4,
                 2,
-                "│ [enter] Submit answer   [esc] Cancel · keep paused",
+                "│ Enter to submit answer · Esc to cancel",
                 TextStyle::accent(),
             )?;
             canvas.write(
@@ -5665,7 +5729,7 @@ fn render_streaming_interaction(
             canvas.write(
                 16,
                 4,
-                "› New output · jump to newest without forcing scroll  [enter]",
+                "› New output · Enter to jump to newest",
                 TextStyle::accent(),
             )?;
             composer(
@@ -5844,7 +5908,7 @@ fn render_chat_turn_interaction(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let mode = chat_turn_interaction_mode(fixture_id);
-    canvas.write(4, 4, daily_user_request(fixture_id), TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
 
     match mode {
@@ -5921,7 +5985,7 @@ fn render_chat_turn_interaction(
             canvas.write(
                 16,
                 4,
-                "[n] Next match   [esc] Close search · return to origin",
+                "n for next match · Esc to close search",
                 TextStyle::muted(),
             )?;
             composer(
@@ -5952,7 +6016,7 @@ fn render_chat_turn_interaction(
             canvas.write(
                 16,
                 4,
-                "[esc] Close search",
+                "Esc to close search",
                 TextStyle::muted(),
             )?;
             composer(
@@ -6174,7 +6238,7 @@ fn render_shell_interaction(
                 canvas.write(
                     20,
                     4,
-                    "› [s] Stop background · ends only this background command",
+                    "› Stop background · ends only this background command",
                     TextStyle::text(),
                 )?;
             } else {
@@ -6228,13 +6292,13 @@ fn render_shell_interaction(
             canvas.write(
                 17,
                 4,
-                "› [enter] Full detail · searchable complete output",
+                "› Full detail · searchable complete output",
                 TextStyle::accent(),
             )?;
             canvas.write(
                 18,
                 4,
-                "  [c] Copy summary   Return stays on this compact activity",
+                "  Copy summary · return stays on this compact activity",
                 TextStyle::muted(),
             )?;
             composer(canvas, "Also list tests after this suite output.", None)?;
@@ -6299,7 +6363,7 @@ fn render_shell_interaction(
             canvas.write(
                 19,
                 4,
-                "[c] Copy   [esc] Return · restore compact 12 of 240 · 228 omitted",
+                "c to copy · Esc to return · compact 12 of 240",
                 TextStyle::muted(),
             )?;
             composer(canvas, "Also list tests after this suite output.", None)?;
@@ -6535,9 +6599,9 @@ fn render_tool_task_controls(
         16,
         4,
         if stop_focused {
-            "› [s] Stop this task · ends only the selected test work"
+            "› Stop this task · ends only the selected test work"
         } else {
-            "  [s] Stop this task · ends only the selected test work"
+            "  Stop this task · ends only the selected test work"
         },
         if stop_focused {
             TextStyle::text()
@@ -6566,9 +6630,9 @@ fn render_tool_task_controls(
         19,
         4,
         if mode == "cancel-selected" {
-            "› [c] Cancel this task · drops only the queued build"
+            "› Cancel this task · drops only the queued build"
         } else {
-            "  [c] Cancel this task · drops only the queued build"
+            "  Cancel this task · drops only the queued build"
         },
         TextStyle::muted(),
     )?;
@@ -6594,9 +6658,9 @@ fn render_tool_task_controls(
         22,
         4,
         if mode == "retry-selected" {
-            "› [r] Retry this task · restarts only the blocked refresh review"
+            "› Retry this task · restarts only the blocked refresh review"
         } else {
-            "  [r] Retry this task · restarts only the blocked refresh review"
+            "  Retry this task · restarts only the blocked refresh review"
         },
         TextStyle::muted(),
     )?;

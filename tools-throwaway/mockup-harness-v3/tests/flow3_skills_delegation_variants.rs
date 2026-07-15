@@ -65,7 +65,7 @@ fn skills_picker_describes_user_visible_abilities_and_selected_detail() {
     );
     assert!(text.contains("Selected ·") || text.contains("Pending set"));
     assert!(text.contains("[enter] Apply skills") || text.contains("Apply skills"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(!text.contains("/skills/"));
     assert!(!text.contains(".md"));
     assert!(!text.contains("package name"));
@@ -290,8 +290,8 @@ fn subagent_picker_stays_task_local_and_avoids_work_style() {
     assert!(!text.contains("primary agent"));
     assert!(!text.contains("tool envelope"));
     assert!(!text.contains("worker wave"));
-    assert!(text.contains("[enter]") || text.contains("Use this helper"));
-    assert!(text.contains("[esc] Cancel") || text.contains("Cancel"));
+    assert!((text.contains("Enter to") || text.contains("[enter]")) || text.contains("Use this helper"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")) || text.contains("Cancel"));
 
     let agent = audit_screen("agent-picker", "flow3-work-style-access")
         .expect("agent picker remains the work-style surface");
@@ -356,7 +356,7 @@ fn variant_picker_keeps_base_model_and_explains_tradeoffs() {
     );
     assert!(text.contains("Selected ·") || text.contains("Pending ·"));
     assert!(text.contains("[enter] Apply variant") || text.contains("Apply variant"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(!text.contains(":nitro"));
     assert!(!text.contains("routing"));
     assert!(!text.contains("provider spool"));
@@ -429,7 +429,7 @@ fn theme_picker_distinguishes_preview_from_apply_and_cancel_restores() {
     assert!(text.contains("Applied ·") || text.contains("Current · Dark"));
     assert!(text.contains("[enter] Apply theme") || text.contains("Apply theme"));
     assert!(
-        text.contains("[esc] Cancel") || text.contains("restores"),
+        (text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")) || text.contains("restores"),
         "cancel must restore the applied palette"
     );
     assert!(!text.contains("ctx "));

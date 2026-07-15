@@ -136,7 +136,7 @@ fn agent_question_uses_anchored_decision_dock_with_single_resume() {
         "anchored dock must expose Submit answer and Cancel"
     );
     assert!(
-        open_text.contains("›") || open_text.contains("[enter]"),
+        open_text.contains("›") || (open_text.contains("Enter to") || open_text.contains("[enter]")),
         "focused response / primary dock affordance required"
     );
     assert_no_private_traces(&open_text);

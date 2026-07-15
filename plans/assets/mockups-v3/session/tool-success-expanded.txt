@@ -1,8 +1,8 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-    You · Find where the server applies the rate limit and explain the safe path.                                       
+     You · Find where the server applies the rate limit and explain the safe path.                                      
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -12,12 +12,12 @@
                                                                                                                         
     ▾ Search project code · Details open · 0.4s · 3 matches in 400 files                                                
                                                                                                                         
-    ▾ Result details · 3 focused matches  [enter] Collapse                                                              
+    ▾ Result details · 3 focused matches · Enter to collapse                                                            
       middleware/rate_limit.rs:42 · shared enforce() entry                                                              
       routes/login.rs:88 · login quota path                                                                             
       routes/api.rs:17 · API quota path                                                                                 
                                                                                                                         
-    Tool finished · continue this same response with the full answer.                                                   
+    Shared guard applied · ready for the full answer.                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › Reply to Code                                                                                                     
                                                                                                                         
                                                                                                                         
-    [enter] Continue response                                                                                           
+    Enter to continue                                                                                                   
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

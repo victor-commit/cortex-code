@@ -379,6 +379,15 @@ impl TextStyle {
             bold: true,
         }
     }
+
+    /// Soft surface wash for user-turn surfaces (Mission Control density / VAL-V3-CROSS-020).
+    pub const fn user_turn() -> Self {
+        Self {
+            foreground: ColorToken::Bright,
+            background: Some(ColorToken::Surface),
+            bold: true,
+        }
+    }
 }
 
 #[cfg(feature = "png")]

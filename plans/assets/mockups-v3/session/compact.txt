@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Continue from the compacted conversation summary.                                                                   
     You · /compact                                                                                                      
                                                                                                                         
@@ -15,7 +15,7 @@
                                                                                                                         
     The full transcript is preserved in this session.                                                                   
                                                                                                                         
-    › 18 earlier turns stay available  [enter] Expand full history                                                      
+    › 18 earlier turns stay available · Enter to expand full history                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › Resume from the compacted summary                                                                                 
                                                                                                                         
                                                                                                                         
-    [enter] Send reply                                                                                                  
+    Enter to send                                                                                                       
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

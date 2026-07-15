@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
                                                                                                                         
     Review changes · temporary detail                                                                                   
@@ -23,7 +23,7 @@
                                                                                                                         
     No file is written until Finish.                                                                                    
                                                                                                                         
-    [i] Include  [x] Exclude  [a] Include all  [e] Edit  ·  [enter] Finish  [esc] Cancel                                
+    i include · x exclude · a include all · e edit · Enter to finish · Esc to cancel                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         

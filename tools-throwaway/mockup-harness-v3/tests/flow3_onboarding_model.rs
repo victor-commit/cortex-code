@@ -14,7 +14,7 @@ fn onboarding_leads_with_one_decision_and_a_safe_default() {
     assert!(text.contains("Recommended: Claude Sonnet 4.5"));
     assert!(text.contains("Claude Sonnet 4.5"));
     assert!(text.contains("balanced everyday coding") || text.contains("recommended starting model"));
-    assert!(text.contains("› [enter] Continue"));
+    assert!((text.contains("› Continue") || text.contains("Enter to continue")));
     assert!(text.contains("[esc] Back"));
     assert!(!text.contains("first setup returns here"));
     assert!(!text.contains("capability matrix"));
@@ -107,7 +107,7 @@ fn model_picker_compares_human_models_and_focuses_one_pending_change() {
     assert!(text.contains("Balanced speed and depth"));
     assert!(text.contains("Switching applies this choice"));
     assert!(text.contains("[enter] Apply model"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(!text.contains("anthropic/"));
     assert!(!text.contains("openai/"));
     assert!(!text.contains("ctx "));

@@ -224,7 +224,7 @@ fn fix_work_always_enters_visible_validating_stage() {
     );
     let text = validating.audit.render_txt();
     assert!(text.contains("Validating"));
-    assert!(!text.contains("› [enter]"));
+    assert!(!(text.contains("› ") || text.contains("Enter to")));
     assert!(
         !text.contains("Approve completion"),
         "human approval must stay unreachable during validating"

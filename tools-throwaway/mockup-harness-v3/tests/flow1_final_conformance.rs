@@ -740,7 +740,7 @@ fn progressive_disclosure_adds_useful_information_and_round_trips() {
             "{screen_id}: inspector must keep conversation origin"
         );
         assert!(
-            text.contains("[esc]") || text.contains("Return") || text.contains("Close"),
+            (text.contains("Esc to") || text.contains("[esc]")) || text.contains("Return") || text.contains("Close"),
             "{screen_id}: reversible exit required"
         );
     }
@@ -792,8 +792,8 @@ fn every_flow1_action_surface_has_singular_primary_and_limited_secondaries() {
         );
         assert!(
             text.contains('›')
-                || text.contains("[enter]")
-                || text.contains("[esc]")
+                || (text.contains("Enter to") || text.contains("[enter]"))
+                || (text.contains("Esc to") || text.contains("[esc]"))
                 || text.contains("Return")
                 || text.contains("Send"),
             "{screen_id}/{fixture_id}: primary / exit must be visually marked"
@@ -819,7 +819,7 @@ fn every_flow1_action_surface_has_singular_primary_and_limited_secondaries() {
             text.to_ascii_lowercase().contains("stop")
                 || text.to_ascii_lowercase().contains("interrupt")
                 || text.contains("[ctrl+c]")
-                || text.contains("[esc]"),
+                || (text.contains("Esc to") || text.contains("[esc]")),
             "{screen_id}/{fixture_id}: interrupt affordance must be visible"
         );
         assert!(

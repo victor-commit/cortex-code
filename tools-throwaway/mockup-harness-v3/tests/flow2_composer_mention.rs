@@ -71,7 +71,7 @@ fn file_mention_uses_the_visible_query_for_fuzzy_matches_and_one_selected_best_r
     assert!(text.contains("src/net/retry_queue.rs"));
     assert!(text.contains("tests/net/retry_policy_test.rs"));
     assert!(text.contains("project-relative paths"));
-    assert!(text.contains("[tab] Insert file  [esc] Dismiss"));
+    assert!( (text.contains("Tab to insert file") || text.contains("Insert file")) && (text.contains("Esc to dismiss") || text.contains("Dismiss")) );
     assert_eq!(
         audit
             .events

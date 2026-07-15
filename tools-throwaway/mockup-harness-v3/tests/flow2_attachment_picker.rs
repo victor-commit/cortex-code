@@ -29,8 +29,8 @@ fn attachment_picker_opens_at_composer_with_consequence_and_project_paths() {
     assert!(text.contains("eligible"));
     assert!(text.contains("README.md"));
     assert!(text.contains("unsupported"));
-    assert!(text.contains("[enter] Attach"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Enter to attach") || text.contains("[enter] Attach")));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     // Monochrome eligibility remains readable from labels, not color alone.
     assert!(text.contains("png · 48.2k · eligible"));
     assert!(text.contains("md · 11.4k · unsupported"));

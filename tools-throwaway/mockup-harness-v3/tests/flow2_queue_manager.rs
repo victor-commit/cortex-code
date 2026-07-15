@@ -50,7 +50,7 @@ fn queue_manager_opens_with_order_next_marker_and_one_time_consequence() {
     // VAL-V3-F2-024: reorder/remove/run-next controls, primary consequence,
     // one selected row, labeled remove (no color-only destroy), stable id/rev.
     assert!(text.contains("[enter] Apply"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(
         text.contains("[r] Reorder") || text.contains("Reorder"),
         "reorder control must be visible as plain text"

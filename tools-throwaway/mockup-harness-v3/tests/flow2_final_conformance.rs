@@ -588,7 +588,7 @@ fn every_flow2_action_surface_is_bottom_docked_without_floating_modal() {
         // Help is the sole exemption that may group shortcuts; it still returns on Return/Cancel.
         if screen_id == "help" {
             assert!(
-                text.contains("Return") || text.contains("[esc]"),
+                text.contains("Return") || (text.contains("Esc to") || text.contains("[esc]")),
                 "help must keep a reversible exit"
             );
         } else {
@@ -774,7 +774,7 @@ fn every_flow2_action_surface_has_complete_focus_and_enabled_actions() {
             );
             assert!(
                 text.contains('›')
-                    || text.contains("[enter]")
+                    || (text.contains("Enter to") || text.contains("[enter]"))
                     || primaries == 1
                     || selections == 1,
                 "{screen_id}/{fixture_id}: visible focus/primary marker required"
@@ -805,7 +805,7 @@ fn every_flow2_action_surface_has_complete_focus_and_enabled_actions() {
         // Cancel / back remains reachable on temporary actions.
         if screen_id != "composer-multiline" {
             assert!(
-                text.contains("[esc]")
+                (text.contains("Esc to") || text.contains("[esc]"))
                     || text.to_ascii_lowercase().contains("cancel")
                     || text.to_ascii_lowercase().contains("dismiss")
                     || text.to_ascii_lowercase().contains("return")
@@ -1010,7 +1010,7 @@ fn every_flow2_decision_has_exactly_one_primary_and_limited_secondaries() {
         );
         assert!(
             text.contains('›')
-                || text.contains("[enter]")
+                || (text.contains("Enter to") || text.contains("[enter]"))
                 || text.contains(&action.label)
                 || text.contains(
                     action
@@ -1055,8 +1055,8 @@ fn rendered_content_and_semantic_audit_are_bijective_for_flow2() {
                 assert!(
                     text.to_ascii_lowercase()
                         .contains(&token.to_ascii_lowercase())
-                        || text.contains("[enter]")
-                        || text.contains("[esc]")
+                        || (text.contains("Enter to") || text.contains("[enter]"))
+                        || (text.contains("Esc to") || text.contains("[esc]"))
                         || text.contains('›'),
                     "{screen_id}/{fixture_id}: action `{}` invisible on canvas",
                     action.label

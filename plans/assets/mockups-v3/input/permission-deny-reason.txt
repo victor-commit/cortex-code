@@ -31,10 +31,10 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ The original Allow and Deny choices are closed                                                                   │  
-  │ › [enter] Send reason · add it to the denied activity                                                            │  
-  │   [s] Skip · return without adding a reason                                                                      │  
+  │ › Send reason · add it to the denied activity                                                                    │  
+  │   Skip · return without adding a reason                                                                          │  
                                                                                                                         
-  │ [esc] Cancel · keep the denied activity unchanged                                                                │  
+  │ Esc to cancel · keep the denied activity unchanged                                                               │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

@@ -329,7 +329,7 @@ fn help_is_temporary_detail_with_task_grouped_shortcuts_and_return() {
         "help entry itself should remain discoverable"
     );
     assert!(
-        text.contains("[esc]") || text.contains("Return"),
+        (text.contains("Esc to") || text.contains("[esc]")) || text.contains("Return"),
         "one obvious Return action required"
     );
     assert!(

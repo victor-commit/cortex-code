@@ -564,7 +564,7 @@ fn every_actionable_flow4_state_has_exactly_one_primary() {
             );
             if primaries.is_empty() {
                 assert!(
-                    text.contains("[esc]")
+                    (text.contains("Esc to") || text.contains("[esc]"))
                         || text.to_ascii_lowercase().contains("cancel")
                         || text.to_ascii_lowercase().contains("waiting"),
                     "{screen_id}/{fixture_id}: zero-primary wait must still expose cancel or waiting copy"
@@ -602,7 +602,7 @@ fn every_actionable_flow4_state_has_exactly_one_primary() {
                 action.label
             );
             assert!(
-                text.contains("[esc]") || text.to_ascii_lowercase().contains("cancel"),
+                (text.contains("Esc to") || text.contains("[esc]")) || text.to_ascii_lowercase().contains("cancel"),
                 "disconnect must expose safe cancel"
             );
         }
@@ -804,7 +804,7 @@ fn longest_label_fixtures_remain_readable_within_canvas() {
         {
             let primaries = primary_events(&audit);
             assert!(
-                !primaries.is_empty() || text.contains("[enter]") || text.contains("[esc]"),
+                !primaries.is_empty() || (text.contains("Enter to") || text.contains("[enter]")) || (text.contains("Esc to") || text.contains("[esc]")),
                 "{screen_id}/{fixture_id}: longest-label surface lost actions"
             );
         }

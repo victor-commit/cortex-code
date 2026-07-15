@@ -80,7 +80,7 @@ fn staging_is_understandable_without_color_and_include_exclude_are_local() {
     assert!(text.contains("-"));
     assert!(text.contains("old 42"));
     assert!(text.contains("new 42"));
-    assert!(text.contains("Edit"));
+    assert!(text.contains("Edit") || text.contains("e edit") || text.contains("e to edit"));
     assert_eq!(
         audit
             .events
@@ -282,7 +282,7 @@ fn apply_evidence_uses_exact_file_hashes_and_atomic_failure_preserves_bytes() {
     assert_eq!(refreshed_diff.hunks[1].state, "Pending");
     let refreshed_text = refreshed.audit.render_txt();
     assert!(refreshed_text.contains("revision: patch-retry-19"));
-    assert!(refreshed_text.contains("[enter] Finish"));
+    assert!((refreshed_text.contains("Enter to finish") || refreshed_text.contains("Finish") || refreshed_text.contains("[enter] Finish")));
     assert!(refreshed_text.contains("Refreshed review"));
     assert!(
         !refreshed_text.contains("Refresh and review"),

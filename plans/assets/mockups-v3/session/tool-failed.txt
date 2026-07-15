@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                                                                      
+    Recovery                                                                                                            
     Finish the release notes without losing the current work.                                                           
                                                                                                                         
     You · Summarize the remaining release notes and the still-open risks.                                               
@@ -32,9 +32,9 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Recover the failed tool                                                                                          │  
   │ One next step keeps completed sibling work intact.                                                               │  
-  │ › [enter] Choose a file                                                                                          │  
-  │   [d] Show evidence                                                                                              │  
-  │   [esc] Keep this failure in the transcript                                                                      │  
+  │ › Choose a file                                                                                                  │  
+  │  d for Show evidence                                                                                             │  
+  │  Esc to Keep this failure in the transcript                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

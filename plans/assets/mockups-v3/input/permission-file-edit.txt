@@ -18,7 +18,7 @@
           42  +    return retry_after + jitter                                                                          
           43  +    backoff = backoff + jitter                                                                           
           44  +    log_retry_window(jitter)                                                                             
-    Second hunk · hunk.retry-test · @@ -88,2 +89,2 · [e] Review full patch                                              
+    Second hunk · hunk.retry-test · @@ -88,2 +89,2 · e to review full patch                                             
     Scope: this edit only · project root ~/project · work style Careful edits                                           
     Persistent: this session · matcher src/net/retry_policy.rs · Careful edits                                          
     Children inherit only read-only checks · child cap: no write elevation                                              
@@ -31,10 +31,10 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Permission choices                                                                                               │  
-  │ › [enter] Allow once · apply only the disclosed patch                                                            │  
-  │   [p] Allow for this project · save the exact scope shown above                                                  │  
-  │   [d] Deny · do not write the file                                                                               │  
-  │ [e] Review full patch · [esc] Cancel · keep request pending                                                      │  
+  │ › Allow once · apply only the disclosed patch                                                                    │  
+  │   Allow for this project · save the exact scope shown above                                                      │  
+  │   Deny · do not write the file                                                                                   │  
+  │ e to review full patch · Esc to cancel                                                                           │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

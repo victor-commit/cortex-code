@@ -1,20 +1,20 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
+                                                                                                                        
+     ██████              ██                                                                                             
+    ██                   ██                                                                                             
+    ██        ████    █████   ████                                                                                      
+    ██       ██  ██  ██  ██  ██████                                                                                     
+    ██       ██  ██  ██  ██  ██                                                                                         
+     ██████   ████    █████   █████                                                                                     
                                                                                                                         
                                                                                                                         
     Recent work                                                                                                         
                                                                                                                         
-    You traced the login timeout and added a safer session check.                                                       
-                                                                                                                        
-    The session check is ready to continue from here.                                                                   
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+    Login timeout · safer session check ready                                                                           
+    Enter to resume                                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,7 +31,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Ask Code to continue                                                                                              
+  │ › Ask Code…                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         

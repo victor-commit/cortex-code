@@ -263,7 +263,7 @@ fn network_automatic_backoff_has_one_owner_limit_and_cancel() {
     let text = audit.render_txt();
     assert!(text.contains("Cortex could not reach the provider") || text.contains("connection"));
     assert!(text.contains("Trying again automatically"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(!text.contains("› [enter] Retry"));
     assert!(!text.contains("[enter] Retry request"));
     assert_eq!(

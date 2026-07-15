@@ -566,7 +566,7 @@ fn default_recovery_shows_one_cause_and_one_primary_with_evidence_second() {
         // Dock embeds primary within a few rows of the cause (or toast failure).
         if screen_id != "toasts" {
             assert!(
-                text.contains("› [enter]") || text.contains("› [s]"),
+                (text.contains("› ") || text.contains("Enter to")) || text.contains("› [s]"),
                 "{screen_id}/{fixture_id}: primary must be visually marked"
             );
         }

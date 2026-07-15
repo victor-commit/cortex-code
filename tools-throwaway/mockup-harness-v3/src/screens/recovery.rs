@@ -24,6 +24,7 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
+        components::subject_title_for_origin,
         layout::{CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
@@ -238,7 +239,7 @@ fn render_error_context(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let variant = context_variant(fixture_id);
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -270,7 +271,7 @@ fn render_error_context(
             canvas.write(
                 20,
                 4,
-                "› Evidence  [enter] Expand technical details",
+                "› Evidence Enter to Expand technical details",
                 TextStyle::muted(),
             )?;
         }
@@ -308,19 +309,19 @@ fn render_error_context(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        &format!("› [enter] {CONTEXT_PRIMARY}"),
+        &format!("› {CONTEXT_PRIMARY}"),
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        &format!("  [n] {CONTEXT_SECONDARY}"),
+        &format!(" n for {CONTEXT_SECONDARY}"),
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "  [esc] Cancel · keep this conversation paused",
+        " Esc to Cancel · keep this conversation paused",
         TextStyle::muted(),
     )?;
 
@@ -581,7 +582,7 @@ fn render_interrupt(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let _ = fixture_id;
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -634,19 +635,19 @@ fn render_interrupt(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        &format!("› [enter] {INTERRUPT_PRIMARY}"),
+        &format!("› {INTERRUPT_PRIMARY}"),
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        &format!("  [r] {INTERRUPT_SECONDARY}"),
+        &format!(" r for {INTERRUPT_SECONDARY}"),
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "  [esc] Cancel · keep the partial answer",
+        " Esc to Cancel · keep the partial answer",
         TextStyle::muted(),
     )?;
 
@@ -859,7 +860,7 @@ fn render_toasts(
             canvas.write(
                 3,
                 toast_col,
-                &format!("│  [s] {TOAST_RETRY} · stays until you act"),
+                &format!("│ s for {TOAST_RETRY} · stays until you act"),
                 TextStyle::muted(),
             )?;
             // Warning (created third)
@@ -953,7 +954,7 @@ fn render_toasts(
             canvas.write(
                 3,
                 toast_col,
-                &format!("│  [s] {TOAST_RETRY} · stays until you act"),
+                &format!("│ s for {TOAST_RETRY} · stays until you act"),
                 TextStyle::muted(),
             )?;
             pairs.push(semantic(
@@ -1027,7 +1028,7 @@ fn render_toasts(
     canvas.write(
         COMPOSER_BOTTOM - 1,
         4,
-        "[enter] Send reply",
+        "Enter to Send reply",
         TextStyle::accent(),
     )?;
     canvas.write(
@@ -1125,7 +1126,7 @@ fn render_tool_failed(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let variant = tool_failed_variant(fixture_id);
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, TOOL_USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1257,19 +1258,19 @@ fn render_tool_failed(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        &format!("› [enter] {primary_label}"),
+        &format!("› {primary_label}"),
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        &format!("  [d] {secondary_label}"),
+        &format!(" d for {secondary_label}"),
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "  [esc] Keep this failure in the transcript",
+        " Esc to Keep this failure in the transcript",
         TextStyle::muted(),
     )?;
 
@@ -1453,7 +1454,7 @@ fn render_blocked_command(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let variant = blocked_command_variant(fixture_id);
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, TOOL_USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1534,19 +1535,19 @@ fn render_blocked_command(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        &format!("› [enter] {primary_label}"),
+        &format!("› {primary_label}"),
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [d] Show evidence",
+        " d for Show evidence",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "  [esc] Keep command blocked",
+        " Esc to Keep command blocked",
         TextStyle::muted(),
     )?;
 
@@ -1707,7 +1708,7 @@ fn render_turn_error(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1763,19 +1764,19 @@ fn render_turn_error(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Retry reply",
+        "› Retry reply",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [c] Continue from partial reply",
+        " c for Continue from partial reply",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "  [esc] Cancel · keep failure record",
+        " Esc to Cancel · keep failure record",
         TextStyle::muted(),
     )?;
 
@@ -1916,7 +1917,7 @@ fn render_error_network(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let variant = network_variant(fixture_id);
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -1949,7 +1950,7 @@ fn render_error_network(
             canvas.write(
                 19,
                 4,
-                "› Evidence  [enter] Expand technical details",
+                "› Evidence Enter to Expand technical details",
                 TextStyle::muted(),
             )?;
         }
@@ -2105,13 +2106,13 @@ fn render_error_network(
             dock_line(
                 canvas,
                 DOCK_TOP + 3,
-                "› [enter] Review network setting",
+                "› Review network setting",
                 TextStyle::accent(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [esc] Cancel · keep paused request",
+                " Esc to Cancel · keep paused request",
                 TextStyle::muted(),
             )?;
             dock_line(
@@ -2179,7 +2180,7 @@ fn render_error_network(
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [esc] Cancel",
+                " Esc to Cancel",
                 TextStyle::muted(),
             )?;
             dock_line(
@@ -2267,19 +2268,19 @@ fn render_error_network(
             dock_line(
                 canvas,
                 DOCK_TOP + 3,
-                "› [enter] Retry request",
+                "› Retry request",
                 TextStyle::accent(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [d] Check connection",
+                " d for Check connection",
                 TextStyle::muted(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "  [esc] Cancel · keep paused request",
+                " Esc to Cancel · keep paused request",
                 TextStyle::muted(),
             )?;
             pairs.push(semantic(
@@ -2357,22 +2358,22 @@ fn render_error_network(
             dock_line(
                 canvas,
                 DOCK_TOP + 3,
-                "› [enter] Retry request",
+                "› Retry request",
                 TextStyle::accent(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [d] Check connection",
+                " d for Check connection",
                 TextStyle::muted(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
                 if matches!(variant, NetworkVariant::Evidence) {
-                    "  [esc] Hide evidence"
+                    " Esc to Hide evidence"
                 } else {
-                    "  [esc] Cancel · keep paused request"
+                    " Esc to Cancel · keep paused request"
                 },
                 TextStyle::muted(),
             )?;
@@ -2545,7 +2546,7 @@ fn render_rate_limit(
         RateLimitVariant::WaitingLater => "12s",
         RateLimitVariant::Cancelled => "0s",
     };
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -2637,13 +2638,13 @@ fn render_rate_limit(
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [r] Retry now · optional",
+                " r for Retry now · optional",
                 TextStyle::muted(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "  [esc] Cancel · stop automatic wait",
+                " Esc to Cancel · stop automatic wait",
                 TextStyle::muted(),
             )?;
         }
@@ -2663,13 +2664,13 @@ fn render_rate_limit(
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [r] Retry now · optional",
+                " r for Retry now · optional",
                 TextStyle::muted(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "  [esc] Keep cancelled wait",
+                " Esc to Keep cancelled wait",
                 TextStyle::muted(),
             )?;
         }
@@ -2815,7 +2816,7 @@ fn render_checkpoint_undo(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let variant = checkpoint_variant(fixture_id);
-    canvas.write(2, 4, RECOVERY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(RECOVERY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -2992,19 +2993,19 @@ fn render_checkpoint_undo(
             dock_line(
                 canvas,
                 DOCK_TOP + 3,
-                "› [enter] Redo change",
+                "› Redo change",
                 TextStyle::accent(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [c] Continue in conversation",
+                " c for Continue in conversation",
                 TextStyle::muted(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "  [esc] Back · keep restoration",
+                " Esc to Back · keep restoration",
                 TextStyle::muted(),
             )?;
             pairs.push(semantic(
@@ -3080,19 +3081,19 @@ fn render_checkpoint_undo(
             dock_line(
                 canvas,
                 DOCK_TOP + 3,
-                "› [enter] Review conflict",
+                "› Review conflict",
                 TextStyle::accent(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [c] Continue in conversation",
+                " c for Continue in conversation",
                 TextStyle::muted(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "  [esc] Back · keep current files",
+                " Esc to Back · keep current files",
                 TextStyle::muted(),
             )?;
             pairs.push(semantic(
@@ -3168,13 +3169,13 @@ fn render_checkpoint_undo(
             dock_line(
                 canvas,
                 DOCK_TOP + 3,
-                "› [enter] Continue in conversation",
+                "› Continue in conversation",
                 TextStyle::accent(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [esc] Stay on confirmation",
+                " Esc to Stay on confirmation",
                 TextStyle::muted(),
             )?;
             dock_line(
@@ -3236,13 +3237,13 @@ fn render_checkpoint_undo(
             dock_line(
                 canvas,
                 DOCK_TOP + 3,
-                "› [enter] Continue in conversation",
+                "› Continue in conversation",
                 TextStyle::accent(),
             )?;
             dock_line(
                 canvas,
                 DOCK_TOP + 4,
-                "  [esc] Stay on confirmation",
+                " Esc to Stay on confirmation",
                 TextStyle::muted(),
             )?;
             dock_line(

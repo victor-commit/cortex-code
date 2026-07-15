@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
     You · Check the retry path before we merge.                                                                         
                                                                                                                         

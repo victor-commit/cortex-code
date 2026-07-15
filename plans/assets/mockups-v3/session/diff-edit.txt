@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
     You · Check the retry path before we merge.                                                                         
                                                                                                                         
@@ -31,9 +31,9 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Pending edit                                                                                                     │  
-  │ › [enter] Review changes · open read-only staging detail                                                         │  
-  │   [a] Apply all · write this exact patch and resume                                                              │  
-  │   [esc] Cancel · write nothing                                                                                   │  
+  │ › Review changes · open read-only staging detail                                                                 │  
+  │   Apply all · write this exact patch and resume                                                                  │  
+  │   Cancel · write nothing                                                                                         │  
   │                                                                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

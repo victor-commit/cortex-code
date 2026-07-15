@@ -74,7 +74,7 @@ fn nine_pickers_share_bottom_dock_anatomy_and_stable_identities() {
         );
         // Local cancel or back control.
         assert!(
-            text.contains("[esc] Cancel")
+            (text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to"))
                 || text.contains("[esc] Back")
                 || text.contains("[esc] Cancel · restores previous theme"),
             "{screen_id} must expose a local cancel/back control in the dock"

@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
     You · Check the retry path before we merge.                                                                         
                                                                                                                         
@@ -30,7 +30,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ / commands · query: / · 4 matching · [enter] Confirm · [esc] Cancel                                              │  
+  │ / commands · query: / · 4 matching · Enter to confirm · Esc to cancel                                            │  
   │ › /export · Export this conversation as a file                                                                   │  
   │   /help · Open the command reference                                                                             │  
   │   /queue · Manage queued prompts                                                                                 │  

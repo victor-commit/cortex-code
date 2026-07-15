@@ -55,7 +55,7 @@ fn public_long_page_boundaries_cover_middle_final_and_return_transitions() {
     assert!(final_text.contains("bytes 88..119 of 119"));
     assert!(final_text.contains("Previous page: 44"));
     assert!(final_text.contains("Next page: disabled"));
-    assert!(final_text.contains("Return to permission choices"));
+    assert!((final_text.contains("Return to permission choices") || final_text.contains("return to permission choices") || final_text.contains("return to choices")));
     assert_eq!(command_len, 119);
     assert!(
         final_page

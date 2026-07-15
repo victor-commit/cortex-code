@@ -29,7 +29,7 @@ fn reasoning_collapsed_shows_concise_summary_and_expand_without_private_traces()
     audit.validate().expect("reasoning-collapsed audit");
 
     let text = audit.render_txt();
-    assert!(text.contains("Daily work · current conversation"));
+    assert!((text.contains("Current conversation") || text.contains("Daily work · current conversation")));
     assert!(text.contains(
         "Find where the server applies the rate limit and explain the safe path."
     ));
@@ -38,7 +38,7 @@ fn reasoning_collapsed_shows_concise_summary_and_expand_without_private_traces()
         "collapsed reasoning needs a concise rationale summary"
     );
     assert!(
-        text.contains("Expand") || text.contains("[enter]"),
+        text.contains("Expand") || (text.contains("Enter to") || text.contains("[enter]")),
         "collapsed reasoning must offer an expand control"
     );
     assert!(
@@ -70,7 +70,7 @@ fn reasoning_expands_beside_the_turn_with_concise_rationale_only() {
 
     let text = audit.render_txt();
     assert!(text.contains("You · Find where the server applies the rate limit"));
-    assert!(text.contains("Collapse") || text.contains("[enter]"));
+    assert!(text.contains("Collapse") || (text.contains("Enter to") || text.contains("[enter]")));
     assert!(
         text.contains("applied by both") || text.contains("shared guard"),
         "answer must stay visible while rationale is expanded"
@@ -148,7 +148,10 @@ fn tool_calls_form_one_ordered_activity_narrative_with_mixed_outcomes() {
         "incomplete work must be text-readable"
     );
     assert!(
-        text.contains("Retry") || text.contains("Inspect"),
+        text.contains("Retry")
+            || text.contains("retry")
+            || text.contains("Inspect")
+            || text.contains("r to retry"),
         "failed tool must expose a nearby recovery action"
     );
     assert!(text.contains("Reply to Code") || text.contains("Reply"));
@@ -182,7 +185,7 @@ fn tool_success_expand_opens_focused_detail_and_round_trips() {
         "expanded state must add focused result detail"
     );
     assert!(expanded.contains("Reply to Code") || expanded.contains("Continue"));
-    assert!(expanded.contains("Collapse") || expanded.contains("[enter]"));
+    assert!(expanded.contains("Collapse") || expanded.contains("Enter to collapse") || expanded.contains("Enter to"));
 
     let collapse = replay_case("tool-success-collapse", 1).expect("tool success collapse");
     collapse.validate().expect("collapse validation");
@@ -253,7 +256,7 @@ fn tool_task_expanded_keeps_siblings_and_attributable_findings() {
         text.contains("rate-limit") || text.contains("Add rate") || text.contains("build"),
         "sibling task state must remain visible or recoverable"
     );
-    assert!(text.contains("Collapse") || text.contains("[enter]"));
+    assert!(text.contains("Collapse") || (text.contains("Enter to") || text.contains("[enter]")));
     assert_no_private_traces(&text);
 
     let expand = replay_case("tool-task-expand", 1).expect("task expand");

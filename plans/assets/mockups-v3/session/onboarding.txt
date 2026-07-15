@@ -31,10 +31,10 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Claude Sonnet 4.5 · recommended starting model                                                                   │  
-  │ › [enter] Continue                                                                                               │  
-  │   [s] Skip with this safe default                                                                                │  
-  │   [m] Review other models                                                                                        │  
-  │   [esc] Back                                                                                                     │  
+  │ › Continue                                                                                                       │  
+  │   Skip with this safe default                                                                                    │  
+  │   Review other models                                                                                            │  
+  │ Enter to continue · s to skip · m for models · Esc to go back                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Sonnet 4.5                                                                                  

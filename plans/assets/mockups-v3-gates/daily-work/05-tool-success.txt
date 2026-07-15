@@ -1,8 +1,8 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-    You · Find where the server applies the rate limit and explain the safe path.                                       
+     You · Find where the server applies the rate limit and explain the safe path.                                      
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -13,7 +13,7 @@
     ✓ Search project code · Complete · 0.4s · 3 matches in 400 files                                                    
                                                                                                                         
                                                                                                                         
-    Tool finished · continue this same response with the full answer.                                                   
+    Shared guard applied · ready for the full answer.                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › Reply to Code                                                                                                     
                                                                                                                         
                                                                                                                         
-    [enter] Continue response                                                                                           
+    Enter to continue                                                                                                   
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

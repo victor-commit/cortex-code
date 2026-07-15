@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
     You · Check the retry path before we merge.                                                                         
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › src/net/retry_policy.rs · project file · best match                                                            │  
   │   src/net/retry_queue.rs · project file                                                                          │  
   │   tests/net/retry_policy_test.rs · project file · test                                                           │  
-  │ › [enter] Submit prepared prompt  [tab] Insert file  [esc] Dismiss  [↑↓] Choose                                  │  
+  │ › Submit prepared prompt · Tab to insert file · Esc to dismiss · ↑↓ to choose                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

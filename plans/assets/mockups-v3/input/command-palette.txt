@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
     You · Check the retry path before we merge.                                                                         
                                                                                                                         
@@ -30,7 +30,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Filter actions · query: (all) · 4 matching · [enter] Run · [esc] Cancel                                          │  
+  │ Filter actions · query: (all) · 4 matching · Enter to run · Esc to cancel                                        │  
   │ › Recall an older prompt · put an earlier prompt in the draft                                                    │  
   │   Stash this draft · save it without sending                                                                     │  
   │   Restore stashed draft · put the saved draft back in the composer                                               │  

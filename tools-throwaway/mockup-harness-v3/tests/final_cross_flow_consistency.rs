@@ -575,8 +575,8 @@ fn no_dead_ends_across_all_canonical_and_public_cases() {
         let has_transition = !audit.transitions.is_empty();
         let has_action = audit.events.iter().any(|e| e.action.is_some());
         let text = audit.render_txt();
-        let has_visible_control = text.contains("[esc]")
-            || text.contains("[enter]")
+        let has_visible_control = (text.contains("Esc to") || text.contains("[esc]"))
+            || (text.contains("Enter to") || text.contains("[enter]"))
             || text.to_ascii_lowercase().contains("continue")
             || text.to_ascii_lowercase().contains("return")
             || text.to_ascii_lowercase().contains("reply")

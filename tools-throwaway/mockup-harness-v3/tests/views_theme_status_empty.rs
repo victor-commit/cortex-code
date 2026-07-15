@@ -68,7 +68,7 @@ fn dark_theme_gallery_is_readable_comparison() {
     assert!(text.contains("cortex default") && text.contains("daytime"));
     assert!(text.contains("active") || text.contains("Selected"));
     assert!(text.contains("███"), "swatch samples required");
-    assert!(text.contains("[esc]") || text.contains("Return"));
+    assert!((text.contains("Esc to") || text.contains("[esc]")) || text.contains("Return"));
     assert!(
         audit
             .events
@@ -210,7 +210,7 @@ fn status_detail_answers_configuration_questions() {
         text.contains("Needs attention") || text.contains("Needs sign-in"),
         "actionable issues required"
     );
-    assert!(text.contains("Return") || text.contains("[esc]"));
+    assert!(text.contains("Return") || (text.contains("Esc to") || text.contains("[esc]")));
     assert!(
         text.contains("Advanced raw metadata stays hidden")
             || text.contains("open Details")

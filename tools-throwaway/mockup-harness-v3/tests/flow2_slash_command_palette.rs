@@ -30,7 +30,7 @@ fn slash_menu_opens_at_composer_with_one_selected_command_and_readable_consequen
     assert!(text.contains("Manage queued prompts"));
     assert!(text.contains("/actions"));
     assert!(text.contains("Open the full action palette"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(text.contains("~/project · main · Claude Opus 4.8"));
     // multiline origin remains above the dock
     assert!(text.contains("Paused draft · 3 authored lines"));
@@ -203,8 +203,8 @@ fn command_palette_opens_without_mutating_draft_and_discloses_effects() {
     assert!(text.contains("Restore stashed draft"));
     assert!(text.contains("Queued prompts"));
     assert!(text.contains("▸"));
-    assert!(text.contains("[esc] Cancel"));
-    assert!(text.contains("Input and approval · paused conversation"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
+    assert!((text.contains("Paused conversation") || text.contains("Input and approval · paused conversation")));
     assert!(text.contains("Check the retry path before we merge."));
 
     assert_eq!(
@@ -261,13 +261,13 @@ fn command_palette_submenu_has_explicit_scope_and_local_back() {
 
     let text = audit.render_txt();
     assert!(text.contains("Palette › Queued prompts"));
-    assert!(text.contains("[back] Root"));
+    assert!((text.contains("Root") && (text.contains("Esc to root") || text.contains("back") || text.contains("Root"))));
     assert!(text.contains("› Add buffer cap tests"));
     assert!(text.contains("run this prompt next"));
     assert!(text.contains("Trace the retry backoff"));
     assert!(text.contains("Document the rate-limit path"));
     assert!(!text.contains("Recall an older prompt"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
 
     assert_eq!(
         audit

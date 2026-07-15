@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Implement rate limiting on the login endpoint.                                                                      
     You · Implement rate limiting on the login endpoint.                                                                
                                                                                                                         

@@ -1458,15 +1458,18 @@ pub fn validate_conversation_identity(
             return Err(format!("{name} is missing from conversation identity"));
         }
     }
-    for (name, value) in [
-        ("user_task", identity.user_task.as_str()),
-        ("visible_origin", identity.visible_origin.as_str()),
-    ] {
-        if value.trim().is_empty() || !rendered_text.contains(value) {
-            return Err(format!(
-                "{name} is not visible in the rendered conversation"
-            ));
-        }
+    if identity.user_task.trim().is_empty() || !rendered_text.contains(identity.user_task.as_str())
+    {
+        return Err("user_task is not visible in the rendered conversation".to_owned());
+    }
+    // Audit visible_origin may keep journey tags for continuity gates, while the
+    // painted title is the human subject (N-12). Accept either form on the canvas.
+    let origin = identity.visible_origin.as_str();
+    let painted_subject = crate::chrome::components::subject_title_for_origin(origin);
+    if origin.trim().is_empty()
+        || !(rendered_text.contains(origin) || rendered_text.contains(painted_subject))
+    {
+        return Err("visible_origin is not visible in the rendered conversation".to_owned());
     }
     Ok(())
 }

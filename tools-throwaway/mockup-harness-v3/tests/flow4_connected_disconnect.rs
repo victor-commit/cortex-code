@@ -257,7 +257,7 @@ fn connect_disconnect_names_provider_and_safe_cancel() {
         "destructive action must be named"
     );
     assert!(
-        text.contains("Cancel") || text.contains("[esc]"),
+        text.contains("Cancel") || (text.contains("Esc to") || text.contains("[esc]")),
         "safe cancel/escape must exist"
     );
 

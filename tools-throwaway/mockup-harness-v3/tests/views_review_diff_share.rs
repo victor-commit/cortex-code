@@ -57,7 +57,7 @@ fn review_is_focused_temporary_detail_with_return() {
         "one clear current selection required"
     );
     assert!(
-        text.contains("[esc]") || text.contains("Return"),
+        (text.contains("Esc to") || text.contains("[esc]")) || text.contains("Return"),
         "explicit return required"
     );
     let conversation = audit
@@ -190,7 +190,7 @@ fn diff_navigation_keeps_review_origin_bounded() {
         "adjacent file content must update"
     );
     assert!(
-        text.contains("Return") || text.contains("[esc]"),
+        text.contains("Return") || (text.contains("Esc to") || text.contains("[esc]")),
         "return action required in each file state"
     );
     assert!(
@@ -334,11 +334,11 @@ fn share_offers_copy_revoke_and_return_actions() {
         "revoke path required"
     );
     assert!(
-        text.contains("Return") || text.contains("[esc]"),
+        text.contains("Return") || (text.contains("Esc to") || text.contains("[esc]")),
         "return required"
     );
     assert!(
-        text.contains("›") || text.contains("[enter]"),
+        text.contains("›") || (text.contains("Enter to") || text.contains("[enter]")),
         "one obvious primary action"
     );
     // Conversation remains available above dock.

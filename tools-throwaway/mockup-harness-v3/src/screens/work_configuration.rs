@@ -11,7 +11,7 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        components::ENTRY_CODE_BANNER,
+        components::{ENTRY_CODE_BANNER},
         layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
@@ -207,25 +207,25 @@ fn render_onboarding(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "› [enter] Continue",
+        "› Continue",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "  [s] Skip with this safe default",
+        "  Skip with this safe default",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [m] Review other models",
+        "  Review other models",
         TextStyle::muted(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "  [esc] Back",
+        "Enter to continue · s to skip · m for models · Esc to go back",
         TextStyle::muted(),
     )?;
 
@@ -472,16 +472,16 @@ fn render_model_picker(
         canvas,
         DOCK_TOP + 3,
         if blocked {
-            "› [enter] Connect provider · [esc] Cancel"
+            "› Connect provider · Esc to Cancel"
         } else {
-            "› [enter] Apply model · [esc] Cancel"
+            "› Apply model · Esc to Cancel"
         },
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[↑↓] Choose · [f] Filter models · current choice stays unchanged until Apply",
+        "↑↓ to Choose · f for Filter models · current choice stays unchanged until Apply",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -773,7 +773,7 @@ fn render_model_picker_filtered(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [c] Clear filter · [esc] Cancel",
+            "› c for Clear filter · Esc to Cancel",
             TextStyle::accent(),
         )?;
         dock_line(
@@ -804,13 +804,13 @@ fn render_model_picker_filtered(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Apply model · [c] Clear filter · [esc] Cancel",
+            "› Apply model · c for Clear filter · Esc to Cancel",
             TextStyle::accent(),
         )?;
         dock_line(
             canvas,
             DOCK_TOP + 4,
-            "[↑↓] Choose · query stays visible · current choice stays until Apply",
+            "↑↓ to Choose · query stays visible · current choice stays until Apply",
             TextStyle::muted(),
         )?;
         dock_line(
@@ -1091,18 +1091,18 @@ fn render_agent_picker(
         canvas,
         DOCK_TOP + 3,
         if current_only {
-            "› [enter] Keep Careful edits · [esc] Cancel"
+            "› Keep Careful edits · Esc to Cancel"
         } else if unchanged {
-            "› [enter] Use Quick implementation · [esc] Cancel"
+            "› Use Quick implementation · Esc to Cancel"
         } else {
-            "› [enter] Review access change · [esc] Cancel"
+            "› Review access change · Esc to Cancel"
         },
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[↑↓] Choose · each row explains how Code will work",
+        "↑↓ to Choose · each row explains how Code will work",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -1395,16 +1395,16 @@ fn render_skills_picker(
         canvas,
         DOCK_TOP + 3,
         if escalating {
-            "› [enter] Review access change · [esc] Cancel"
+            "› Review access change · Esc to Cancel"
         } else {
-            "› [enter] Apply skills · [esc] Cancel"
+            "› Apply skills · Esc to Cancel"
         },
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[space] Toggle · [↑↓] Move · enabled state is labeled on each row",
+        "[space] Toggle · ↑↓ to Move · enabled state is labeled on each row",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -1633,13 +1633,13 @@ fn render_subagent_picker(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Use this helper · [esc] Cancel",
+        "› Use this helper · Esc to Cancel",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[↑↓] Choose · outcome describes fit for the current task",
+        "↑↓ to Choose · outcome describes fit for the current task",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -1847,13 +1847,13 @@ fn render_variant_picker(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Apply variant · [esc] Cancel",
+        "› Apply variant · Esc to Cancel",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[↑↓] Choose · each row explains the practical tradeoff",
+        "↑↓ to Choose · each row explains the practical tradeoff",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -2054,13 +2054,13 @@ fn render_theme_picker(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Apply theme · [esc] Cancel · restores previous theme",
+        "› Apply theme · Esc to Cancel · restores previous theme",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[↑↓] Preview · only the focused theme is temporary",
+        "↑↓ to Preview · only the focused theme is temporary",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -2280,7 +2280,7 @@ fn render_mode_switch(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Apply access change · [esc] Keep current skills",
+            "› Apply access change · Esc to Keep current skills",
             TextStyle::accent(),
         )?;
         dock_line(
@@ -2332,7 +2332,7 @@ fn render_mode_switch(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "› [enter] Apply access change · [esc] Keep Careful edits",
+            "› Apply access change · Esc to Keep Careful edits",
             TextStyle::accent(),
         )?;
         dock_line(
@@ -2543,13 +2543,13 @@ fn render_mode_switch_refused(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Choose Quick implementation · same access",
+        "› Choose Quick implementation · same access",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Return to work",
+        "  Esc to Return to work",
         TextStyle::muted(),
     )?;
     dock_line(

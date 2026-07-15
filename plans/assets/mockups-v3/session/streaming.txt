@@ -1,8 +1,8 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-    You · Find where the server applies the rate limit and explain the safe path.                                       
+     You · Find where the server applies the rate limit and explain the safe path.                                      
                                                                                                                         
                                                                                                                         
     Code                                                                                                                

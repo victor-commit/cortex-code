@@ -297,7 +297,7 @@ fn launch_decision_is_explicit_bottom_dock_and_not_modal() {
     assert!(!text.to_lowercase().contains("modal"));
     assert!(!text.to_lowercase().contains("popup"));
     assert!(text.contains("› [enter] Start mission"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn healthy_monitor_is_compact_with_one_view_progress_action() {
         text.contains("Enter to view progress") || text.contains("› View progress"),
         "healthy monitor must show the View progress primary without bracket chords"
     );
-    assert!(!text.contains("[enter]"));
+    assert!(!text.contains("[enter]"), "launch monitor must not use bracket chords");
     assert!(!text.contains("Needs attention"));
     assert!(!text.contains("Pause"));
     assert!(!text.contains("Replan"));

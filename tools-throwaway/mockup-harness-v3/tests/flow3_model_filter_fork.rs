@@ -40,7 +40,7 @@ fn model_picker_filtered_shows_active_query_counts_and_matching_rows() {
     assert!(!text.contains("GPT-5.2 Codex"));
     assert!(text.contains("Current"));
     assert!(text.contains("› Claude Opus 4.8") || text.contains("Selected · Claude Opus 4.8"));
-    assert!(text.contains("[enter] Apply model") || text.contains("[esc] Cancel"));
+    assert!(text.contains("[enter] Apply model") || (text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(text.contains("[c] Clear filter") || text.contains("Clear filter"));
     assert!(!text.contains("anthropic/"));
     assert!(!text.contains("openai/"));
@@ -212,7 +212,7 @@ fn fork_picker_states_source_checkpoint_and_destination_semantics() {
         "plain non-destructive copy must be explicit"
     );
     assert!(text.contains("[enter] Fork") || text.contains("› [enter] Fork"));
-    assert!(text.contains("[esc] Cancel") || text.contains("Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")) || text.contains("Cancel"));
     for forbidden in ["rewinds history", "branch name", "export conversation"] {
         assert!(
             !text.to_ascii_lowercase().contains(forbidden),

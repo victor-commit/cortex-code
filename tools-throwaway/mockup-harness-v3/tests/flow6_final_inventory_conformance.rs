@@ -782,9 +782,9 @@ fn every_decision_bearing_flow6_state_has_exactly_one_primary() {
 
         // Visual emphasis: focus mark on dock or conspicuous [enter] on primary.
         assert!(
-            text.contains("› [enter]")
+            (text.contains("› ") || text.contains("Enter to"))
                 || text.contains("› [s]")
-                || text.contains("[enter]")
+                || (text.contains("Enter to") || text.contains("[enter]"))
                 || text.contains("› "),
             "{screen_id}/{fixture_id}: primary must be visually marked"
         );

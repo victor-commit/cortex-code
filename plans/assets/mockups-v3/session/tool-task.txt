@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Audit the auth module and add the rate-limit tests.                                                                 
     You · Audit the auth module and add the rate-limit tests.                                                           
                                                                                                                         
@@ -11,7 +11,7 @@
                                                                                                                         
                                                                                                                         
     ✓ Audit the auth module · Complete · 3m12s · 6 findings ready                                                       
-    › Task details · expand findings  [enter] Expand                                                                    
+    › Task details · expand findings · Enter to expand                                                                  
                                                                                                                         
     ● Add rate-limit tests · Running · 48s elapsed · 2 of 3 files · in progress                                         
                                                                                                                         

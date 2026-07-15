@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Review earlier turns, then return to the latest work.                                                               
     ↑ 12 earlier turns · [ctrl+u] Jump to earlier · reading older work                                                  
                                                                                                                         
@@ -19,7 +19,7 @@
     Added rotation_invalidates_previous_token to crates/server/tests/auth.rs.                                           
     It signs in, refreshes once, then replays the pre-refresh token.                                                    
                                                                                                                         
-    › Jump to latest  [enter] Return to the newest turn and composer                                                    
+    › Jump to latest · Enter to return to the newest turn                                                               
                                                                                                                         
     Scroll position · earlier-turn-band · draft preserved                                                               
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › Add a short note about the remaining risk.                                                                        
                                                                                                                         
                                                                                                                         
-    [enter] Send reply                                                                                                  
+    Enter to send                                                                                                       
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

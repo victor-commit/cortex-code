@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
     You · Check the retry path before we merge.                                                                         
                                                                                                                         
@@ -14,7 +14,7 @@
     Command (case-sensitive)                                                                                            
       printf '%s\n' "retry check"                                                                                       
     Working directory: ~/project · Scope: this command only                                                             
-    Command detail collapsed · [e] Expand command detail                                                                
+    Command detail collapsed · e to expand                                                                              
                                                                                                                         
     Persistent: this session · matcher git diff -- src/net/* · Careful edits                                            
                                                                                                                         
@@ -31,10 +31,10 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Permission choices                                                                                               │  
-  │ › [enter] Allow once · run once, then open the pending edit                                                      │  
-  │   [p] Allow for this project · save the exact scope shown above                                                  │  
-  │   [d] Deny · do not run it                                                                                       │  
-  │ [esc] Cancel · keep request pending                                                                              │  
+  │ › Allow once · run once, then open the pending edit                                                              │  
+  │   Allow for this project · save the exact scope shown above                                                      │  
+  │   Deny · do not run it                                                                                           │  
+  │ Esc to cancel · keep request pending                                                                             │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

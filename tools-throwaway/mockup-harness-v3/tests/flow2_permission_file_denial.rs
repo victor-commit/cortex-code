@@ -47,7 +47,7 @@ fn permission_deny_reason_retains_denied_context_with_one_input() {
         "must show exactly one focused reason input"
     );
     assert!(text.contains("[enter] Send reason") || text.contains("Send reason"));
-    assert!(text.contains("[s] Skip") || text.contains("Skip"));
+    assert!((text.contains("Skip") || text.contains("s to skip")) || text.contains("Skip"));
     assert!(
         text.contains("Allow and Deny choices are closed")
             || text.contains("original Allow and Deny")

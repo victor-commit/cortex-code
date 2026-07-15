@@ -15,7 +15,7 @@ use crate::{
         SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::composer_header_meta,
+        components::{composer_header_meta, subject_title_for_origin},
         layout::{
             ScreenComposition, StatusLine, ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP, CANVAS_ROWS,
         },
@@ -314,7 +314,7 @@ pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String
 
     let mut canvas = Canvas::new();
     if fixture_id == FLOW2_FIXTURE {
-        canvas.write(2, 4, FLOW2_ORIGIN, TextStyle::muted())?;
+        canvas.write(2, 4, subject_title_for_origin(FLOW2_ORIGIN), TextStyle::muted())?;
         canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
     }
     let (candidates, events, transitions) = match screen_id {
@@ -467,19 +467,19 @@ fn render_diff_edit(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "› [enter] Review changes · open read-only staging detail",
+        "› Review changes · open read-only staging detail",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "  [a] Apply all · write this exact patch and resume",
+        "  Apply all · write this exact patch and resume",
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Cancel · write nothing",
+        "  Cancel · write nothing",
         TextStyle::text(),
     )?;
     dock_line(canvas, DOCK_TOP + 5, "", TextStyle::muted())?;
@@ -794,9 +794,9 @@ fn render_diff_staging(
         TextStyle::muted(),
     )?;
     let chrome = if stage.apply_failed {
-        "[enter] Refresh and review  ·  [esc] Cancel"
+        "Enter to refresh and review · Esc to cancel"
     } else {
-        "[i] Include  [x] Exclude  [a] Include all  [e] Edit  ·  [enter] Finish  [esc] Cancel"
+        "i include · x exclude · a include all · e edit · Enter to finish · Esc to cancel"
     };
     canvas.write(25, 4, chrome, TextStyle::bright())?;
     let mut pairs = vec![
@@ -867,7 +867,7 @@ fn render_diff_staging(
             None,
         ));
         // Stale finish is fail-closed: Finish stays unavailable until an explicit refresh.
-        // Chrome: "[enter] Refresh and review  ·  [esc] Cancel"
+        // Chrome: "Enter to refresh and review · Esc to cancel"
         // col:     4...................................... / 39...
         pairs.push(semantic(
             screen_id,
@@ -1198,7 +1198,7 @@ fn render_permission_shell(
         canvas.write(
             16,
             4,
-            "Command detail collapsed · [e] Expand command detail",
+            "Command detail collapsed · e to expand",
             TextStyle::muted(),
         )?;
     }
@@ -1242,9 +1242,9 @@ fn render_permission_shell(
         canvas,
         DOCK_TOP + 2,
         if recovery_blocked {
-            "› [enter] Allow once · do not run yet"
+            "› Allow once · do not run yet"
         } else {
-            "› [enter] Allow once · run once, then open the pending edit"
+            "› Allow once · run once, then open the pending edit"
         },
         TextStyle::accent(),
     )?;
@@ -1252,7 +1252,7 @@ fn render_permission_shell(
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "  [p] Allow for this project · save the exact scope shown above",
+            "  Allow for this project · save the exact scope shown above",
             TextStyle::text(),
         )?;
     } else {
@@ -1266,16 +1266,16 @@ fn render_permission_shell(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [d] Deny · do not run it",
+        "  Deny · do not run it",
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
         if long_command {
-            "[r] Return to permission choices · [esc] Cancel · keep request pending"
+            "r to return to permission choices · Esc to cancel"
         } else {
-            "[esc] Cancel · keep request pending"
+            "Esc to cancel · keep request pending"
         },
         TextStyle::muted(),
     )?;
@@ -1632,13 +1632,13 @@ fn render_permission_resume(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "› [enter] Inspect changes",
+        "› Inspect changes",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[esc] Return to the paused conversation",
+        "Esc to return to the paused conversation",
         TextStyle::muted(),
     )?;
     let pairs = [
@@ -1884,7 +1884,7 @@ fn render_permission_file_edit(
         20,
         4,
         &format!(
-            "Second hunk · hunk.retry-test · @@ -{},{} +{},{} · [e] Review full patch",
+            "Second hunk · hunk.retry-test · @@ -{},{} +{},{} · e to review full patch",
             test.old_start, test.old_lines, test.new_start, test.new_lines
         ),
         TextStyle::muted(),
@@ -1933,14 +1933,14 @@ fn render_permission_file_edit(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "› [enter] Allow once · apply only the disclosed patch",
+        "› Allow once · apply only the disclosed patch",
         TextStyle::accent(),
     )?;
     if persistent_supported {
         dock_line(
             canvas,
             DOCK_TOP + 3,
-            "  [p] Allow for this project · save the exact scope shown above",
+            "  Allow for this project · save the exact scope shown above",
             TextStyle::text(),
         )?;
     } else {
@@ -1954,13 +1954,13 @@ fn render_permission_file_edit(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [d] Deny · do not write the file",
+        "  Deny · do not write the file",
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "[e] Review full patch · [esc] Cancel · keep request pending",
+        "e to review full patch · Esc to cancel",
         TextStyle::muted(),
     )?;
 
@@ -2212,19 +2212,19 @@ fn render_permission_deny_reason(
     dock_line(
         canvas,
         DOCK_TOP + 2,
-        "› [enter] Send reason · add it to the denied activity",
+        "› Send reason · add it to the denied activity",
         TextStyle::accent(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "  [s] Skip · return without adding a reason",
+        "  Skip · return without adding a reason",
         TextStyle::text(),
     )?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "[esc] Cancel · keep the denied activity unchanged",
+        "Esc to cancel · keep the denied activity unchanged",
         TextStyle::muted(),
     )?;
 
@@ -2574,7 +2574,7 @@ fn render_file_mention(
             TextStyle::muted(),
         )?;
         dock_line(canvas, DOCK_TOP + 4, "", TextStyle::text())?;
-        dock_line(canvas, DOCK_TOP + 5, "[esc] Dismiss", TextStyle::bright())?;
+        dock_line(canvas, DOCK_TOP + 5, "Esc to dismiss", TextStyle::bright())?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -2632,7 +2632,7 @@ fn render_file_mention(
         dock_line(
             canvas,
             DOCK_TOP + 5,
-            "› [enter] Submit prepared prompt  [tab] Insert file  [esc] Dismiss  [↑↓] Choose",
+            "› Submit prepared prompt · Tab to insert file · Esc to dismiss · ↑↓ to choose",
             TextStyle::bright(),
         )?;
         pairs.push(semantic(
@@ -2681,7 +2681,7 @@ fn render_file_mention(
         dock_line(
             canvas,
             DOCK_TOP + 5,
-            "› [enter] Submit prepared prompt  [tab] Insert file  [esc] Dismiss  [↑↓] Choose",
+            "› Submit prepared prompt · Tab to insert file · Esc to dismiss · ↑↓ to choose",
             TextStyle::bright(),
         )?;
     }
@@ -2762,7 +2762,7 @@ fn render_slash_menu(
         canvas,
         DOCK_TOP + 1,
         &format!(
-            "/ commands · query: {query} · {} matching · [enter] Confirm · [esc] Cancel",
+            "/ commands · query: {query} · {} matching · Enter to confirm · Esc to cancel",
             matches.len()
         ),
         TextStyle::bright(),
@@ -2988,12 +2988,12 @@ fn render_attachment_picker(
         )
     } else if first_eligible.is_some() {
         format!(
-            "Attach file · project-relative paths · query: {query} · {} matching · [enter] Attach · [esc] Cancel",
+            "Attach file · project-relative paths · query: {query} · {} matching · Enter to attach · Esc to cancel",
             matches.len()
         )
     } else {
         format!(
-            "Attach file · project-relative paths · query: {query} · {} matching · [esc] Cancel",
+            "Attach file · project-relative paths · query: {query} · {} matching · Esc to cancel",
             matches.len()
         )
     };
@@ -3014,8 +3014,8 @@ fn render_attachment_picker(
     } else {
         format!("query-{query}")
     };
-    let attach_label = "[enter] Attach";
-    let cancel_label = "[esc] Cancel";
+    let attach_label = "Enter to attach";
+    let cancel_label = "Esc to cancel";
     let attach_start = header.find(attach_label).map(|index| 4 + index as u16);
     let cancel_start = header
         .find(cancel_label)
@@ -3083,7 +3083,7 @@ fn render_attachment_picker(
             "Keep typing or cancel to restore the original draft.",
             TextStyle::muted(),
         )?;
-        dock_line(canvas, DOCK_TOP + 5, "[esc] Cancel", TextStyle::bright())?;
+        dock_line(canvas, DOCK_TOP + 5, "Esc to cancel", TextStyle::bright())?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -3268,15 +3268,15 @@ fn render_export_picker(
     let selected_index = export_selected_index(fixture_id);
     let selected = &EXPORT_FORMATS[selected_index];
     let header =
-        "Export conversation · Creates one sandboxed file from this conversation · [enter] Export · [esc] Cancel";
+        "Export conversation · Creates one sandboxed file from this conversation · Enter to export · Esc to cancel";
     debug_assert!(
         header.chars().count() <= 113,
         "export picker header overflowed the dock body"
     );
     dock_line(canvas, DOCK_TOP + 1, header, TextStyle::bright())?;
 
-    let export_label = "[enter] Export";
-    let cancel_label = "[esc] Cancel";
+    let export_label = "Enter to export";
+    let cancel_label = "Esc to cancel";
     let export_start = header
         .find(export_label)
         .map(|index| 4 + index as u16)
@@ -3557,9 +3557,9 @@ fn render_queue_manager(
     // Conflict keeps Apply as a labeled refused action and adds exactly one
     // Refresh queue primary so stale apply remains auditable against after-state.
     let header = if conflict {
-        "Queued prompts · run after the current turn · [enter] Refresh queue · [esc] Cancel"
+        "Queued prompts · run after the current turn · Enter to refresh · Esc to cancel"
     } else {
-        "Queued prompts · run after the current turn · [enter] Apply · [esc] Cancel"
+        "Queued prompts · run after the current turn · Enter to apply · Esc to cancel"
     };
     debug_assert!(
         header.chars().count() <= 113,
@@ -3574,9 +3574,9 @@ fn render_queue_manager(
     };
     dock_line(canvas, DOCK_TOP + 2, primary_line, TextStyle::muted())?;
 
-    let refresh_label = "[enter] Refresh queue";
-    let apply_label = "[enter] Apply";
-    let cancel_label = "[esc] Cancel";
+    let refresh_label = "Enter to refresh queue";
+    let apply_label = "Enter to apply";
+    let cancel_label = "Esc to cancel";
     let cancel_start = header
         .find(cancel_label)
         .map(|index| 4 + index as u16)
@@ -3807,9 +3807,9 @@ fn render_queue_manager(
 
     // Local controls live on the selected row's action strip (never unlabeled).
     let controls = if conflict {
-        "[enter] Refresh queue · discards stale pending edits · never resurrects consumed items"
+        "Enter to refresh queue · discards stale pending edits · never resurrects consumed items"
     } else {
-        "[r] Reorder · [x] Remove · [n] Run next · selected payload moves as one unit"
+        "r reorder · x remove · n run next · selected payload moves as one unit"
     };
     debug_assert!(
         controls.chars().count() <= 113,
@@ -3822,13 +3822,13 @@ fn render_queue_manager(
             (
                 "action.queue-manager.reorder",
                 "Reorder",
-                "[r] Reorder",
+                "r to reorder",
             ),
-            ("action.queue-manager.remove", "Remove", "[x] Remove"),
+            ("action.queue-manager.remove", "Remove", "x to remove"),
             (
                 "action.queue-manager.run-next",
                 "Run next",
-                "[n] Run next",
+                "n to run next",
             ),
         ] {
             let start = controls
@@ -3983,11 +3983,11 @@ fn render_command_palette(
     write_dock_border(canvas)?;
     let primary_opens_submenu = matches.first().is_some_and(|row| row.opens_submenu);
     let enter_label = if matches.is_empty() {
-        "[esc] Cancel"
+        "Esc to cancel"
     } else if primary_opens_submenu {
-        "[enter] Open scope · [esc] Cancel"
+        "Enter to open scope · Esc to cancel"
     } else {
-        "[enter] Run · [esc] Cancel"
+        "Enter to run · Esc to cancel"
     };
     dock_line(
         canvas,
@@ -4254,7 +4254,7 @@ fn render_command_palette_submenu(
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        "Palette › Queued prompts · scoped list · [back] Root",
+        "Palette › Queued prompts · scoped list · Esc to root",
         TextStyle::bright(),
     )?;
 
@@ -4335,7 +4335,7 @@ fn render_command_palette_submenu(
     dock_line(
         canvas,
         DOCK_TOP + 5,
-        "› [back] Root  [enter] Run scoped action  [esc] Cancel · restore draft",
+        "› Root · Enter to run scoped action · Esc to cancel",
         TextStyle::bright(),
     )?;
     pairs.push(semantic(
@@ -4420,7 +4420,7 @@ fn render_command_palette_submenu(
 }
 
 fn slash_draft_preview(canvas: &mut Canvas, query: &str) -> Result<(), String> {
-    canvas.write(2, 4, FLOW2_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(FLOW2_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
     canvas.write(12, 4, "Paused draft · 3 authored lines", TextStyle::muted())?;
     canvas.write(
@@ -4451,7 +4451,7 @@ fn slash_draft_preview(canvas: &mut Canvas, query: &str) -> Result<(), String> {
 }
 
 fn palette_transcript(canvas: &mut Canvas) -> Result<(), String> {
-    canvas.write(2, 4, FLOW2_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(FLOW2_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
     canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;

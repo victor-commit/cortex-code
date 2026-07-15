@@ -31,7 +31,7 @@ fn shell_keeps_commands_and_output_inline_under_originating_turn() {
 
     let text = audit.render_txt();
     assert!(
-        text.contains("Daily work · current conversation"),
+        (text.contains("Current conversation") || text.contains("Daily work · current conversation")),
         "shell stays in the conversation origin"
     );
     assert!(
@@ -174,7 +174,7 @@ fn todo_list_progress_reconciles_item_states_with_summary_counts() {
 
     let text = audit.render_txt();
     assert!(
-        text.contains("Daily work · current conversation"),
+        (text.contains("Current conversation") || text.contains("Daily work · current conversation")),
         "todo stays in conversation context"
     );
     assert!(

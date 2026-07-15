@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
                                                                                                                         
     You · Check the retry path before we merge.                                                                         
@@ -34,7 +34,7 @@
   │ › Add a short note about the remaining test hunk.                                                                   
                                                                                                                         
                                                                                                                         
-    [enter] Send reply                                                                                                  
+    Enter to send                                                                                                       
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

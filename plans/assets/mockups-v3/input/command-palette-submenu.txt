@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
     You · Check the retry path before we merge.                                                                         
                                                                                                                         
@@ -30,11 +30,11 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Palette › Queued prompts · scoped list · [back] Root                                                             │  
+  │ Palette › Queued prompts · scoped list · Esc to root                                                             │  
   │ › Add buffer cap tests · run this prompt next                                                                    │  
   │   Trace the retry backoff · drop this queued prompt                                                              │  
   │   Document the rate-limit path · run after the current turn                                                      │  
-  │ › [back] Root  [enter] Run scoped action  [esc] Cancel · restore draft                                           │  
+  │ › Root · Enter to run scoped action · Esc to cancel                                                              │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

@@ -34,8 +34,8 @@ fn export_picker_opens_with_readable_formats_default_and_current_selection() {
     assert!(text.contains("Patch"));
     assert!(text.contains("git-applyable diff"));
     assert!(text.contains(".patch"));
-    assert!(text.contains("[enter] Export"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Enter to export") || text.contains("[enter] Export")));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(text.contains("Paused draft · 3 authored lines"));
     assert!(text.contains("Keep the summary short before we merge."));
     assert!(text.contains("~/project · main · Claude Opus 4.8"));

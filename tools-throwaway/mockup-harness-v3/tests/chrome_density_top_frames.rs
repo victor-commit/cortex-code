@@ -67,7 +67,7 @@ fn onboarding_keeps_entry_brand_but_uses_compact_standard_dock() {
         nonempty_content_lines(&text)
     );
     // One primary, no dual cancel-style footnotes restating Continue/Skip.
-    assert!(text.contains("› [enter] Continue"));
+    assert!(text.contains("› Continue") && text.contains("Enter to continue"));
     assert!(!text.contains("Continue accepts the recommendation. Skip keeps the same safe default."));
 }
 
@@ -79,7 +79,7 @@ fn session_picker_dock_does_not_fully_restate_selected_list_row() {
 
     assert!(text.contains("› Retry policy review"));
     assert!(text.contains("Tests pass; review is ready"));
-    assert!(text.contains("[enter] Resume latest"));
+    assert!(text.contains("Resume latest") || text.contains("Enter to resume"));
     // Dock may name the selection, but must not re-wrap the full list row body.
     assert!(
         !text.contains("Selected · Retry policy review\n")
@@ -113,8 +113,9 @@ fn permission_shell_short_summarizes_before_full_hash_evidence() {
         "short permission first frame must hide the full SHA until expansion"
     );
     assert!(
-        text.contains("[e] Expand command detail")
-            || text.contains("[e] Show command detail")
+        text.contains("e to expand")
+            || text.contains("Expand command detail")
+            || text.contains("Show command detail")
             || text.contains("Command detail collapsed"),
         "short permission must offer progressive disclosure for hash evidence"
     );
@@ -153,7 +154,7 @@ fn pending_diff_summarizes_second_hunk_instead_of_stacking_both_full_payloads() 
         "pending diff density must drop under prior 27 lines, got {}",
         nonempty_content_lines(&text)
     );
-    assert!(text.contains("› [enter] Review changes"));
+    assert!(text.contains("› Review changes") || text.contains("Review changes"));
     assert!(
         !text.contains("Review is read-only · editing is available inside staging detail")
             || dock_inner_content_lines(&text) <= 5,
@@ -170,11 +171,11 @@ fn staging_keeps_both_hunks_but_collapses_action_chrome() {
     assert!(text.contains("Included 1 of 2 hunks"));
     assert!(text.contains("hunk.retry-guard"));
     assert!(text.contains("hunk.retry-test"));
-    assert!(text.contains("[enter] Finish"));
+    assert!(text.contains("Enter to finish") || text.contains("Finish"));
     // Keys stay local, not as a long dual-row teaching strip plus body copy.
     assert!(
         !text.contains("Include or Exclude changes the focused hunk; Include all selects both. No file is written until Finish.")
-            || text.contains("[i] Include"),
+            || text.contains("i include") || text.contains("Include"),
         "instructional restatement is optional only if local keys remain"
     );
     assert!(

@@ -62,7 +62,7 @@ fn login_blocked_model_origin_offers_one_primary_and_safe_exit() {
     assert!(text.contains("Connect a model provider"));
     assert!(text.contains("Code needs a provider"));
     assert!(text.contains("› [enter] Choose a provider"));
-    assert!(text.contains("[esc] Cancel") || text.contains("[esc] Back"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")) || text.contains("[esc] Back"));
     assert!(text.contains("does not attempt") || text.contains("without connecting") || text.contains("no auth"));
     assert!(text.contains("Provider connection · blocked model action"));
     assert_eq!(
@@ -97,7 +97,7 @@ fn login_onboarding_origin_cancels_to_onboarding() {
     let text = audit.render_txt();
     assert!(text.contains("Provider connection · onboarding"));
     assert!(text.contains("› [enter] Choose a provider"));
-    assert!(text.contains("[esc]"));
+    assert!((text.contains("Esc to") || text.contains("[esc]")));
     assert!(
         text.contains("onboarding") || text.contains("first-run") || text.contains("setup"),
         "onboarding-origin copy must name the setup context"
@@ -163,7 +163,7 @@ fn connect_provider_catalogue_is_human_and_stateful() {
 
     // Default unconnected selection offers Connect.
     assert!(text.contains("Connect OpenAI") || text.contains("Connect Anthropic") || text.contains("Connect Google") || text.contains("Connect OpenRouter"));
-    assert!(text.contains("[esc] Back") || text.contains("[esc] Cancel"));
+    assert!(text.contains("[esc] Back") || (text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
 
     assert!(audit.transitions.iter().any(|t| {
         t.action_id == "action.connect-provider.connect"
@@ -441,7 +441,7 @@ fn gate_login_fixture_remains_blocked_model_compatible() {
     let text = audit.render_txt();
     assert!(text.contains("Provider connection · blocked model action"));
     assert!(text.contains("› [enter] Choose a provider"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
 }
 
 #[test]

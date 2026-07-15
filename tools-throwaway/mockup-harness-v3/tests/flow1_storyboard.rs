@@ -27,7 +27,7 @@ fn rich_response_keeps_prose_table_code_and_actions_in_the_conversation() {
     assert!(text.contains("API routes"));
     assert!(text.contains("fn authorize_request"));
     assert!(text.contains("shared_guard(request)?;"));
-    assert!(text.contains("[c] Copy code"));
+    assert!((text.contains("c to copy code") || text.contains("Copy code") || text.contains("[c] Copy code")));
     assert!(text.contains("Reply to Code"));
     assert!(!text.contains("Open inspector"));
     assert!(!text.contains("? help"));
@@ -236,15 +236,18 @@ fn daily_chat_turn_does_not_claim_completion_before_a_new_prompt() {
         "the same-turn daily frame must use nonterminal continuation copy before streaming"
     );
     assert!(
-        text.contains("Daily work · current conversation"),
-        "journey origin must stay Daily work across the pre-stream frame"
+        (text.contains("Current conversation") || text.contains("Daily work · current conversation")),
+        "subject title or journey origin must stay on daily identity across the pre-stream frame"
     );
     assert!(
         text.contains("Find where the server applies the rate limit and explain the safe path."),
         "the rate-limit task must remain the open request for this turn"
     );
     assert!(
-        text.contains("Send reply") || text.contains("Start reply"),
+        text.contains("Send reply")
+            || text.contains("Start reply")
+            || text.contains("Enter to send")
+            || text.contains("Enter to start"),
         "composer must still offer the send action that begins streaming"
     );
     let actions = audit
@@ -276,12 +279,12 @@ fn daily_tool_success_continue_wording_matches_open_turn() {
         .expect("the daily-work tool success must render typed evidence");
     let text = audit.render_txt();
 
-    assert!(text.contains("Daily work · current conversation"));
+    assert!((text.contains("Current conversation") || text.contains("Daily work · current conversation")));
     assert!(text.contains(
         "Find where the server applies the rate limit and explain the safe path."
     ));
     assert!(
-        text.contains("Continue response"),
+        text.contains("Continue response") || text.contains("Enter to continue"),
         "tool-success must invite continuing the same open answer, not a new prompt"
     );
     assert!(

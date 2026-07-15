@@ -1238,8 +1238,8 @@ fn default_density_supports_scanning_with_one_dominant_region() {
         if ACTION_DOCK_IDS.contains(&screen_id) || DETAIL_VIEW_IDS.contains(&screen_id) {
             assert!(
                 text.contains('›')
-                    || text.contains("[enter]")
-                    || text.contains("[esc]")
+                    || (text.contains("Enter to") || text.contains("[enter]"))
+                    || (text.contains("Esc to") || text.contains("[esc]"))
                     || text.contains("Return")
                     || primaries == 1,
                 "{label}: focus or primary marker required for scanning"

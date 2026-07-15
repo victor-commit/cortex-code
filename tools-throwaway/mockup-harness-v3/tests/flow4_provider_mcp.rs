@@ -19,7 +19,7 @@ fn login_offers_one_provider_path_without_mcp_adjacency() {
     assert!(text.contains("Connect a model provider"));
     assert!(text.contains("Code needs a provider before it can use the models in this project."));
     assert!(text.contains("› [enter] Choose a provider"));
-    assert!(text.contains("[esc] Cancel"));
+    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
     assert!(
         !text.to_lowercase().contains("mcp"),
         "login is the provider entry and must not present MCP as a neighbor"
@@ -177,7 +177,7 @@ fn connect_connected_returns_to_blocked_model_origin_not_mcp() {
     assert!(text.contains("GPT-5.2 Codex can use this provider now."));
     assert!(text.contains("GPT-5.2 Codex"));
     assert!(
-        text.contains("› [enter] Continue") || text.contains("› [enter] Return to model choices"),
+        (text.contains("› Continue") || text.contains("Enter to continue")) || text.contains("› [enter] Return to model choices"),
         "primary must be Continue or the historic return label"
     );
     assert!(

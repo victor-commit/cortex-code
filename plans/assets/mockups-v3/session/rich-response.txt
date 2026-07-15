@@ -1,8 +1,8 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-    You · Find where the server applies the rate limit and explain the safe path.                                       
+     You · Find where the server applies the rate limit and explain the safe path.                                      
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -24,7 +24,7 @@
           Ok(session)                                                                                                   
       }                                                                                                                 
                                                                                                                         
-      [c] Copy code                                                                                                     
+      c to copy code                                                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › Reply to Code                                                                                                     
                                                                                                                         
                                                                                                                         
-    [enter] Send reply                                                                                                  
+    Enter to send                                                                                                       
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

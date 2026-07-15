@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Check the branch, then run the focused tests.                                                                       
     You · Check the branch, then run the focused tests.                                                                 
                                                                                                                         
