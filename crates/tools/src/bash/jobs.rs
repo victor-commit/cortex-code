@@ -6,9 +6,13 @@
 //! registered here so its PID is tracked. [`BackgroundJobs::shutdown`] kills and reaps every tracked
 //! child by PID; the children are also spawned with `kill_on_drop`, so dropping the registry is a
 //! fail-safe that still leaves no orphan.
+//!
+//! When a job is reaped (either after it already finished, or after forced shutdown kill), the
+//! registry writes a completion audit record with the final exit status and the job's working
+//! directory whenever an audit sink was attached at spawn time.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tokio::process::Child;
 
@@ -20,8 +24,12 @@ pub struct BackgroundJob {
     pub pid: u32,
     /// The shell command the job runs.
     pub command: String,
+    /// Working directory the command was spawned with.
+    pub cwd: PathBuf,
     /// The on-disk file the job's combined stdout/stderr is streamed to.
     pub log_path: PathBuf,
+    /// Optional session audit sink that should record the final exit status on reap.
+    audit: Option<Arc<audit::AuditSink>>,
     /// The child handle, owned so the job can be killed and reaped.
     child: Child,
 }
@@ -33,6 +41,7 @@ impl BackgroundJob {
         id: impl Into<String>,
         pid: u32,
         command: impl Into<String>,
+        cwd: impl Into<PathBuf>,
         log_path: PathBuf,
         child: Child,
     ) -> Self {
@@ -40,9 +49,18 @@ impl BackgroundJob {
             id: id.into(),
             pid,
             command: command.into(),
+            cwd: cwd.into(),
             log_path,
+            audit: None,
             child,
         }
+    }
+
+    /// Attach the audit sink that should receive the completion/reap record for this job.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<audit::AuditSink>) -> Self {
+        self.audit = Some(audit);
+        self
     }
 }
 
@@ -55,6 +73,8 @@ pub struct JobHandle {
     pub pid: u32,
     /// The shell command the job runs.
     pub command: String,
+    /// Working directory the command was spawned with.
+    pub cwd: PathBuf,
     /// The on-disk file the job's output is streamed to.
     pub log_path: PathBuf,
 }
@@ -93,6 +113,7 @@ impl BackgroundJobs {
                         id: job.id.clone(),
                         pid: job.pid,
                         command: job.command.clone(),
+                        cwd: job.cwd.clone(),
                         log_path: job.log_path.clone(),
                     })
                     .collect()
@@ -114,20 +135,44 @@ impl BackgroundJobs {
 
     /// Terminate and reap every tracked job by PID, leaving no orphan process.
     ///
-    /// Each job's whole process group is killed (so a `bash` wrapper and the commands it spawned
-    /// both die, not just the direct child), then the direct child is awaited so it is fully reaped
-    /// (not left a zombie). The registry is emptied. The lock is released before awaiting so the
-    /// synchronous `Mutex` is never held across an `.await`.
+    /// Jobs that already finished keep their natural exit status. Still-running jobs have their
+    /// whole process group killed (so a `bash` wrapper and the commands it spawned both die), then
+    /// the direct child is awaited so it is fully reaped (not left a zombie). Each reaped job emits
+    /// a completion audit record when an audit sink was attached at spawn. The registry is emptied.
+    /// The lock is released before awaiting so the synchronous `Mutex` is never held across an
+    /// `.await`.
     pub async fn shutdown(&self) {
         let drained: Vec<BackgroundJob> = match self.jobs.lock() {
             Ok(mut jobs) => std::mem::take(&mut *jobs),
             Err(_) => return,
         };
         for mut job in drained {
-            super::kill_process_group(job.pid).await;
-            let _ = job.child.start_kill();
-            let _ = job.child.wait().await;
+            let exit_status = reap_background_job(&mut job).await;
+            if let Some(audit) = job.audit.as_ref() {
+                let outcome = match exit_status {
+                    Some(0) => "success",
+                    Some(_) => "error",
+                    None => "reaped",
+                };
+                audit.record_shell_execution(&job.command, &job.cwd, exit_status, outcome);
+            }
         }
+    }
+}
+
+/// Wait for `job` to finish, preferring a natural exit status when the process already completed,
+/// otherwise force-killing its process group and reaping the child. Returns the best-effort exit
+/// code (`None` for signal death / wait failure).
+async fn reap_background_job(job: &mut BackgroundJob) -> Option<i32> {
+    if let Ok(Some(status)) = job.child.try_wait() {
+        return status.code();
+    }
+
+    super::kill_process_group(job.pid).await;
+    let _ = job.child.start_kill();
+    match job.child.wait().await {
+        Ok(status) => status.code(),
+        Err(_) => None,
     }
 }
 
@@ -189,6 +234,7 @@ mod tests {
             "bash-1",
             pid,
             "sleep 60",
+            PathBuf::from("/tmp/project"),
             PathBuf::from("/tmp/x.log"),
             child,
         ));
@@ -198,6 +244,7 @@ mod tests {
         assert_eq!(handles.len(), 1);
         assert_eq!(handles[0].pid, pid);
         assert_eq!(handles[0].command, "sleep 60");
+        assert_eq!(handles[0].cwd, PathBuf::from("/tmp/project"));
 
         registry.shutdown().await;
         assert!(registry.is_empty(), "shutdown empties the registry");
@@ -214,6 +261,7 @@ mod tests {
             "bash-1",
             pid,
             "sleep 60",
+            PathBuf::from("/tmp/project"),
             PathBuf::from("/tmp/x.log"),
             child,
         ));
@@ -256,5 +304,68 @@ mod tests {
         assert!(!pid_alive_same_process(u32::MAX, Some(start)));
 
         drop(child);
+    }
+
+    #[tokio::test]
+    async fn shutdown_records_final_exit_status_for_completed_background_job() {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        let audit_path = std::env::temp_dir().join(format!(
+            "cortex-bg-job-audit-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let audit = Arc::new(audit::AuditSink::new(&audit_path, "ses_job_reap"));
+        let registry = BackgroundJobs::new();
+
+        let child = Command::new("bash")
+            .arg("-c")
+            .arg("exit 3")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn exit 3");
+        let pid = child.id().expect("pid");
+        // Let bash finish with exit 3 before reaping so the natural status is preserved.
+        for _ in 0..50 {
+            if !pid_alive(pid) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        registry.register(
+            BackgroundJob::new(
+                "bash-exit-3",
+                pid,
+                "exit 3",
+                PathBuf::from("/tmp/project-cwd"),
+                PathBuf::from("/tmp/x.log"),
+                child,
+            )
+            .with_audit(audit.clone()),
+        );
+        registry.shutdown().await;
+
+        let records = audit::read_jsonl(&audit_path).expect("audit records");
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "shell_execution"
+                    && record["session"] == "ses_job_reap"
+                    && record["command"] == "exit 3"
+                    && record["exit_status"] == 3
+                    && record["outcome"] == "error"
+                    && record["cwd"] == "/tmp/project-cwd"
+            }),
+            "expected reap audit with exit 3: {records:#?}"
+        );
+        let _ = std::fs::remove_file(audit_path);
     }
 }

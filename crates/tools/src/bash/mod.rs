@@ -448,16 +448,23 @@ fn spawn_background(command: &str, working_dir: &Path, ctx: &ToolContext) -> Too
     };
     let pid = child.id().unwrap_or(0);
     if let Some(audit) = ctx.audit_sink() {
+        // Start-only record: exit_status is null until the job is reaped/completes. The
+        // BackgroundJobs registry writes the matching completion record with the final status.
         audit.record_shell_execution(command, working_dir, None, "started");
     }
 
-    jobs.register(BackgroundJob::new(
+    let mut job = BackgroundJob::new(
         id.clone(),
         pid,
         command,
+        working_dir.to_path_buf(),
         log_path.clone(),
         child,
-    ));
+    );
+    if let Some(audit) = ctx.audit_sink() {
+        job = job.with_audit(audit.clone());
+    }
+    jobs.register(job);
 
     ToolOutput::text(format!(
         "[background job started]\n\
@@ -853,6 +860,180 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(!pid_alive(pid), "pid {pid} reaped on shutdown (no orphan)");
+    }
+
+    /// Background audit: start emits exit_status null, reap emits the natural final status.
+    #[tokio::test]
+    async fn background_job_audits_start_and_zero_exit_on_reap() {
+        let dir = temp_dir("bg-audit-zero");
+        let audit = audit_for(&dir, "ses_bg_zero");
+        let ctx = ToolContext::new(dir.clone()).with_audit(audit.clone());
+
+        let out = run(
+            json!({
+                "command": "printf 'zero-ok'; sleep 0.05",
+                "background": true
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.model_content());
+
+        // Wait until the job completes naturally so reaping can capture exit 0.
+        let handles = ctx.background_jobs().handles();
+        assert_eq!(handles.len(), 1);
+        for _ in 0..100 {
+            if std::fs::read_to_string(&handles[0].log_path)
+                .is_ok_and(|log| log.contains("zero-ok"))
+            {
+                // Give the process a beat after writing output to exit.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        ctx.background_jobs().shutdown().await;
+
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "shell_execution"
+                    && record["session"] == "ses_bg_zero"
+                    && record["command"]
+                        .as_str()
+                        .is_some_and(|cmd| cmd.contains("zero-ok"))
+                    && record["outcome"] == "started"
+                    && record
+                        .get("exit_status")
+                        .is_none_or(|value| value.is_null())
+            }),
+            "start record missing: {records:#?}"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "shell_execution"
+                    && record["session"] == "ses_bg_zero"
+                    && record["command"]
+                        .as_str()
+                        .is_some_and(|cmd| cmd.contains("zero-ok"))
+                    && record["exit_status"] == 0
+                    && record["outcome"] == "success"
+                    && record["cwd"]
+                        .as_str()
+                        .is_some_and(|cwd| cwd.contains("cortex-bash-bg-audit-zero"))
+            }),
+            "zero-exit completion record missing: {records:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_job_audits_nonzero_exit_on_reap() {
+        let dir = temp_dir("bg-audit-nonzero");
+        let audit = audit_for(&dir, "ses_bg_nonzero");
+        let ctx = ToolContext::new(dir.clone()).with_audit(audit.clone());
+
+        let out = run(
+            json!({
+                "command": "printf 'nonzero-fail' >&2; sleep 0.05; exit 7",
+                "background": true
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.model_content());
+
+        let handles = ctx.background_jobs().handles();
+        assert_eq!(handles.len(), 1);
+        for _ in 0..100 {
+            if std::fs::read_to_string(&handles[0].log_path)
+                .is_ok_and(|log| log.contains("nonzero-fail"))
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        ctx.background_jobs().shutdown().await;
+
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "shell_execution"
+                    && record["session"] == "ses_bg_nonzero"
+                    && record["command"]
+                        .as_str()
+                        .is_some_and(|cmd| cmd.contains("exit 7"))
+                    && record["outcome"] == "started"
+                    && record
+                        .get("exit_status")
+                        .is_none_or(|value| value.is_null())
+            }),
+            "start record missing: {records:#?}"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "shell_execution"
+                    && record["session"] == "ses_bg_nonzero"
+                    && record["command"]
+                        .as_str()
+                        .is_some_and(|cmd| cmd.contains("exit 7"))
+                    && record["exit_status"] == 7
+                    && record["outcome"] == "error"
+                    && record["cwd"]
+                        .as_str()
+                        .is_some_and(|cwd| cwd.contains("cortex-bash-bg-audit-nonzero"))
+            }),
+            "nonzero completion record missing: {records:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_job_audits_forced_reap_for_still_running_process() {
+        let dir = temp_dir("bg-audit-reap");
+        let audit = audit_for(&dir, "ses_bg_reap");
+        let ctx = ToolContext::new(dir.clone()).with_audit(audit.clone());
+
+        let out = run(
+            json!({
+                "command": "sleep 30",
+                "background": true
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.model_content());
+
+        let handles = ctx.background_jobs().handles();
+        assert_eq!(handles.len(), 1);
+        let pid = handles[0].pid;
+        assert!(pid_alive(pid), "job must still be running before reap");
+
+        ctx.background_jobs().shutdown().await;
+
+        let records = audit::read_jsonl(audit.path()).expect("audit records");
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "shell_execution"
+                    && record["session"] == "ses_bg_reap"
+                    && record["command"] == "sleep 30"
+                    && record["outcome"] == "started"
+            }),
+            "start record missing: {records:#?}"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record["type"] == "shell_execution"
+                    && record["session"] == "ses_bg_reap"
+                    && record["command"] == "sleep 30"
+                    && record["outcome"] != "started"
+                    && record["cwd"]
+                        .as_str()
+                        .is_some_and(|cwd| cwd.contains("cortex-bash-bg-audit-reap"))
+            }),
+            "completion/reap record missing: {records:#?}"
+        );
     }
 
     #[tokio::test]
