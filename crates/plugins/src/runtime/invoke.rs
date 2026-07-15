@@ -26,6 +26,22 @@ const RUNTIME_REQUIREMENT: &str = "Bun, Node, or Deno";
 const RUNTIME_ORDER: &str = "bun, node, deno";
 
 /// Host for loading configured local plugins through a real external JavaScript runtime.
+///
+/// # Request-shaping hook author contract
+///
+/// Surfaces compose request-shaping hooks in **configuration order** (the order plugins appear in
+/// the effective `plugin = [...]` list). Supported phases and inter-phase order:
+///
+/// 1. `chat.message` (per message, then next plugin)
+/// 2. `experimental.chat.messages.transform` / `chat.messages` (whole array)
+/// 3. `experimental.chat.system.transform` / `chat.system` (system text)
+/// 4. `chat.params`
+/// 5. `chat.headers`
+///
+/// Tool schemas use `tool.definition` (per definition, plugins in configuration order) when the
+/// surface materializes the advertised tool set. Each phase feeds the next plugin: earlier plugins'
+/// return values are later plugins' input. See the crate-level docs for the full contract; black-box
+/// composition is covered by `crates/cli/tests/plugin_request_shaping_hooks.rs`.
 #[derive(Clone)]
 pub struct RuntimeHost {
     timeout: Duration,
@@ -461,6 +477,10 @@ impl RuntimeHost {
     }
 
     /// Invoke a plugin's `chat.message` hook with one outgoing message.
+    ///
+    /// Surfaces invoke this for every loaded plugin that registers `chat.message`, in configuration
+    /// order, before whole-array/system transforms. Each plugin's returned message is the next
+    /// plugin's input (configuration-order composition).
     pub fn invoke_chat_message(
         &self,
         plugin: &PluginSpec,
@@ -474,6 +494,10 @@ impl RuntimeHost {
     }
 
     /// Invoke a plugin's `chat.params` hook with the request parameter map.
+    ///
+    /// After message/system shaping, surfaces invoke this for every plugin that registers
+    /// `chat.params`, in configuration order; each return value replaces the parameter map for the
+    /// next plugin.
     pub fn invoke_chat_params(
         &self,
         plugin: &PluginSpec,
@@ -487,6 +511,9 @@ impl RuntimeHost {
     }
 
     /// Invoke a plugin's `chat.headers` hook with the outbound request header map.
+    ///
+    /// After `chat.params`, surfaces invoke this for every plugin that registers `chat.headers`, in
+    /// configuration order; each return value replaces the header map for the next plugin.
     pub fn invoke_chat_headers(
         &self,
         plugin: &PluginSpec,
@@ -500,6 +527,10 @@ impl RuntimeHost {
     }
 
     /// Invoke a plugin's `tool.definition` hook with one advertised tool definition.
+    ///
+    /// Surfaces invoke this for every plugin that registers `tool.definition`, in configuration
+    /// order, and for each tool definition in turn. Earlier plugins' transformed definitions are
+    /// the later plugins' input.
     pub fn invoke_tool_definition(
         &self,
         plugin: &PluginSpec,
@@ -600,7 +631,11 @@ impl RuntimeHost {
         }
     }
 
-    /// Invoke a plugin's messages-array transform hook.
+    /// Invoke a plugin's messages-array transform hook (`experimental.chat.messages.transform`,
+    /// with alias `chat.messages`).
+    ///
+    /// Surfaces run this phase after per-message `chat.message` hooks and before system transforms,
+    /// visiting plugins in configuration order so each returned array is the next plugin's input.
     pub fn invoke_chat_messages_transform(
         &self,
         plugin: &PluginSpec,
@@ -613,7 +648,11 @@ impl RuntimeHost {
         )
     }
 
-    /// Invoke a plugin's system-prompt transform hook.
+    /// Invoke a plugin's system-prompt transform hook (`experimental.chat.system.transform`, with
+    /// alias `chat.system`).
+    ///
+    /// Surfaces run this phase after messages-array transforms and before `chat.params`, visiting
+    /// plugins in configuration order so each returned system string is the next plugin's input.
     pub fn invoke_chat_system_transform(
         &self,
         plugin: &PluginSpec,

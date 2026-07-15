@@ -780,8 +780,10 @@ impl PluginState {
     }
 
     fn shape_chat_messages(&self, messages: &mut Vec<Message>) -> Result<(), PluginRuntimeError> {
-        // Per-message hooks run before whole-array/system transforms. Within each hook family,
-        // plugins run in configuration order, so repeated runs observe the same composition order.
+        // Author-facing contract (crate docs on `plugins` + README Plugins section): per-message
+        // `chat.message` first, then messages-array and system transforms; within each family,
+        // plugins compose in configuration order (each transform is the next plugin's input).
+        // VAL-PLUGIN-026 / `plugin_request_shaping_hooks` pin that order.
         for loaded in &self.loaded {
             if !plugin_has_hook(loaded, "chat.message") {
                 continue;

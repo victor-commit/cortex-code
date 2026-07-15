@@ -73,9 +73,44 @@ One binary exposes several surfaces over the same session engine:
 - **Context compaction** — automatic compaction and overflow recovery.
 - **Audit & redaction** — wired audit logging and secret redaction across
   surfaces, with a `CORTEX_NO_NET` offline kill switch.
-- **Plugins** — project plugins and lifecycle hooks.
+- **Plugins** — project plugins and lifecycle hooks (see [Plugins](#plugins)).
 - **Persistence & inspection** — SQLite-backed sessions plus `stats`, `search`,
   `export`/`import`, and `replay`.
+
+## Plugins
+
+Project plugins are local JavaScript modules listed in config (for example
+`plugin = ["./my-plugin.mjs"]` or `[spec, options]` pairs). They execute in an
+external runtime with fixed discovery order: **Bun**, then **Node**, then
+**Deno**. A configured plugin is never silently skipped; missing runtime,
+missing file, or a load error fail closed with a clear diagnostic.
+
+### Request-shaping hook composition
+
+Request-shaping hooks rewrite the outbound LLM request and advertised tool
+schemas before a turn leaves the surface. Composition is **configuration order**:
+plugins are visited in the order they appear in the effective `plugin = [...]`
+list. Each hook's return value becomes the next plugin's input for that phase,
+so the order is deterministic and stable across runs.
+
+Phases applied to each shaped LLM request:
+
+1. `chat.message` — per message, plugins in config order
+2. `experimental.chat.messages.transform` (alias `chat.messages`) — whole array
+3. `experimental.chat.system.transform` (alias `chat.system`) — system text
+4. `chat.params` — provider parameter map
+5. `chat.headers` — extra HTTP headers
+
+Tool schemas are shaped separately when definitions are advertised:
+
+6. `tool.definition` — per tool definition, plugins in config order
+
+If plugins `a` and `b` are listed as `plugin = ["./a.mjs", "./b.mjs"]` and both
+register the same hook, every run observes `a` then `b`. Pure mode
+(`--pure` / `CORTEX_PURE`) and pure management probes disable plugin loading
+entirely. The crate docs in `plugins` (`crates/plugins/src/lib.rs`) are the
+authoritative API-facing statement of this contract; black-box tests in
+`crates/cli/tests/plugin_request_shaping_hooks.rs` pin the reordering behavior.
 
 ## Design & UX
 
