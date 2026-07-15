@@ -3638,13 +3638,15 @@ fn parse_loopback_host(host: &str) -> Result<(&'static str, u16), ApiError> {
 }
 
 fn render_share_page(session: &Session, messages: &[Message]) -> String {
-    let title = session.title.as_deref().unwrap_or(&session.id);
+    // Redact secret-shaped spans before HTML escaping so the loopback share page never
+    // leaks credentials the way the importable JSON artifact already redacts.
+    let title = redaction::redact(session.title.as_deref().unwrap_or(&session.id));
     let mut html = String::from(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
     );
     html.push_str("<title>");
-    html.push_str(&escape_html(title));
+    html.push_str(&escape_html(&title));
     html.push_str("</title><style>");
     html.push_str(
         "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;margin:2rem;\
@@ -3654,7 +3656,7 @@ fn render_share_page(session: &Session, messages: &[Message]) -> String {
          pre{white-space:pre-wrap;word-wrap:break-word;font-family:inherit}",
     );
     html.push_str("</style></head><body><main><h1>");
-    html.push_str(&escape_html(title));
+    html.push_str(&escape_html(&title));
     html.push_str("</h1><p>Local loopback share for session <code>");
     html.push_str(&escape_html(&session.id));
     html.push_str("</code>.</p>");
@@ -3663,9 +3665,9 @@ fn render_share_page(session: &Session, messages: &[Message]) -> String {
     } else {
         for message in messages {
             html.push_str("<article><h2>");
-            html.push_str(&escape_html(&message.role));
+            html.push_str(&escape_html(&redaction::redact(&message.role)));
             html.push_str("</h2><pre>");
-            html.push_str(&escape_html(&message.content));
+            html.push_str(&escape_html(&redaction::redact(&message.content)));
             html.push_str("</pre></article>");
         }
     }
