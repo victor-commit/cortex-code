@@ -117,6 +117,11 @@ pub type AccessLogSink = Arc<dyn Fn(AccessLogRecord) + Send + Sync>;
 /// The server stores a database path, not an in-memory session map. Each route opens the shared
 /// SQLite database and uses the `db` crate repositories, so sessions are durable across process
 /// restarts and visible to other surfaces that use the same path.
+///
+/// Plugin event-hooks are process-lifetime: they are loaded once (lazily, strict for turns /
+/// lenient for catalog discovery) and retained on this state so dispose runs only when the last
+/// `ServerState`/`PluginEventHooks` owner is dropped on clean serve shutdown — never after each
+/// message turn.
 #[derive(Clone)]
 pub struct ServerState {
     access_log: Option<AccessLogSink>,
@@ -137,6 +142,60 @@ pub struct ServerState {
     ptys: pty_ext::PtyRegistry,
     tui_control: tui_control::TuiControl,
     lsp_status_cache: lsp_format_vcs_ext::LspStatusCache,
+    /// Strict (fail-closed) process-lifetime plugin host for message turns / compaction.
+    process_plugin_hooks: ProcessPluginHooks,
+    /// Lenient process-lifetime plugin host for read-only discovery/catalog routes.
+    process_plugin_hooks_lenient: ProcessPluginHooks,
+}
+
+/// Lazily-initialized, process-retained [`plugins::PluginEventHooks`] handle.
+///
+/// The host is loaded once and then cloned for concurrent request owners. Because
+/// [`plugins::PluginEventHooks`] only disposes on the last owner drop, cloning for a single
+/// turn does not tear the host down between requests. Process exit drops the last owners and
+/// runs dispose on clean shutdown.
+///
+/// A failed strict load is cached as an error string so later turns fail the same way without
+/// re-spawning the runtime more than once.
+#[derive(Clone, Default)]
+struct ProcessPluginHooks {
+    inner: Arc<Mutex<Option<Result<plugins::PluginEventHooks, String>>>>,
+}
+
+impl ProcessPluginHooks {
+    fn get_or_try_init<F>(&self, load: F) -> Result<plugins::PluginEventHooks, String>
+    where
+        F: FnOnce() -> Result<plugins::PluginEventHooks, String>,
+    {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_owned())?;
+        match guard.as_ref() {
+            Some(Ok(hooks)) => Ok(hooks.clone()),
+            Some(Err(err)) => Err(err.clone()),
+            None => {
+                let loaded = load();
+                let returned = match &loaded {
+                    Ok(hooks) => Ok(hooks.clone()),
+                    Err(err) => Err(err.clone()),
+                };
+                *guard = Some(loaded);
+                returned
+            }
+        }
+    }
+
+    /// Lenient load always succeeds (skips bad plugins). Returns a clone of the retained host.
+    fn get_or_init<F>(&self, load: F) -> plugins::PluginEventHooks
+    where
+        F: FnOnce() -> plugins::PluginEventHooks,
+    {
+        match self.get_or_try_init(|| Ok(load())) {
+            Ok(hooks) => hooks,
+            Err(_) => plugins::PluginEventHooks::disabled("serve"),
+        }
+    }
 }
 
 impl ServerState {
@@ -162,6 +221,8 @@ impl ServerState {
             ptys: pty_ext::PtyRegistry::default(),
             tui_control: tui_control::TuiControl::default(),
             lsp_status_cache: lsp_format_vcs_ext::LspStatusCache::default(),
+            process_plugin_hooks: ProcessPluginHooks::default(),
+            process_plugin_hooks_lenient: ProcessPluginHooks::default(),
         }
     }
 
@@ -187,6 +248,8 @@ impl ServerState {
             ptys: pty_ext::PtyRegistry::default(),
             tui_control: tui_control::TuiControl::default(),
             lsp_status_cache: lsp_format_vcs_ext::LspStatusCache::default(),
+            process_plugin_hooks: ProcessPluginHooks::default(),
+            process_plugin_hooks_lenient: ProcessPluginHooks::default(),
         }
     }
 
@@ -2287,18 +2350,11 @@ async fn run_message_turn(
         ));
     }
 
-    let plugin_config =
-        plugins::PluginConfig::from_toml_value(effective_config.get("plugin"), &state.cwd)
-            .map_err(plugin_config_error)?;
-    // Attach the shared audit sink so the server's plugin lifecycle/event-hook activity lands in
-    // the same sink as headless and the TUI, attributed to the "serve"/"server" surface.
-    let plugin_hooks = plugins::PluginEventHooks::load_or_disabled(
-        &plugin_config,
-        state.config.pure_plugins(),
-        "serve",
-    )
-    .map_err(plugin_runtime_error)?
-    .with_audit(audit_sink.clone());
+    // Process-lifetime plugin host: load once for the serve process, clone a request-local view,
+    // and attach a per-session audit sink. Dispose is coordinated so it only runs when the last
+    // owner drops (clean serve shutdown), never after an ordinary message turn completes.
+    let plugin_hooks =
+        process_plugin_hooks_strict(&state, &effective_config)?.with_audit(audit_sink.clone());
     let resolved = resolve_turn_provider(
         &state.provider,
         &selected_model,
@@ -2547,28 +2603,90 @@ pub(crate) fn load_plugin_hooks(
 ) -> Result<plugins::PluginEventHooks, ApiError> {
     let config_inputs = state.config.inputs(&state.cwd, BTreeMap::new());
     let effective_config = settings::load(config_inputs).map_err(config_api_error)?;
-    let plugin_config =
-        plugins::PluginConfig::from_toml_value(effective_config.get("plugin"), &state.cwd)
-            .map_err(plugin_config_error)?;
-    let resolved_config =
+    // Process-lifetime lenient host: catalog/discovery never dispose between GETs.
+    Ok(process_plugin_hooks_lenient(state, &effective_config))
+}
+
+/// Strict process-lifetime plugin host for message turns and compaction (fail closed).
+pub(crate) fn process_plugin_hooks_strict(
+    state: &ServerState,
+    effective_config: &settings::EffectiveConfig,
+) -> Result<plugins::PluginEventHooks, ApiError> {
+    let pure = state.config.pure_plugins();
+    let cwd = state.cwd.clone();
+    let table =
         serde_json::to_value(effective_config.table()).unwrap_or_else(|_| serde_json::json!({}));
-    let resolved_config = match resolved_config {
+    let resolved_config = match table {
         serde_json::Value::Object(object) => serde_json::Value::Object(object),
         _ => serde_json::json!({}),
     };
-    let (hooks, skipped) = plugins::PluginEventHooks::load_lenient_with_config(
-        &plugin_config,
-        state.config.pure_plugins(),
-        "serve",
-        resolved_config,
-    );
-    for skip in &skipped {
-        eprintln!(
-            "cortex serve: skipping plugin `{}` for discovery: {}",
-            skip.spec, skip.reason
+    let plugin_value = effective_config.get("plugin").cloned();
+    state
+        .process_plugin_hooks
+        .get_or_try_init(|| {
+            let plugin_config = plugins::PluginConfig::from_toml_value(plugin_value.as_ref(), &cwd)
+                .map_err(|message| format!("invalid plugin configuration: {message}"))?;
+            plugins::PluginEventHooks::load_or_disabled_with_config(
+                &plugin_config,
+                pure,
+                "serve",
+                resolved_config,
+            )
+            .map_err(|err| format!("plugin runtime error: {err}"))
+        })
+        .map_err(|err| {
+            if err == "plugin host lock poisoned" {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err)
+            } else if let Some(message) = err.strip_prefix("invalid plugin configuration: ") {
+                plugin_config_error(message.to_owned())
+            } else if let Some(message) = err.strip_prefix("plugin runtime error: ") {
+                // Re-hydrated string only carries Display form; preserve the API error shape.
+                plugin_runtime_error(message)
+            } else {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err)
+            }
+        })
+}
+
+/// Lenient process-lifetime plugin host for discovery/catalog routes.
+fn process_plugin_hooks_lenient(
+    state: &ServerState,
+    effective_config: &settings::EffectiveConfig,
+) -> plugins::PluginEventHooks {
+    let pure = state.config.pure_plugins();
+    let cwd = state.cwd.clone();
+    let table =
+        serde_json::to_value(effective_config.table()).unwrap_or_else(|_| serde_json::json!({}));
+    let resolved_config = match table {
+        serde_json::Value::Object(object) => serde_json::Value::Object(object),
+        _ => serde_json::json!({}),
+    };
+    let plugin_value = effective_config.get("plugin").cloned();
+    state.process_plugin_hooks_lenient.get_or_init(|| {
+        let plugin_config =
+            match plugins::PluginConfig::from_toml_value(plugin_value.as_ref(), &cwd) {
+                Ok(config) => config,
+                Err(message) => {
+                    eprintln!(
+                        "cortex serve: invalid plugin configuration for discovery: {message}"
+                    );
+                    return plugins::PluginEventHooks::disabled("serve");
+                }
+            };
+        let (hooks, skipped) = plugins::PluginEventHooks::load_lenient_with_config(
+            &plugin_config,
+            pure,
+            "serve",
+            resolved_config,
         );
-    }
-    Ok(hooks)
+        for skip in &skipped {
+            eprintln!(
+                "cortex serve: skipping plugin `{}` for discovery: {}",
+                skip.spec, skip.reason
+            );
+        }
+        hooks
+    })
 }
 
 struct ResolvedTurnProvider {
@@ -3118,7 +3236,7 @@ fn plugin_config_error(message: String) -> ApiError {
     )
 }
 
-fn plugin_runtime_error(err: plugins::PluginRuntimeError) -> ApiError {
+fn plugin_runtime_error(err: impl std::fmt::Display) -> ApiError {
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("plugin runtime error: {err}"),

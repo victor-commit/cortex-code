@@ -34,6 +34,57 @@ fn skip_without_runtime() -> bool {
     }
 }
 
+/// Cloned owners of a process-retained host must not dispose between turns; only the final one's
+/// Drop should fire dispose. This pins the VAL-PLUGIN-025 serve-lifetime contract at the host
+/// boundary (server black-box proof separately exercises cortex serve + a real dispose marker).
+#[test]
+fn dispose_runs_only_when_last_owner_drops() {
+    if skip_without_runtime() {
+        return;
+    }
+
+    let project = scratch("last-owner-dispose");
+    let plugin = project.join("plugin.mjs");
+    let marker = project.join("disposed.marker");
+    std::fs::write(
+        &plugin,
+        r#"
+import { writeFile } from "node:fs/promises";
+
+export default async function plugin(input, options) {
+  return {
+    dispose: async () => {
+      await writeFile(options.marker, "disposed");
+    }
+  };
+}
+"#,
+    )
+    .expect("write plugin");
+
+    let config = config_from(
+        &project,
+        &format!(
+            "plugin = [[\"./plugin.mjs\", {{ marker = \"{}\" }}]]",
+            marker.display()
+        ),
+    );
+
+    let host = PluginEventHooks::load(&config, "serve").expect("load plugin host");
+    let for_turn = host.clone();
+    drop(for_turn);
+    assert!(
+        !marker.exists(),
+        "dispose must not run while another owner still retains the host"
+    );
+
+    drop(host);
+    assert!(
+        marker.exists(),
+        "dispose must run when the last host owner is dropped"
+    );
+}
+
 /// A non-headless surface (TUI/server) drives plugin `event` hooks through `PluginEventHooks`.
 /// When an audit sink is attached, the loaded plugin and each real event-hook invocation must be
 /// recorded as typed, surface-attributed audit records in the shared sink, matching the headless

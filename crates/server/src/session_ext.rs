@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     ApiError, CommandRequest, MessageRequest, ServerState, apply_estimated_usage_cost,
     audit_sink_for, compaction_policy, config_api_error, load_history, non_empty,
-    open_checkpoint_store, open_database, persist_usage, plugin_config_error, plugin_runtime_error,
+    open_checkpoint_store, open_database, persist_usage, process_plugin_hooks_strict,
     provider_config_api_error, render_system_context, require_session, resolve_turn_agent,
     resolve_turn_provider, run_message_turn, run_session_bash, select_turn_model, wait_for_abort,
 };
@@ -436,21 +436,10 @@ async fn run_auxiliary_summary(
         ));
     }
 
-    // Only the compaction path loads plugins, so it can run the same compaction hooks as the
-    // auto-compaction path; a plain summary never pays the plugin-runtime cost.
+    // Only the compaction path observes plugins. Reuse the serve process-lifetime host so dispose
+    // does not run when a /compact request ends; teardown still occurs on clean serve shutdown.
     let plugin_hooks = if as_compaction {
-        let plugin_config =
-            plugins::PluginConfig::from_toml_value(effective_config.get("plugin"), &state.cwd)
-                .map_err(plugin_config_error)?;
-        Some(
-            plugins::PluginEventHooks::load_or_disabled(
-                &plugin_config,
-                state.config.pure_plugins(),
-                "serve",
-            )
-            .map_err(plugin_runtime_error)?
-            .with_audit(audit_sink.clone()),
-        )
+        Some(process_plugin_hooks_strict(state, &effective_config)?.with_audit(audit_sink.clone()))
     } else {
         None
     };

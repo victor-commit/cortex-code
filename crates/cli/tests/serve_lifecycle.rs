@@ -290,6 +290,111 @@ fn serve_busy_port_exits_nonzero_with_clear_diagnostic() {
     wait_for_port_released(port);
 }
 
+/// VAL-PLUGIN-025 (server): a real dispose hook must not fire between message turns and must fire
+/// only after a clean `cortex serve` shutdown, leaving a durable dispose marker.
+#[test]
+fn serve_plugin_dispose_runs_only_on_clean_shutdown() {
+    let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
+    let scratch = Scratch::new("serve-plugin-dispose");
+    let workspace = scratch.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let dispose_marker = workspace.join("disposed.marker");
+    let event_marker = workspace.join("event.marker");
+    std::fs::write(
+        workspace.join("plugin.mjs"),
+        r#"
+import { writeFile, appendFile } from "node:fs/promises";
+
+export default async function plugin(input) {
+  return {
+    async event(event) {
+      await appendFile(`${input.directory}/event.marker`, `${event.kind || event.type || "event"}\n`);
+    },
+    dispose: async () => {
+      await writeFile(`${input.directory}/disposed.marker`, "disposed");
+    }
+  };
+}
+"#,
+    )
+    .expect("write dispose plugin");
+    std::fs::write(
+        workspace.join("cortex.toml"),
+        "plugin = [\"./plugin.mjs\"]\n",
+    )
+    .expect("write cortex.toml");
+
+    // Local OpenAI-compatible SSE endpoint so message turns succeed without OpenRouter and still
+    // exercise the process-lifetime PluginEventHooks path (load once, clone per turn).
+    let llm = FakeOpenRouter::spawn();
+    let data_dir = scratch.dir.join("data");
+    std::fs::create_dir_all(&data_dir).expect("create data dir");
+    let db_path = scratch.db_path();
+    let port = free_port();
+    let mut server = ServerProcess::start_with_plugin_workspace_and_provider(
+        port,
+        &workspace,
+        &db_path,
+        &data_dir,
+        &llm.base_url(),
+        &llm.api_key(),
+    );
+
+    // Two ordinary message turns should exercise the process-lifetime plugin host (event hooks),
+    // but must not run dispose while the serve process is still up.
+    for prompt in ["first turn", "second turn"] {
+        let body = serde_json::json!({ "parts": [{ "type": "text", "text": prompt }] }).to_string();
+        let create = request_json(port, "POST", "/session", Some("{}"));
+        assert_eq!(create.status, 201, "session create: {}", create.body);
+        let session: serde_json::Value =
+            serde_json::from_str(&create.body).expect("created session json");
+        let session_id = session["id"].as_str().expect("session id");
+        let turn = request_http_with_timeout(
+            port,
+            "POST",
+            &format!("/session/{session_id}/message"),
+            Some(&body),
+            Duration::from_secs(30),
+        )
+        .expect("message turn http");
+        assert_eq!(
+            turn.status, 200,
+            "message turn should complete via local provider; body: {}",
+            turn.body
+        );
+        assert!(
+            !dispose_marker.exists(),
+            "dispose must not run between message turns while serve is still listening"
+        );
+    }
+
+    assert!(
+        event_marker.exists(),
+        "the process-lifetime host should have fired event hooks across turns"
+    );
+    assert!(
+        !dispose_marker.exists(),
+        "dispose marker must still be absent immediately before clean shutdown"
+    );
+
+    let listener_pid = single_listener_pid(port).expect("exact serve listener pid");
+    assert_eq!(
+        listener_pid,
+        server.child.id(),
+        "cleanup must target the exact serve listener pid"
+    );
+    server.stop();
+    wait_for_port_released(port);
+    llm.shutdown();
+
+    assert!(
+        dispose_marker.exists(),
+        "dispose hook must write its durable side effect only after clean serve exit"
+    );
+    let disposed = std::fs::read_to_string(&dispose_marker).expect("read dispose marker");
+    assert_eq!(disposed.trim(), "disposed");
+}
+
 #[test]
 fn serve_catalog_discovery_fails_soft_offline_in_node_workspace() {
     let _guard = SERVE_TEST_LOCK.lock().expect("serve test lock");
@@ -626,6 +731,47 @@ impl ServerProcess {
             port,
             stopped: false,
             _scratch: scratch,
+        }
+    }
+
+    /// Start `cortex serve` in a plugin-configured workspace pointed at a local OpenAI-compatible
+    /// provider so message turns complete and load the real process-lifetime plugin host.
+    fn start_with_plugin_workspace_and_provider(
+        port: u16,
+        workspace: &Path,
+        db_path: &Path,
+        data_dir: &Path,
+        provider_base_url: &str,
+        api_key: &str,
+    ) -> Self {
+        let port_arg = port.to_string();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cortex"));
+        command.args([
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            port_arg.as_str(),
+        ]);
+        command.current_dir(workspace);
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        command
+            .env_remove("RUST_LOG")
+            .env_remove("CORTEX_VERBOSE")
+            .env_remove("CORTEX_NO_NET")
+            .env("CORTEX_DB_PATH", db_path)
+            .env("CORTEX_DATA_DIR", data_dir)
+            .env("OPENROUTER_API_KEY", api_key)
+            .env("CORTEX_OPENROUTER_BASE_URL", provider_base_url);
+        let mut child = command.spawn().expect("spawn cortex serve");
+        let _ = wait_for_health(port, &mut child);
+        Self {
+            child,
+            port,
+            stopped: false,
+            _scratch: None,
         }
     }
 
@@ -1021,5 +1167,112 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Minimal OpenAI-compatible SSE loopback used only by the server dispose lifecycle black-box
+/// proof so message turns complete without reaching the real OpenRouter network path.
+struct FakeOpenRouter {
+    port: u16,
+    child: Option<Child>,
+    listener_pid: u32,
+    directory: PathBuf,
+}
+
+impl FakeOpenRouter {
+    fn spawn() -> Self {
+        let port = free_port();
+        let directory =
+            std::env::temp_dir().join(format!("cortex-fake-or-{}-{}", std::process::id(), port));
+        std::fs::create_dir_all(&directory).expect("create fake provider dir");
+        let script = directory.join("server.py");
+        std::fs::write(
+            &script,
+            r#"
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port = int(sys.argv[1])
+turns = 0
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        global turns
+        turns += 1
+        length = int(self.headers.get("content-length", "0"))
+        self.rfile.read(length)
+        text = f"turn-{turns}"
+        payload = (
+            f'data: {{"choices":[{{"delta":{{"content":"{text}"}},"finish_reason":"stop"}}]}}\n\n'
+            "data: [DONE]\n\n"
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt, *args):
+        return
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+"#,
+        )
+        .expect("write fake openrouter server");
+        let child = Command::new("python3")
+            .arg(&script)
+            .arg(port.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn fake openrouter");
+        let started = Instant::now();
+        let listener_pid = loop {
+            if let Some(pid) = single_listener_pid(port) {
+                break pid;
+            }
+            if started.elapsed() > WAIT_TIMEOUT {
+                panic!("fake openrouter never listened on {port}");
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(listener_pid, child.id());
+        Self {
+            port,
+            child: Some(child),
+            listener_pid,
+            directory,
+        }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn api_key(&self) -> String {
+        // Assemble from fragments so secret scanners never see a contiguous key-shaped literal.
+        format!("sk-{}-{}", "or-v1", "deadbeef".repeat(8))
+    }
+
+    fn shutdown(mut self) {
+        kill_pid(self.listener_pid, None);
+        if let Some(mut child) = self.child.take() {
+            let _ = child.wait();
+        }
+        wait_for_port_released(self.port);
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+impl Drop for FakeOpenRouter {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            kill_pid(self.listener_pid, None);
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }

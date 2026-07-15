@@ -1346,6 +1346,9 @@ pub struct PluginEventHooks {
     host: RuntimeHost,
     surface: Arc<str>,
     disposed: Arc<AtomicBool>,
+    /// Set after the first `with_audit` records `plugin_load` so long-lived clones can reattach
+    /// a session audit sink without re-emitting load records every request.
+    load_audited: Arc<AtomicBool>,
     audit: Option<Arc<audit::AuditSink>>,
 }
 
@@ -1358,6 +1361,7 @@ impl PluginEventHooks {
             host: RuntimeHost::new(),
             surface: Arc::from(non_empty_surface(surface)),
             disposed: Arc::new(AtomicBool::new(false)),
+            load_audited: Arc::new(AtomicBool::new(false)),
             audit: None,
         }
     }
@@ -1383,6 +1387,7 @@ impl PluginEventHooks {
             host,
             surface: Arc::from(surface),
             disposed: Arc::new(AtomicBool::new(false)),
+            load_audited: Arc::new(AtomicBool::new(false)),
             audit: None,
         })
     }
@@ -1390,14 +1395,18 @@ impl PluginEventHooks {
     /// Attach the durable audit sink so plugin lifecycle/hook activity on this surface is recorded
     /// into the same shared sink as headless runs, with the sink's surface/source attribution.
     ///
-    /// Attaching records one `plugin_load` entry per configured plugin, mirroring the headless
-    /// bridge's `audit_loaded_plugins`, so a configured plugin is attributable even before any
-    /// event fires. Subsequent [`PluginEventHooks::invoke_event`] calls record a typed
-    /// `plugin_hook` entry for each real event-hook invocation.
+    /// The first attachment records one `plugin_load` entry per configured plugin, mirroring the
+    /// headless bridge's `audit_loaded_plugins`, so a configured plugin is attributable even
+    /// before any event fires. Subsequent attachments (e.g. per-session clones of a long-lived
+    /// serve host) only rebind the sink and do not re-emit load records. Subsequent
+    /// [`PluginEventHooks::invoke_event`] calls record a typed `plugin_hook` entry for each real
+    /// event-hook invocation.
     #[must_use]
     pub fn with_audit(mut self, audit: Arc<audit::AuditSink>) -> Self {
-        for loaded in &self.loaded {
-            audit.record_plugin_load(loaded.spec.raw_spec(), &loaded.report.hooks, "success");
+        if !self.load_audited.swap(true, Ordering::SeqCst) {
+            for loaded in &self.loaded {
+                audit.record_plugin_load(loaded.spec.raw_spec(), &loaded.report.hooks, "success");
+            }
         }
         self.audit = Some(audit);
         self
@@ -1456,6 +1465,7 @@ impl PluginEventHooks {
                 host,
                 surface: Arc::from(surface),
                 disposed: Arc::new(AtomicBool::new(false)),
+                load_audited: Arc::new(AtomicBool::new(false)),
                 audit: None,
             },
             skipped,
@@ -1798,7 +1808,12 @@ impl Default for PluginEventHooks {
 
 impl Drop for PluginEventHooks {
     fn drop(&mut self) {
-        self.dispose();
+        // Clones share load/dispose coordination. Only the last owner invokes dispose so a
+        // long-lived surface (cortex serve) can retain hooks across turns without tearing the
+        // host down between requests. Headless single-owner runs still dispose on their drop.
+        if Arc::strong_count(&self.disposed) == 1 {
+            self.dispose();
+        }
     }
 }
 
