@@ -2,7 +2,7 @@
                                                                                                                         
     Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
-    You · Check the retry path before we merge.                                                                         
+     › You · Check the retry path before we merge.                                                                      
                                                                                                                         
                                                                                                                         
     Code · Pending edit                                                                                                 
@@ -12,11 +12,11 @@
     File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
     Patch summary +4 -3 · 2 hunks                                                                                       
     Hunk @@ -42,2 +42,3                                                                                                 
-      42  42  -    return retry_after                                                                                   
-      43  43  -    backoff = backoff + 1                                                                                
-          42  +    return retry_after + jitter                                                                          
-          43  +    backoff = backoff + jitter                                                                           
-          44  +    log_retry_window(jitter)                                                                             
+       42   42 │ -    return retry_after                                                                                
+       43   43 │ -    backoff = backoff + 1                                                                             
+            42 │ +    return retry_after + jitter                                                                       
+            43 │ +    backoff = backoff + jitter                                                                        
+            44 │ +    log_retry_window(jitter)                                                                          
                                                                                                                         
     Second hunk · hunk.retry-test · @@ -88,2 +89,2 · open staging for lines                                             
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › Review changes · open read-only staging detail                                                                 │  
   │   Apply all · write this exact patch and resume                                                                  │  
   │   Cancel · write nothing                                                                                         │  
-  │                                                                                                                  │  
+  │ Enter to review changes · Esc to cancel                                                                          │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

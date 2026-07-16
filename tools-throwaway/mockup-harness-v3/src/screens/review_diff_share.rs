@@ -14,10 +14,13 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{subject_title_for_origin, DiffBlock, DiffKind, DetailView},
+        components::{
+            subject_title_for_origin, DiffBlock, DiffKind, DetailView, ShortcutByline,
+            ShortcutHint,
+        },
         layout::{
-            ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine,
-            SurfaceLayout,
+            outer_content_x, ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition,
+            StatusLine, SurfaceLayout,
         },
         tokens::TextStyle,
     },
@@ -462,22 +465,27 @@ fn render_diff_viewer(
         "Any approve or apply would open the Flow 2 decision dock first",
         TextStyle::muted(),
     )?;
+    // Prose letter clauses + return (CROSS-022 / N-11). No bracket filmstrip.
     canvas.write(
         25,
         4,
-        &format!("n for Next file · {next_label}"),
+        &format!("n to open next file · {next_label}"),
         TextStyle::text(),
     )?;
     canvas.write(
         26,
         4,
-        &format!("p for Previous file · {prev_label}"),
+        &format!("p to open previous file · {prev_label}"),
         TextStyle::text(),
     )?;
     canvas.write(
         28,
         4,
-        "› Esc to return to selected finding",
+        &format!(
+            "› {}",
+            ShortcutByline::new(vec![ShortcutHint::new("Esc", "return to selected finding")?])?
+                .render()
+        ),
         TextStyle::accent(),
     )?;
 
@@ -1159,15 +1167,16 @@ fn share_variant(fixture_id: &str) -> ShareVariant {
 }
 
 fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {
+    let x = outer_content_x();
     canvas.write(
         DOCK_TOP,
-        2,
+        x,
         &format!("╭{}╮", "─".repeat(114)),
         TextStyle::muted(),
     )?;
     canvas.write(
         DOCK_BOTTOM,
-        2,
+        x,
         &format!("╰{}╯", "─".repeat(114)),
         TextStyle::muted(),
     )?;
@@ -1175,9 +1184,10 @@ fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {
 }
 
 fn dock_line(canvas: &mut Canvas, row: u16, text: &str, style: TextStyle) -> Result<(), String> {
-    canvas.write(row, 2, "│", TextStyle::muted())?;
-    canvas.write(row, 4, text, style)?;
-    canvas.write(row, 117, "│", TextStyle::muted())?;
+    let x = outer_content_x();
+    canvas.write(row, x, "│", TextStyle::muted())?;
+    canvas.write(row, x + 2, text, style)?;
+    canvas.write(row, x + 115, "│", TextStyle::muted())?;
     Ok(())
 }
 

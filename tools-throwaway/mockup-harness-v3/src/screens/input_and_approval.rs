@@ -15,9 +15,13 @@ use crate::{
         SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{composer_header_meta, subject_title_for_origin},
+        components::{
+            composer_header_meta, subject_title_for_origin, user_turn_surface_strip,
+            ShortcutByline, ShortcutHint,
+        },
         layout::{
-            ScreenComposition, StatusLine, ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP, CANVAS_ROWS,
+            outer_content_x, ScreenComposition, StatusLine, ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP,
+            CANVAS_ROWS,
         },
         tokens::TextStyle,
     },
@@ -392,7 +396,7 @@ fn render_diff_edit(
     let hunks = validated_diff_hunks_for_render()?;
     let guard = &hunks[0];
     let test = &hunks[1];
-    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    paint_you_line(canvas, 4, FLOW2_YOU_LINE)?;
     canvas.write(7, 4, "Code · Pending edit", TextStyle::bright())?;
     canvas.write(
         9,
@@ -416,11 +420,12 @@ fn render_diff_edit(
         ),
         TextStyle::text(),
     )?;
+    // Mini unified diff (GitHub-ish): dual gutters + +/- marker, no wall of clutter.
     canvas.write(
         14,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             guard.old_start, guard.new_start, guard.old_payload[0]
         ),
         TextStyle::text(),
@@ -429,7 +434,7 @@ fn render_diff_edit(
         15,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             guard.old_start + 1,
             guard.new_start + 1,
             guard.old_payload[1]
@@ -439,19 +444,27 @@ fn render_diff_edit(
     canvas.write(
         16,
         6,
-        &format!("    {:>2}  +{}", guard.new_start, guard.new_payload[0]),
+        &format!("     {:>3} │ +{}", guard.new_start, guard.new_payload[0]),
         TextStyle::text(),
     )?;
     canvas.write(
         17,
         6,
-        &format!("    {:>2}  +{}", guard.new_start + 1, guard.new_payload[1]),
+        &format!(
+            "     {:>3} │ +{}",
+            guard.new_start + 1,
+            guard.new_payload[1]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
         18,
         6,
-        &format!("    {:>2}  +{}", guard.new_start + 2, guard.new_payload[2]),
+        &format!(
+            "     {:>3} │ +{}",
+            guard.new_start + 2,
+            guard.new_payload[2]
+        ),
         TextStyle::text(),
     )?;
     // Progressive disclosure: second hunk summarized until staging detail.
@@ -501,7 +514,9 @@ fn render_diff_edit(
         "  Cancel · write nothing",
         TextStyle::text(),
     )?;
-    dock_line(canvas, DOCK_TOP + 5, "", TextStyle::muted())?;
+    // Enter activates Review changes; prose byline only (no empty hint row / brackets).
+    let review_byline = ShortcutByline::enter_esc("review changes", "cancel")?.render();
+    dock_line(canvas, DOCK_TOP + 5, &review_byline, TextStyle::muted())?;
 
     let pairs = [
         semantic(
@@ -720,7 +735,7 @@ fn render_diff_staging(
         11,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             guard.old_start, guard.new_start, guard.old_payload[0]
         ),
         TextStyle::text(),
@@ -729,7 +744,7 @@ fn render_diff_staging(
         12,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             guard.old_start + 1,
             guard.new_start + 1,
             guard.old_payload[1]
@@ -739,19 +754,27 @@ fn render_diff_staging(
     canvas.write(
         13,
         6,
-        &format!("    {:>2}  +{}", guard.new_start, guard.new_payload[0]),
+        &format!("     {:>3} │ +{}", guard.new_start, guard.new_payload[0]),
         TextStyle::text(),
     )?;
     canvas.write(
         14,
         6,
-        &format!("    {:>2}  +{}", guard.new_start + 1, guard.new_payload[1]),
+        &format!(
+            "     {:>3} │ +{}",
+            guard.new_start + 1,
+            guard.new_payload[1]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
         15,
         6,
-        &format!("    {:>2}  +{}", guard.new_start + 2, guard.new_payload[2]),
+        &format!(
+            "     {:>3} │ +{}",
+            guard.new_start + 2,
+            guard.new_payload[2]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
@@ -772,7 +795,7 @@ fn render_diff_staging(
         18,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             test.old_start, test.new_start, test.old_payload[0]
         ),
         TextStyle::text(),
@@ -781,7 +804,7 @@ fn render_diff_staging(
         19,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             test.old_start + 1,
             test.new_start + 1,
             test.old_payload[1]
@@ -791,13 +814,17 @@ fn render_diff_staging(
     canvas.write(
         20,
         6,
-        &format!("    {:>2}  +{}", test.new_start, test.new_payload[0]),
+        &format!("     {:>3} │ +{}", test.new_start, test.new_payload[0]),
         TextStyle::text(),
     )?;
     canvas.write(
         21,
         6,
-        &format!("    {:>2}  +{}", test.new_start + 1, test.new_payload[1]),
+        &format!(
+            "     {:>3} │ +{}",
+            test.new_start + 1,
+            test.new_payload[1]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
@@ -812,12 +839,16 @@ fn render_diff_staging(
         },
         TextStyle::muted(),
     )?;
+    // Local staging controls stay prose + letter clauses (no brackets / putty).
     let chrome = if stage.apply_failed {
-        "Enter to refresh and review · Esc to cancel"
+        ShortcutByline::enter_esc("refresh and review", "cancel")?.render()
     } else {
-        "i include · x exclude · a include all · e edit · Enter to finish · Esc to cancel"
+        format!(
+            "i to include · x to exclude · a to include all · e to edit · {}",
+            ShortcutByline::enter_esc("finish", "cancel")?.render()
+        )
     };
-    canvas.write(25, 4, chrome, TextStyle::bright())?;
+    canvas.write(25, 4, &chrome, TextStyle::bright())?;
     let mut pairs = vec![
         semantic(
             screen_id,
@@ -953,15 +984,15 @@ fn render_diff_staging(
                 false,
             )),
         ));
-        // Staging chrome (Phase-A prose):
-        // "i include · x exclude · a include all · e edit · Enter to finish · Esc to cancel"
+        // Staging chrome (Cortex / CROSS-022 prose):
+        // "i to include · x to exclude · a to include all · e to edit · Enter to finish · Esc to cancel"
         // written at column 4. Cover the human label spans after the local letter key.
         pairs.push(semantic(
             screen_id,
             fixture_id,
             "include-all-action",
             "include-all-hunks",
-            reference(25, 30, 41),
+            reference(25, 39, 50),
             "summary",
             Some(action("action.staging.include-all", "Include all", false)),
         ));
@@ -970,7 +1001,7 @@ fn render_diff_staging(
             fixture_id,
             "edit-action",
             "edit-focused-hunk",
-            reference(25, 46, 50),
+            reference(25, 58, 62),
             "summary",
             Some(action("action.staging.edit", "Edit", false)),
         ));
@@ -979,7 +1010,7 @@ fn render_diff_staging(
             fixture_id,
             "primary-action",
             "finish-included-hunks",
-            reference(25, 62, 68),
+            reference(25, 74, 80),
             "focused",
             Some(action("action.staging.finish", "Finish", false)),
         ));
@@ -988,7 +1019,7 @@ fn render_diff_staging(
             fixture_id,
             "cancel-action",
             "return-pending-edit",
-            reference(25, 78, 84),
+            reference(25, 90, 96),
             "summary",
             Some(action("action.staging.cancel", "Cancel", false)),
         ));
@@ -1222,16 +1253,29 @@ fn render_permission_shell(
             TextStyle::muted(),
         )?;
     }
-    let persistent_supported = fixture_id.contains("persistent-supported")
-        || (fixture_id.contains("permission-persistent-scope") && !fixture_id.contains("outside"))
-        || fixture_id.contains("flow2.input-and-approval.stable")
-        || fixture_id.contains("canonical.permission-shell");
+    // Ordered project-scope option is the gallery default; intentional short /
+    // out-of-scope fixtures keep Persistent Allow unavailable (F2 + CROSS-022).
+    let persistent_supported = !recovery_blocked
+        && !out_of_scope
+        && (fixture_id.contains("persistent-supported")
+            || (fixture_id.contains("permission-persistent-scope")
+                && !fixture_id.contains("outside"))
+            || fixture_id.contains("flow2.input-and-approval.stable")
+            || fixture_id.contains("canonical.permission-shell")
+            || fixture_id.contains("public-audit")
+            || fixture_id.starts_with("canonical.")
+            || (fixture_id.contains("flow2-permission-shell")
+                && !fixture_id.contains("shell-short")
+                && !fixture_id.contains("unsafe")
+                && !fixture_id.contains("outside")
+                && !fixture_id.contains("long")));
     let persistent_row = if long_command { 20 } else { 18 };
     if persistent_supported {
+        // Human effect first; command shape is described without "matcher …" jargon.
         canvas.write(
             persistent_row,
             4,
-            "Persistent: this session · matcher git diff -- src/net/* · Careful edits",
+            "Saved for this session · git diffs under src/net · Careful edits",
             TextStyle::muted(),
         )?;
     } else {
@@ -1289,16 +1333,18 @@ fn render_permission_shell(
         "  Deny · do not run it",
         TextStyle::text(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        if long_command {
-            "r to return to permission choices · Esc to cancel"
-        } else {
-            "Esc to cancel · keep request pending"
-        },
-        TextStyle::muted(),
-    )?;
+    // Prose bylines only (N-11 / CROSS-022) — Enter activates primary Allow once.
+    let shell_byline = if long_command {
+        "r to return to permission choices · Esc to cancel".to_owned()
+    } else if recovery_blocked {
+        ShortcutByline::enter_esc("allow once", "cancel")?.render()
+    } else {
+        format!(
+            "{} · keep request pending",
+            ShortcutByline::enter_esc("allow once", "cancel")?.render()
+        )
+    };
+    dock_line(canvas, DOCK_TOP + 5, &shell_byline, TextStyle::muted())?;
 
     let mut pairs = vec![
         semantic(
@@ -1622,7 +1668,7 @@ fn render_permission_resume(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    paint_you_line(canvas, 4, FLOW2_YOU_LINE)?;
     canvas.write(7, 4, "Code · Permission accepted once", TextStyle::bright())?;
     canvas.write(
         9,
@@ -1658,7 +1704,11 @@ fn render_permission_resume(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "Esc to return to the paused conversation",
+        &ShortcutByline::new(vec![
+            ShortcutHint::new("Enter", "inspect changes")?,
+            ShortcutHint::new("Esc", "return to the paused conversation")?,
+        ])?
+        .render(),
         TextStyle::muted(),
     )?;
     let pairs = [
@@ -1780,7 +1830,7 @@ fn permission_transcript(
         )?;
         return Ok(());
     }
-    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    paint_you_line(canvas, 4, FLOW2_YOU_LINE)?;
     canvas.write(
         7,
         4,
@@ -1827,7 +1877,7 @@ fn render_permission_file_edit(
         "src/net/retry_policy.rs"
     };
 
-    canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    paint_you_line(canvas, 4, FLOW2_YOU_LINE)?;
     canvas.write(
         7,
         4,
@@ -1866,7 +1916,7 @@ fn render_permission_file_edit(
         15,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             guard.old_start, guard.new_start, guard.old_payload[0]
         ),
         TextStyle::text(),
@@ -1875,7 +1925,7 @@ fn render_permission_file_edit(
         16,
         6,
         &format!(
-            "{}  {:>2}  -{}",
+            "{:>3}  {:>3} │ -{}",
             guard.old_start + 1,
             guard.new_start + 1,
             guard.old_payload[1]
@@ -1885,19 +1935,27 @@ fn render_permission_file_edit(
     canvas.write(
         17,
         6,
-        &format!("    {:>2}  +{}", guard.new_start, guard.new_payload[0]),
+        &format!("     {:>3} │ +{}", guard.new_start, guard.new_payload[0]),
         TextStyle::text(),
     )?;
     canvas.write(
         18,
         6,
-        &format!("    {:>2}  +{}", guard.new_start + 1, guard.new_payload[1]),
+        &format!(
+            "     {:>3} │ +{}",
+            guard.new_start + 1,
+            guard.new_payload[1]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
         19,
         6,
-        &format!("    {:>2}  +{}", guard.new_start + 2, guard.new_payload[2]),
+        &format!(
+            "     {:>3} │ +{}",
+            guard.new_start + 2,
+            guard.new_payload[2]
+        ),
         TextStyle::text(),
     )?;
     canvas.write(
@@ -1916,10 +1974,12 @@ fn render_permission_file_edit(
         TextStyle::muted(),
     )?;
     if persistent_supported {
+        // Human effect first (CROSS-022) — path shape after the session scope.
         canvas.write(
             22,
             4,
-            "Persistent: this session · matcher src/net/retry_policy.rs · Careful edits",
+            // Human effect first, with exact path boundary for F2-036 matcher disclosure.
+            "Saved for this session · exact path src/net/retry_policy.rs · Careful edits",
             TextStyle::muted(),
         )?;
         canvas.write(
@@ -1977,12 +2037,12 @@ fn render_permission_file_edit(
         "  Deny · do not write the file",
         TextStyle::text(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "e to review full patch · Esc to cancel",
-        TextStyle::muted(),
-    )?;
+    // Enter activates Allow once; e remains local full-patch disclosure (not a decision secondary).
+    let file_byline = format!(
+        "e to review full patch · {}",
+        ShortcutByline::enter_esc("allow once", "cancel")?.render()
+    );
+    dock_line(canvas, DOCK_TOP + 5, &file_byline, TextStyle::muted())?;
 
     let mut pairs = vec![
         semantic(
@@ -2179,7 +2239,7 @@ fn render_permission_deny_reason(
 ) -> Result<ScreenEvidence, String> {
     let file_edit_denial = fixture_id.contains("file-edit");
     if file_edit_denial {
-        canvas.write(4, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+        paint_you_line(canvas, 4, FLOW2_YOU_LINE)?;
         canvas.write(
             7,
             4,
@@ -2241,12 +2301,12 @@ fn render_permission_deny_reason(
         "  Skip · return without adding a reason",
         TextStyle::text(),
     )?;
-    dock_line(
-        canvas,
-        DOCK_TOP + 5,
-        "Esc to cancel · keep the denied activity unchanged",
-        TextStyle::muted(),
-    )?;
+    // CROSS-022: free-text follow-up dock with prose return path.
+    let deny_byline = format!(
+        "{} · keep the denied activity unchanged",
+        ShortcutByline::enter_esc("send reason", "cancel")?.render()
+    );
+    dock_line(canvas, DOCK_TOP + 5, &deny_byline, TextStyle::muted())?;
 
     let denied_subject = if file_edit_denial {
         "file-edit.retry-policy"
@@ -4630,26 +4690,35 @@ fn draft_preview(canvas: &mut Canvas, mention_fragment: &str) -> Result<(), Stri
 }
 
 fn write_dock_border(canvas: &mut Canvas) -> Result<(), String> {
+    // OUTER_HPAD gutters (x=2) keep dock geometry on the 120-col editorial margin.
+    let x = outer_content_x();
+    let inner = 114usize;
     canvas.write(
         DOCK_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
+        x,
+        &format!("╭{}╮", "─".repeat(inner)),
         TextStyle::muted(),
     )?;
     canvas.write(
         DOCK_BOTTOM,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
+        x,
+        &format!("╰{}╯", "─".repeat(inner)),
         TextStyle::muted(),
     )?;
     Ok(())
 }
 
 fn dock_line(canvas: &mut Canvas, row: u16, text: &str, style: TextStyle) -> Result<(), String> {
-    canvas.write(row, 2, "│", TextStyle::muted())?;
-    canvas.write(row, 4, text, style)?;
-    canvas.write(row, 117, "│", TextStyle::muted())?;
+    let x = outer_content_x();
+    canvas.write(row, x, "│", TextStyle::muted())?;
+    canvas.write(row, x + 2, text, style)?;
+    canvas.write(row, x + 115, "│", TextStyle::muted())?;
     Ok(())
+}
+
+fn paint_you_line(canvas: &mut Canvas, row: u16, text: &str) -> Result<(), String> {
+    let line = user_turn_surface_strip(text)?;
+    canvas.write(row, outer_content_x() + 2, &line.text, line.style)
 }
 
 fn fuzzy_file_matches(query: &str) -> Vec<FileCandidate> {

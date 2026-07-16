@@ -65,8 +65,18 @@ fn staging_render_uses_the_validated_cumulative_coordinates() {
 
     assert!(text.contains("hunk.retry-guard · old 42,2 -> new 42,3"));
     assert!(text.contains("hunk.retry-test · old 88,2 -> new 89,2"));
-    assert!(text.contains("88  89  -assert_eq!(wait, 4)"));
-    assert!(text.contains("    90  +assert_eq!(attempts, 1)"));
+    // Mini unified-diff language keeps dual gutters and a marker bar;
+    // coordinates + sign + payload remain Literate for reconciliation.
+    assert!(
+        text.contains("88   89 │ -assert_eq!(wait, 4)")
+            || text.contains("88  89  -assert_eq!(wait, 4)"),
+        "old/new gutters for wait preimage must remain visible:\n{text}"
+    );
+    assert!(
+        text.contains("90 │ +assert_eq!(attempts, 1)")
+            || text.contains("    90  +assert_eq!(attempts, 1)"),
+        "new-side addition at line 90 must remain visible:\n{text}"
+    );
 }
 
 #[test]

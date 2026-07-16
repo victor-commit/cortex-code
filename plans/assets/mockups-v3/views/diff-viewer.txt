@@ -23,8 +23,8 @@
     Any approve or apply would open the Flow 2 decision dock first                                                      
                                                                                                                         
                                                                                                                         
-    n for Next file · next: src/net/retry_policy.rs (file 2 of 2)                                                       
-    p for Previous file · previous stays on file 1 of 2                                                                 
+    n to open next file · next: src/net/retry_policy.rs (file 2 of 2)                                                   
+    p to open previous file · previous stays on file 1 of 2                                                             
                                                                                                                         
     › Esc to return to selected finding                                                                                 
                                                                                                                         

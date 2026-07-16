@@ -2,7 +2,7 @@
                                                                                                                         
     Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
-    You · Check the retry path before we merge.                                                                         
+     › You · Check the retry path before we merge.                                                                      
                                                                                                                         
                                                                                                                         
     Code paused · File edit needs your approval                                                                         
@@ -13,14 +13,14 @@
     File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
     Patch summary +4 -3 · 2 hunks                                                                                       
     Hunk @@ -42,2 +42,3                                                                                                 
-      42  42  -    return retry_after                                                                                   
-      43  43  -    backoff = backoff + 1                                                                                
-          42  +    return retry_after + jitter                                                                          
-          43  +    backoff = backoff + jitter                                                                           
-          44  +    log_retry_window(jitter)                                                                             
+       42   42 │ -    return retry_after                                                                                
+       43   43 │ -    backoff = backoff + 1                                                                             
+            42 │ +    return retry_after + jitter                                                                       
+            43 │ +    backoff = backoff + jitter                                                                        
+            44 │ +    log_retry_window(jitter)                                                                          
     Second hunk · hunk.retry-test · @@ -88,2 +89,2 · e to review full patch                                             
     Scope: this edit only · project root ~/project · work style Careful edits                                           
-    Persistent: this session · matcher src/net/retry_policy.rs · Careful edits                                          
+    Saved for this session · exact path src/net/retry_policy.rs · Careful edits                                         
     Children inherit only read-only checks · child cap: no write elevation                                              
                                                                                                                         
                                                                                                                         
@@ -34,7 +34,7 @@
   │ › Allow once · apply only the disclosed patch                                                                    │  
   │   Allow for this project · save the exact scope shown above                                                      │  
   │   Deny · do not write the file                                                                                   │  
-  │ e to review full patch · Esc to cancel                                                                           │  
+  │ e to review full patch · Enter to allow once · Esc to cancel                                                     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

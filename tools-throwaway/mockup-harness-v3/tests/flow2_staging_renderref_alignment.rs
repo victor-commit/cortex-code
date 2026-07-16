@@ -7,7 +7,7 @@ use mockup_harness_v3::{
     scenario::{diff_fixture_file_bytes, replay_case},
 };
 
-// Phase-A staging chrome is prose (`a include all · e edit · Enter to finish · Esc to cancel`).
+// Cortex/CROSS-022 staging chrome: `a to include all · e to edit · Enter to finish · Esc to cancel`.
 // Tuple is (action_id, audit label, visible geometry span on the chrome row).
 const STAGING_ACTIONS: [(&str, &str, &str); 4] = [
     ("action.staging.include-all", "Include all", "include all"),
@@ -86,12 +86,13 @@ fn staging_chrome_action_render_refs_match_visible_label_geometry() {
     assert_eq!(rows.len(), 40, "staging canvas stays fixed at 40 rows");
 
     // Multiline hunks expand into the body; chrome lives below the payloads.
-    // Phase-A paint: "a include all · e edit · Enter to finish · Esc to cancel"
-    // (legacy dual-branch still allows residual bracket mullions if a fixture lags).
+    // Cortex paint: "a to include all · e to edit · Enter to finish · Esc to cancel"
+    // (legacy dual-branch still allows residual Phase-A dust / brackets if a fixture lags).
     let chrome_row = rows
         .iter()
         .position(|row| {
-            (row.contains("a include all") && row.contains("Enter to finish"))
+            ((row.contains("a to include all") || row.contains("a include all"))
+                && row.contains("Enter to finish"))
                 || (row.contains("[a] Include all") && row.contains("[enter] Finish"))
         })
         .expect("staging chrome must remain visible after payload expansion")
@@ -101,7 +102,8 @@ fn staging_chrome_action_render_refs_match_visible_label_geometry() {
         "chrome must sit under the expanded multiline hunk body, found row {chrome_row}"
     );
     assert!(
-        (rows[chrome_row as usize].contains("e edit")
+        ((rows[chrome_row as usize].contains("e to edit")
+            || rows[chrome_row as usize].contains("e edit"))
             && rows[chrome_row as usize].contains("Esc to cancel"))
             || (rows[chrome_row as usize].contains("[e] Edit")
                 && rows[chrome_row as usize].contains("[esc] Cancel")),
@@ -159,7 +161,8 @@ fn staging_action_geometry_survives_include_all_and_apply_failure_variants() {
             .render_txt()
             .lines()
             .position(|row| {
-                (row.contains("a include all") && row.contains("Enter to finish"))
+                ((row.contains("a to include all") || row.contains("a include all"))
+                    && row.contains("Enter to finish"))
                     || (row.contains("[a] Include all") && row.contains("[enter] Finish"))
             })
             .unwrap_or_else(|| panic!("fixture {fixture} must keep staging chrome"))
