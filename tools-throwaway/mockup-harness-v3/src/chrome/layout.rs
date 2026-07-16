@@ -299,6 +299,53 @@ impl StatusLine {
     }
 }
 
+/// Outer editorial horizontal pad for Cortex-inspired 120-col canvas geometry
+/// (VAL-V3-DS-035 / F-11). Conversation shells and dominant content leave a
+/// deliberate gutter so content is never edge-glued to columns 0 / 119.
+pub const OUTER_HPAD: u16 = 2;
+/// Dominant content measure after `OUTER_HPAD` gutters on both sides.
+pub const OUTER_CONTENT_WIDTH: u16 = CANVAS_COLUMNS - (OUTER_HPAD * 2);
+
+/// Left column of the outer editorial content measure (once-padded).
+pub const fn outer_content_x() -> u16 {
+    OUTER_HPAD
+}
+
+/// Width available between outer gutters.
+pub const fn outer_content_width() -> u16 {
+    OUTER_CONTENT_WIDTH
+}
+
+/// Pads `text` with `OUTER_HPAD` blank columns on each side to a full 120-col row.
+///
+/// Text wider than `OUTER_CONTENT_WIDTH` fails closed; shorter text is right-padded
+/// with spaces so the returned line spans the full canvas width and the right
+/// gutter stays empty.
+pub fn with_outer_hpad(text: &str) -> Result<String, String> {
+    let content_width = OUTER_CONTENT_WIDTH as usize;
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() > content_width {
+        return Err(format!(
+            "content exceeds outer editorial measure ({content_width} columns)"
+        ));
+    }
+    let mut row = String::with_capacity(CANVAS_COLUMNS as usize);
+    for _ in 0..OUTER_HPAD {
+        row.push(' ');
+    }
+    for ch in &chars {
+        row.push(*ch);
+    }
+    for _ in chars.len()..content_width {
+        row.push(' ');
+    }
+    for _ in 0..OUTER_HPAD {
+        row.push(' ');
+    }
+    debug_assert_eq!(row.chars().count() as u16, CANVAS_COLUMNS);
+    Ok(row)
+}
+
 /// Standard bottom action-dock band shared by pilot frames.
 /// Matches `SurfaceLayout::for_surface(ActionDock).action_dock()`: y=31 height=7.
 pub const ACTION_DOCK_TOP: u16 = 31;

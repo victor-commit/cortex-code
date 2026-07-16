@@ -6,11 +6,23 @@
 //!
 //! Shortcut and return copy uses Claude-style prose bylines
 //! (`Enter to apply · Esc to cancel`) — never bracket key-chord atoms.
+//!
+//! Cortex foundation chrome (F-11..F-14 / N-14..N-15):
+//! - [`PromptJewel`] — single rounded-border idle composer
+//! - [`TurnStatusBand`] — busy-only band between transcript and jewel
+//! - [`user_turn_surface_strip`] — user-turn surface with closed `›`
+//! - outer pad helpers live in `chrome::layout` (`OUTER_HPAD`, `with_outer_hpad`)
 
 use crate::{
-    chrome::tokens::{ColorToken, TextStyle, ACCENT_USE_BUDGET},
+    chrome::{
+        layout::OUTER_CONTENT_WIDTH,
+        tokens::{validate_glyphs, ColorToken, TextStyle, ACCENT_USE_BUDGET},
+    },
     Surface,
 };
+
+/// Closed prompt prefix glyph. Cortex uses `❯`; Cortex maps to `›` only.
+pub const PROMPT_PREFIX: char = '›';
 
 /// Known journey-breadcrumb prefixes that must never be primary titles (N-12).
 const FORBIDDEN_JOURNEY_TITLE_PREFIXES: &[&str] = &[
@@ -265,6 +277,61 @@ pub fn subject_title_for_origin(journey_or_subject: &str) -> &'static str {
     }
 }
 
+/// Closed prompt prefix used by jewels and user-turn strips (Cortex `❯` → `›`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PromptPrefix;
+
+impl PromptPrefix {
+    pub const fn closed() -> Self {
+        Self
+    }
+
+    pub const fn as_char(self) -> char {
+        PROMPT_PREFIX
+    }
+}
+
+/// Map a Cortex-source glyph into the Cortex closed set, when one exists.
+///
+/// Unmapped glyphs return `None` so callers fail closed rather than inventing art.
+pub fn map_product_glyph(glyph: char) -> Option<char> {
+    match glyph {
+        '❯' | '›' => Some(PROMPT_PREFIX),
+        '◆' | '●' => Some('●'),
+        '◇' | '○' => Some('○'),
+        other if "✓ ✗ → ↑ ↓ ─ │ ╭ ╮ ╰ ╯ █ ░ · ⎿ ▸ ▾ …".contains(other) => Some(other),
+        _ => None,
+    }
+}
+
+/// True when `text` matches Cortex's always-on putty `Key: verb` footer language
+/// (VAL-V3-DS-037 / N-14). Claude prose bylines do **not** match.
+pub fn contains_global_putty_footer(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("shift+tab:")
+        || lower.contains("ctrl+c:")
+        || lower.contains("ctrl+.:")
+        || lower.contains("ctrl+.;")
+    {
+        return true;
+    }
+    // Permanent filmstrip: multiple `Key: verb` segments separated by `│`.
+    if text.contains('│') {
+        let segments: Vec<&str> = text.split('│').map(str::trim).filter(|s| !s.is_empty()).collect();
+        if segments.len() >= 2 {
+            let looks_putty = segments.iter().filter(|seg| {
+                let s = seg.to_ascii_lowercase();
+                (s.contains("ctrl+") || s.contains("shift+") || s.contains("alt+") || s.contains("meta+"))
+                    && s.contains(':')
+            }).count();
+            if looks_putty >= 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Compact Claude-style user-turn surface text: soft SURFACE wash + bright body (F-9).
 ///
 /// Pads one column on each side when space remains so the wash reads as a true surface
@@ -284,6 +351,366 @@ pub fn user_turn_surface_line(text: &str) -> Result<ComponentLine, String> {
         format!(" {body} "),
         TextStyle::user_turn(),
     ))
+}
+
+/// Cortex-like user-turn surface strip with a single closed `›` prefix and SURFACE wash
+/// (VAL-V3-DS-034 / F-14). Decorative stars and open Cortex `❯` are forbidden.
+pub fn user_turn_surface_strip(text: &str) -> Result<ComponentLine, String> {
+    let body = text.trim();
+    if body.is_empty() {
+        return Err("user turn surface strip requires text".to_owned());
+    }
+    if contains_bracket_key_atom(body) {
+        return Err("user turn surface strip may not use bracket key atoms".to_owned());
+    }
+    if is_journey_breadcrumb_title(body) {
+        return Err("user turn surface strip may not be a journey breadcrumb title".to_owned());
+    }
+    if body.contains('❯') || body.contains('✦') || body.contains('✧') || body.contains('◆') {
+        return Err("user turn surface strip may not use forbidden Cortex decorative glyphs".to_owned());
+    }
+    validate_glyphs(body)?;
+    // One closed prefix only; if the caller already led with ›, do not double it.
+    let painted = if body.starts_with('›') {
+        format!(" {body} ")
+    } else {
+        format!(" {PROMPT_PREFIX} {body} ")
+    };
+    validate_glyphs(&painted)?;
+    Ok(ComponentLine::new(painted, TextStyle::user_turn()))
+}
+
+/// Idle conversation composer as a single Cortex-inspired rounded prompt jewel
+/// (VAL-V3-DS-031 / F-11).
+///
+/// Geometry:
+/// ```text
+/// ╭──────────────────────────────────────────────╮
+/// │ › draft / placeholder                         │
+/// │   Claude Opus 4.8 · Work mode                 │  ← muted info
+/// ╰──────────────────────────────────────────────╯
+/// ```
+///
+/// No status strap fill, no debug meta, no permanent putty footer. Copper
+/// accent is reserved for the prompt prefix (and optional focused emphasis).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromptJewel {
+    draft: String,
+    model: String,
+    work_mode: String,
+    focused: bool,
+    width: u16,
+}
+
+impl PromptJewel {
+    pub fn new(draft: &str, model: &str, work_mode: &str) -> Result<Self, String> {
+        let draft = draft.trim().to_owned();
+        let model = model.trim().to_owned();
+        let work_mode = work_mode.trim().to_owned();
+        if draft.is_empty() {
+            return Err("prompt jewel requires a draft or placeholder".to_owned());
+        }
+        if model.is_empty() || work_mode.is_empty() {
+            return Err("prompt jewel requires a human model name and work mode".to_owned());
+        }
+        // Reject raw identifier-style model IDs (e.g. claude-opus-4-8).
+        // Human names like "Claude Opus 4.8" contain spaces and pass.
+        let looks_raw_id = model.contains('/')
+            || (!model.contains(' ')
+                && model.contains('-')
+                && model
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.'));
+        if looks_raw_id {
+            return Err(format!(
+                "prompt jewel model must be a human-readable display name: {model}"
+            ));
+        }
+        reject_composer_debug_meta(&draft)?;
+        reject_composer_debug_meta(&model)?;
+        reject_composer_debug_meta(&work_mode)?;
+        if draft.contains('❯') || model.contains('❯') || work_mode.contains('❯') {
+            return Err("prompt jewel may not use open Cortex ❯; map to ›".to_owned());
+        }
+        if contains_global_putty_footer(&draft)
+            || contains_global_putty_footer(&model)
+            || contains_global_putty_footer(&work_mode)
+        {
+            return Err("prompt jewel may not embed putty footer copy".to_owned());
+        }
+        let info = format!("{model} · {work_mode}");
+        validate_glyphs(&draft)?;
+        validate_glyphs(&info)?;
+        Ok(Self {
+            draft,
+            model,
+            work_mode,
+            focused: false,
+            width: OUTER_CONTENT_WIDTH,
+        })
+    }
+
+    /// Marks the jewel as focused so the interior prefix may spend ACCENT.
+    pub fn focused(mut self) -> Self {
+        self.focused = true;
+        self
+    }
+
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    pub fn info_line(&self) -> String {
+        format!("{} · {}", self.model, self.work_mode)
+    }
+
+    /// Join jewel rows with newlines for TXT-snapshot tests.
+    pub fn render_txt(&self) -> String {
+        self.lines()
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn pad_inner(content: &str, inner_width: usize) -> String {
+        let mut chars: Vec<char> = content.chars().collect();
+        if chars.len() > inner_width {
+            chars.truncate(inner_width.saturating_sub(1));
+            chars.push('…');
+        }
+        let mut out: String = chars.into_iter().collect();
+        while out.chars().count() < inner_width {
+            out.push(' ');
+        }
+        out
+    }
+
+    fn render_lines(&self) -> Vec<ComponentLine> {
+        let width = self.width as usize;
+        let rail = "─".repeat(width.saturating_sub(2));
+        let top = format!("╭{rail}╮");
+        let bottom = format!("╰{rail}╯");
+        // Interior content width between the two `│` side walls.
+        let inner = width.saturating_sub(2);
+        let draft_body = Self::pad_inner(&format!("{PROMPT_PREFIX} {}", self.draft), inner.saturating_sub(1));
+        // Leading space after `│` so `│ › draft…` reads as jewel.
+        let draft_row = format!("│ {draft_body}");
+        let draft_row = Self::pad_to_width(&draft_row, width);
+        let info_body = Self::pad_inner(&format!("  {}", self.info_line()), inner.saturating_sub(1));
+        let info_row = Self::pad_to_width(&format!("│ {info_body}"), width);
+
+        // Borders stay muted/transparent; accent budget lives on the focused prefix
+        // only (tracked via anatomy.accent_uses), never a filled strap.
+        vec![
+            ComponentLine::new(top, TextStyle::muted()),
+            ComponentLine::new(draft_row, TextStyle::bright()),
+            ComponentLine::new(info_row, TextStyle::muted()),
+            ComponentLine::new(bottom, TextStyle::muted()),
+        ]
+    }
+
+    fn pad_to_width(row: &str, width: usize) -> String {
+        let mut out = row.to_owned();
+        // Ensure right wall is present and total char width matches.
+        if !out.ends_with('│') {
+            while out.chars().count() < width.saturating_sub(1) {
+                out.push(' ');
+            }
+            out.push('│');
+        }
+        let mut chars: Vec<char> = out.chars().collect();
+        if chars.len() > width {
+            chars.truncate(width.saturating_sub(1));
+            chars.push('│');
+        }
+        while chars.len() < width {
+            // Insert space before the trailing wall.
+            if let Some(last) = chars.last().copied() {
+                if last == '│' {
+                    chars.pop();
+                    chars.push(' ');
+                    chars.push('│');
+                    continue;
+                }
+            }
+            chars.push(' ');
+        }
+        chars.into_iter().collect()
+    }
+}
+
+impl Component for PromptJewel {
+    fn lines(&self) -> Vec<ComponentLine> {
+        self.render_lines()
+    }
+
+    fn anatomy(&self) -> ComponentAnatomy {
+        ComponentAnatomy {
+            primary_action_count: 0,
+            secondary_action_count: 0,
+            has_local_keys: false,
+            // Copper accent on the prompt prefix only when focused is true; still 1.
+            accent_uses: if self.focused { 1 } else { 0 },
+        }
+    }
+}
+
+/// Live activity kind for the turn-status band between transcript and jewel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TurnBusyKind {
+    Responding,
+    Running,
+}
+
+impl TurnBusyKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Responding => "Responding",
+            Self::Running => "Running",
+        }
+    }
+
+    pub const fn marker(self) -> char {
+        '●'
+    }
+}
+
+/// One-row turn-status band between transcript and jewel when busy; collapses
+/// empty when idle (VAL-V3-DS-032 / F-12). Not a filled footer strap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnStatusBand {
+    kind: Option<TurnBusyKind>,
+    timer: Option<String>,
+    detail: Option<String>,
+    stop_verb: Option<String>,
+}
+
+impl TurnStatusBand {
+    /// Idle band occupies zero rows and emits no paint.
+    pub fn idle() -> Self {
+        Self {
+            kind: None,
+            timer: None,
+            detail: None,
+            stop_verb: None,
+        }
+    }
+
+    pub fn busy(kind: TurnBusyKind, timer: &str) -> Result<Self, String> {
+        let timer = timer.trim().to_owned();
+        if timer.is_empty() {
+            return Err("busy turn-status band requires a timer label".to_owned());
+        }
+        if contains_bracket_key_atom(&timer) {
+            return Err("turn-status timer may not use bracket key atoms".to_owned());
+        }
+        validate_glyphs(&timer)?;
+        Ok(Self {
+            kind: Some(kind),
+            timer: Some(timer),
+            detail: None,
+            stop_verb: None,
+        })
+    }
+
+    pub fn with_detail(mut self, detail: &str) -> Self {
+        let trimmed = detail.trim();
+        if !trimmed.is_empty() {
+            self.detail = Some(trimmed.to_owned());
+        }
+        self
+    }
+
+    /// Stop is always prose (`Esc to stop`), never `[stop]`.
+    pub fn with_stop(mut self, verb: &str) -> Result<Self, String> {
+        let verb = verb.trim();
+        if verb.is_empty() {
+            return Err("turn-status stop verb requires text".to_owned());
+        }
+        if contains_bracket_key_atom(verb) || verb.contains('[') {
+            return Err("turn-status stop must be prose, never bracket atoms".to_owned());
+        }
+        self.stop_verb = Some(verb.to_owned());
+        Ok(self)
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.kind.is_none()
+    }
+
+    /// Busy paints one row; idle collapses to height 0.
+    pub fn height(&self) -> u16 {
+        if self.is_idle() {
+            0
+        } else {
+            1
+        }
+    }
+
+    pub fn render_txt(&self) -> String {
+        self.lines()
+            .into_iter()
+            .map(|line| line.text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn render_lines(&self) -> Result<Vec<ComponentLine>, String> {
+        let Some(kind) = self.kind else {
+            return Ok(Vec::new());
+        };
+        let mut parts = vec![format!("{} {}", kind.marker(), kind.label())];
+        if let Some(detail) = &self.detail {
+            reject_composer_debug_meta(detail)?;
+            validate_glyphs(detail)?;
+            if contains_bracket_key_atom(detail) {
+                return Err("turn-status detail may not use bracket key atoms".to_owned());
+            }
+            parts.push(detail.clone());
+        }
+        if let Some(timer) = &self.timer {
+            parts.push(timer.clone());
+        }
+        if let Some(verb) = &self.stop_verb {
+            let byline = byline_or_empty(
+                ShortcutHint::new("Esc", verb).and_then(|hint| ShortcutByline::new(vec![hint])),
+            );
+            if byline.is_empty() {
+                return Err("turn-status stop byline failed to render".to_owned());
+            }
+            if byline.contains('[') {
+                return Err("turn-status stop byline leaked a bracket".to_owned());
+            }
+            parts.push(byline);
+        }
+        let text = parts.join(" · ");
+        if contains_global_putty_footer(&text) {
+            return Err("turn-status must not emit a putty footer".to_owned());
+        }
+        if text.contains("[stop]") {
+            return Err("turn-status must not emit [stop]".to_owned());
+        }
+        validate_glyphs(&text)?;
+        // Transparent canvas — never a filled footer strap (N-1 / F-12).
+        Ok(vec![ComponentLine::new(text, TextStyle::text())])
+    }
+}
+
+impl Component for TurnStatusBand {
+    fn lines(&self) -> Vec<ComponentLine> {
+        self.render_lines()
+            .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn anatomy(&self) -> ComponentAnatomy {
+        ComponentAnatomy {
+            primary_action_count: 0,
+            secondary_action_count: 0,
+            has_local_keys: self.stop_verb.is_some(),
+            accent_uses: if self.is_idle() { 0 } else { 1 },
+        }
+    }
 }
 
 /// Fail closed when composer chrome leaks implementation meta (N-13).
