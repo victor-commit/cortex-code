@@ -31,10 +31,10 @@
                                                                                │                                        
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Also list the tests that should cover the search.                                                                 
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  │ › Also list the tests that should cover the search.                                                              │  
+  │   Claude Opus 4.8 · Careful edits                                                                                │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

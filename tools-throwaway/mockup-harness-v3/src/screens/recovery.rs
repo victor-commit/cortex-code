@@ -103,7 +103,8 @@ const TOAST_INFO: &str = "Model switched";
 const TOAST_SUCCESS: &str = "Checkpoint saved";
 const TOAST_RETRY: &str = "Retry save";
 const TOAST_TRANSCRIPT: &str = "Your preferences stay in this project after they are saved.";
-const TOAST_ORIGIN_LINE: &str = "Recovery · paused conversation";
+// Painted subject title (N-12). Audit visible_origin still carries RECOVERY_ORIGIN.
+const TOAST_ORIGIN_LINE: &str = "Recovery";
 
 type ScreenEvidence = (
     Vec<SemanticCandidate>,
@@ -268,10 +269,11 @@ fn render_error_context(
     )?;
     match variant {
         ContextVariant::Collapsed => {
+            // Claude prose byline (N-11): no jammed "Evidence Enter to" atom.
             canvas.write(
                 20,
                 4,
-                "› Evidence Enter to Expand technical details",
+                "› Evidence · Enter to Expand technical details",
                 TextStyle::muted(),
             )?;
         }
@@ -800,7 +802,15 @@ fn render_toasts(
 
     let variant = toast_variant(fixture_id);
     // Conversation remains fully readable under the compact toast stack.
-    canvas.write(2, 4, TOAST_ORIGIN_LINE, TextStyle::muted())?;
+    // Subject title alone on row 2 (N-12) so origin detectors see a solo subject row.
+    canvas.write(
+        2,
+        4,
+        subject_title_for_origin(RECOVERY_ORIGIN),
+        TextStyle::muted(),
+    )?;
+    // Keep TOAST_ORIGIN_LINE as a compile-linked constant of the painted subject.
+    debug_assert_eq!(TOAST_ORIGIN_LINE, subject_title_for_origin(RECOVERY_ORIGIN));
     canvas.write(3, 4, RECOVERY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, "You · /settings save", TextStyle::bright())?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
@@ -817,6 +827,7 @@ fn render_toasts(
     // Construction order would be success (t0), info (t1), warn (t2), failure (t3).
     // Visible order is failure, warn, info, success.
     // Keep lines within the fixed 120-wide canvas (toast_col + longest line <= 120).
+    // Toast stack starts on row 3 so subject title remains a solo line.
     let toast_col: u16 = 68;
     let mut pairs = vec![
         semantic(
@@ -824,7 +835,7 @@ fn render_toasts(
             fixture_id,
             "origin",
             "paused-conversation",
-            reference(2, 4, 36),
+            reference(2, 4, 12),
             "summary",
             None,
         ),
@@ -852,13 +863,13 @@ fn render_toasts(
         ToastVariant::Full => {
             // Failure (created last) · actionable · persistent
             canvas.write(
-                2,
+                3,
                 toast_col,
                 &format!("│ ✗ BAD  {TOAST_FAILURE}"),
                 style_for_token(ColorToken::Bad),
             )?;
             canvas.write(
-                3,
+                4,
                 toast_col,
                 &format!("│ s for {TOAST_RETRY} · stays until you act"),
                 TextStyle::muted(),
@@ -893,7 +904,7 @@ fn render_toasts(
                 fixture_id,
                 "toast",
                 "failure-settings-save",
-                reference(2, toast_col, toast_col + 38),
+                reference(3, toast_col, toast_col + 38),
                 "focused",
                 None,
             ));
@@ -902,7 +913,7 @@ fn render_toasts(
                 fixture_id,
                 "primary-action",
                 "action.toasts.retry-save",
-                reference(3, toast_col, toast_col + 40),
+                reference(4, toast_col, toast_col + 40),
                 "focused",
                 Some(action("action.toasts.retry-save", TOAST_RETRY, false)),
             ));
@@ -938,7 +949,7 @@ fn render_toasts(
                 fixture_id,
                 "toast-lifetime",
                 "failure-persistent",
-                reference(3, toast_col + 4, toast_col + 40),
+                reference(4, toast_col + 4, toast_col + 40),
                 "summary",
                 None,
             ));
@@ -946,13 +957,13 @@ fn render_toasts(
         ToastVariant::AfterAutoDismiss => {
             // Only the actionable failure remains after transient notices auto-dismiss.
             canvas.write(
-                2,
+                3,
                 toast_col,
                 &format!("│ ✗ BAD  {TOAST_FAILURE}"),
                 style_for_token(ColorToken::Bad),
             )?;
             canvas.write(
-                3,
+                4,
                 toast_col,
                 &format!("│ s for {TOAST_RETRY} · stays until you act"),
                 TextStyle::muted(),
@@ -962,7 +973,7 @@ fn render_toasts(
                 fixture_id,
                 "toast",
                 "failure-settings-save",
-                reference(2, toast_col, toast_col + 38),
+                reference(3, toast_col, toast_col + 38),
                 "focused",
                 None,
             ));
@@ -971,7 +982,7 @@ fn render_toasts(
                 fixture_id,
                 "primary-action",
                 "action.toasts.retry-save",
-                reference(3, toast_col, toast_col + 40),
+                reference(4, toast_col, toast_col + 40),
                 "focused",
                 Some(action("action.toasts.retry-save", TOAST_RETRY, false)),
             ));
@@ -980,7 +991,7 @@ fn render_toasts(
                 fixture_id,
                 "toast-lifetime",
                 "transient-dismissed",
-                reference(2, toast_col, toast_col + 20),
+                reference(3, toast_col, toast_col + 20),
                 "summary",
                 None,
             ));
@@ -988,18 +999,18 @@ fn render_toasts(
         ToastVariant::AfterRetry => {
             // Failure cleared after the notice-owned Retry save succeeded.
             canvas.write(
-                2,
+                3,
                 toast_col,
                 "│ ✓ OK    Settings saved",
                 style_for_token(ColorToken::Ok),
             )?;
-            canvas.write(3, toast_col, "│  clears on its own", TextStyle::muted())?;
+            canvas.write(4, toast_col, "│  clears on its own", TextStyle::muted())?;
             pairs.push(semantic(
                 screen_id,
                 fixture_id,
                 "toast",
                 "success-settings-saved",
-                reference(2, toast_col, toast_col + 28),
+                reference(3, toast_col, toast_col + 28),
                 "summary",
                 None,
             ));

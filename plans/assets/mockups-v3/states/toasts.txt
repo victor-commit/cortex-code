@@ -1,8 +1,8 @@
                                                                                                                         
                                                                                                                         
-    Recovery · paused conversation                                  │ ✗ BAD  Settings were not saved                    
-    Finish the release notes without losing the current work.       │ s for Retry save · stays until you act            
-                                                                                                                        
+    Recovery                                                                                                            
+    Finish the release notes without losing the current work.       │ ✗ BAD  Settings were not saved                    
+                                                                    │ s for Retry save · stays until you act            
     You · /settings save                                            │ ● WARN  Connection recovered after a brief pause  
                                                                     │  clears on its own                                
     Code                                                                                                                

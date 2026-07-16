@@ -9,23 +9,23 @@
     Not a continuation of the blocked-model provider connection.                                                        
     Capabilities that need attention come first. Healthy ones stay collapsed.                                           
                                                                                                                         
-                                                                                                                        
     › Browser automation · Needs setup                                                                                  
-      Missing local tools needed for page checks.                                                                       
-      Enter to fix setup                                                                                                
-                                                                                                                        
+      Missing local tools needed for page checks · Enter to fix setup                                                   
                                                                                                                         
       Project docs · Sign in needed                                                                                     
-      This workspace library needs approval before use.                                                                 
-      Enter to sign in                                                                                                  
-                                                                                                                        
+      This workspace library needs approval before use · Enter to sign in                                               
                                                                                                                         
       ○ 1 ready connection collapsed                                                                                    
       Code search · Ready                                                                                               
                                                                                                                         
-                                                                                                                        
     Connection details and raw tools stay under diagnostics.                                                            
     Return closes this branch to the conversation, not provider sign-in.                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
     › Fix setup                                                                                                         

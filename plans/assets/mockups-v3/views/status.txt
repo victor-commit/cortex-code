@@ -3,28 +3,28 @@
     Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
                                                                                                                         
-    Session status · temporary detail                                                                                   
-    From the rate-limit conversation · answers what is active and what needs attention                                  
+    Session status                                                                                                      
+    Active configuration and what needs attention · return keeps draft and turn                                         
                                                                                                                         
     Active now                                                                                                          
-                                                                                                                        
     Model · Claude Opus 4.8                                                                                             
     Everyday coding · balanced speed for daily work                                                                     
-                                                                                                                        
     How Code should work · Careful edits                                                                                
     asks before editing project files                                                                                   
-                                                                                                                        
     Project · ~/project · main · branch is clean                                                                        
     Session · Retry policy review · 17 turns today                                                                      
                                                                                                                         
     Needs attention                                                                                                     
-                                                                                                                        
     ● Docs research · Needs sign-in before the next lookup                                                              
       Open connection to continue that capability                                                                       
-                                                                                                                        
     ○ Local tools · Ready · no blockers                                                                                 
                                                                                                                         
     Advanced raw metadata stays hidden until you open Details                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

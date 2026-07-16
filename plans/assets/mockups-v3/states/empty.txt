@@ -3,13 +3,13 @@
     Empty conversation                                                                                                  
     Start a new conversation                                                                                            
                                                                                                                         
-                                                                                                                        
     No messages yet. Type below to begin, or resume earlier work.                                                       
-                                                                                                                        
     Ready · Claude Opus 4.8 · How Code should work · Careful edits                                                      
                                                                                                                         
     Secondary · /resume previous sessions · /model · /theme · change work style                                         
-    Those configuration detours return here without inventing a transcript                                              
+    Those configuration detours return here without inventing a transcript.                                             
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Ask Code to start a task                                                                                          
-  │   Claude Opus 4.8 · Careful edits                                                                                   
+  │ › Ask Code to start a task                                                                                       │  
+  │   Claude Opus 4.8 · Careful edits                                                                                │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    This is the primary start · subordinate resume and settings stay secondary                                          
+    Primary start · resume and settings stay secondary                                                                  
                                                                                                                         
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

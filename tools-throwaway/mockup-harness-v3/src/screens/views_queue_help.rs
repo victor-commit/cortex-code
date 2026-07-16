@@ -12,8 +12,10 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{subject_title_for_origin, Component, DetailView, Inspector, InspectorTab},
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
+        components::{
+            subject_title_for_origin, Component, DetailView, Inspector, InspectorTab, PromptJewel,
+        },
+        layout::{outer_content_x, CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
         tokens::TextStyle,
     },
     screens::input_and_approval::{
@@ -24,6 +26,7 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
+const WORK_MODE: &str = "Careful edits";
 const COMPOSER_TOP: u16 = 32;
 const COMPOSER_BOTTOM: u16 = 37;
 const INSPECTOR_LEFT: u16 = 81;
@@ -238,33 +241,22 @@ fn paint_flow2_conversation(canvas: &mut Canvas) -> Result<(), String> {
         TextStyle::muted(),
     )?;
 
-    // Multiline-looking draft preview so the composer stays recognizable.
-    let draft_lines: Vec<&str> = QUEUE_OPEN_DRAFT.lines().take(3).collect();
-    canvas.write(
-        COMPOSER_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    for (index, line) in draft_lines.iter().enumerate() {
-        let prefix = if index == 0 { "│ › " } else { "│   " };
-        canvas.write(
-            COMPOSER_TOP + 1 + index as u16,
-            2,
-            &format!("{prefix}{}", truncate_to(line, 110)),
-            if index == 0 {
-                TextStyle::bright()
-            } else {
-                TextStyle::text()
-            },
-        )?;
+    // jewel under the inspector: keep the first draft line visible;
+    // full multi-line drafting stays on composer-multiline / queue-manager.
+    let first_line = QUEUE_OPEN_DRAFT
+        .lines()
+        .next()
+        .unwrap_or("Continue with the queued prompts");
+    let jewel = PromptJewel::new(first_line, MODEL, WORK_MODE)?.focused();
+    let x = outer_content_x();
+    for (index, line) in jewel.lines().into_iter().enumerate() {
+        let row = COMPOSER_TOP + index as u16;
+        if row > COMPOSER_BOTTOM {
+            break;
+        }
+        let text = truncate_to(&line.text, 116);
+        canvas.write(row, x, &text, line.style)?;
     }
-    canvas.write(
-        COMPOSER_BOTTOM,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
     Ok(())
 }
 
@@ -595,10 +587,10 @@ fn render_help(fixture_id: &str) -> Result<AuditDocument, String> {
     let mut canvas = Canvas::new();
     canvas.write(2, 4, subject_title_for_origin(FLOW2_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
-    canvas.write(5, 4, "Help · temporary shortcut reference", TextStyle::bright())?;
+    canvas.write(5, 4, "Help · shortcuts for this conversation", TextStyle::bright())?;
     canvas.write(6, 4, origin, TextStyle::muted())?;
     canvas.write(
-        8,
+        7,
         4,
         &format!(
             "Filter › {}",
@@ -651,12 +643,12 @@ fn render_help(fixture_id: &str) -> Result<AuditDocument, String> {
         } else {
             "query-filtered"
         },
-        reference(8, 4, 40),
+        reference(7, 4, 40),
         "focused",
         None,
     );
 
-    let mut row = 10u16;
+    let mut row = 9u16;
     if no_results {
         canvas.write(
             row,
@@ -766,7 +758,7 @@ fn render_help(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "filter-action",
         "action.help.filter",
-        reference(8, 4, 20),
+        reference(7, 4, 20),
         "summary",
         Some(action("action.help.filter", "Filter help", false)),
     );

@@ -13,8 +13,8 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        components::subject_title_for_origin,
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
+        components::{subject_title_for_origin, Component, PromptJewel},
+        layout::{outer_content_x, CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
         tokens::{ColorToken, TextStyle, Theme},
     },
 };
@@ -211,12 +211,7 @@ fn paint_theme_gallery(
 ) -> Result<ScreenEvidence, String> {
     canvas.write(2, 4, subject_title_for_origin(FLOW3_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, FLOW3_TASK, TextStyle::bright())?;
-    canvas.write(
-        5,
-        4,
-        "Theme gallery · temporary detail",
-        TextStyle::bright(),
-    )?;
+    canvas.write(5, 4, "Theme gallery", TextStyle::bright())?;
     canvas.write(
         6,
         4,
@@ -224,7 +219,7 @@ fn paint_theme_gallery(
         TextStyle::muted(),
     )?;
     canvas.write(
-        8,
+        7,
         4,
         "Five brand themes · swatches only use multi-hue samples",
         TextStyle::muted(),
@@ -256,7 +251,8 @@ fn paint_theme_gallery(
     );
 
     for (index, theme) in THEME_PREVIEWS.iter().enumerate() {
-        let row = 10 + (index as u16) * 4;
+        // 3-row Cortex packing (title/swatches, status, separator) instead of 4.
+        let row = 9 + (index as u16) * 3;
         let active = index == selected;
         let marker = if active { "›" } else { " " };
         let style = if active {
@@ -411,89 +407,79 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
     let mut canvas = Canvas::new();
     canvas.write(2, 4, subject_title_for_origin(STATUS_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, STATUS_TASK, TextStyle::bright())?;
-    canvas.write(
-        5,
-        4,
-        "Session status · temporary detail",
-        TextStyle::bright(),
-    )?;
+    canvas.write(5, 4, "Session status", TextStyle::bright())?;
     canvas.write(
         6,
         4,
-        "From the rate-limit conversation · answers what is active and what needs attention",
+        "Active configuration and what needs attention · return keeps draft and turn",
         TextStyle::muted(),
     )?;
 
     canvas.write(8, 4, "Active now", TextStyle::accent())?;
+    canvas.write(9, 4, &format!("Model · {MODEL}"), TextStyle::bright())?;
     canvas.write(
         10,
-        4,
-        &format!("Model · {MODEL}"),
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        11,
         4,
         "Everyday coding · balanced speed for daily work",
         TextStyle::muted(),
     )?;
     canvas.write(
-        13,
+        11,
         4,
         &format!("How Code should work · {WORK_STYLE}"),
         TextStyle::bright(),
     )?;
-    canvas.write(14, 4, ACCESS_SCOPE, TextStyle::muted())?;
+    canvas.write(12, 4, ACCESS_SCOPE, TextStyle::muted())?;
     canvas.write(
-        16,
+        13,
         4,
         "Project · ~/project · main · branch is clean",
         TextStyle::text(),
     )?;
     canvas.write(
-        17,
+        14,
         4,
         "Session · Retry policy review · 17 turns today",
         TextStyle::muted(),
     )?;
 
-    canvas.write(19, 4, "Needs attention", TextStyle::accent())?;
+    canvas.write(16, 4, "Needs attention", TextStyle::accent())?;
     canvas.write(
-        21,
+        17,
         4,
         "● Docs research · Needs sign-in before the next lookup",
         TextStyle::text(),
     )?;
     canvas.write(
-        22,
+        18,
         4,
         "  Open connection to continue that capability",
         TextStyle::muted(),
     )?;
     canvas.write(
-        24,
+        19,
         4,
         "○ Local tools · Ready · no blockers",
         TextStyle::muted(),
     )?;
 
     if advanced {
-        canvas.write(26, 4, "Advanced detail", TextStyle::bright())?;
+        canvas.write(21, 4, "Advanced detail", TextStyle::bright())?;
         canvas.write(
-            27,
+            22,
             4,
             "Provider · Anthropic · connected for signed-in work",
             TextStyle::muted(),
         )?;
         canvas.write(
-            28,
+            23,
             4,
             "Context budget and cost stay out of the statusline; open details only here",
             TextStyle::muted(),
         )?;
     } else {
         canvas.write(
-            26,
+            21,
             4,
             "Advanced raw metadata stays hidden until you open Details",
             TextStyle::muted(),
@@ -538,7 +524,7 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "model-summary",
         "claude-opus-4-8",
-        reference(10, 4, 40),
+        reference(9, 4, 40),
         "focused",
         None,
     );
@@ -549,7 +535,7 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "work-style-summary",
         "careful-edits",
-        reference(13, 4, 50),
+        reference(11, 4, 50),
         "focused",
         None,
     );
@@ -560,7 +546,7 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "project-summary",
         "project-main",
-        reference(16, 4, 50),
+        reference(13, 4, 50),
         "summary",
         None,
     );
@@ -571,7 +557,7 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "issue-row",
         "docs-research-auth",
-        reference(21, 4, 70),
+        reference(17, 4, 70),
         "focused",
         None,
     );
@@ -590,7 +576,7 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
         } else {
             "disclosure-closed"
         },
-        reference(26, 4, 70),
+        reference(21, 4, 70),
         if advanced { "focused" } else { "summary" },
         None,
     );
@@ -741,64 +727,45 @@ fn render_empty(fixture_id: &str) -> Result<AuditDocument, String> {
     canvas.write(2, 4, subject_title_for_origin(EMPTY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, EMPTY_TASK, TextStyle::bright())?;
     canvas.write(
-        6,
+        5,
         4,
         "No messages yet. Type below to begin, or resume earlier work.",
         TextStyle::text(),
     )?;
     canvas.write(
-        8,
+        6,
         4,
         &format!("Ready · {model} · How Code should work · {work_style}"),
         TextStyle::muted(),
     )?;
     canvas.write(
-        10,
+        8,
         4,
         "Secondary · /resume previous sessions · /model · /theme · change work style",
         TextStyle::muted(),
     )?;
     canvas.write(
-        11,
+        9,
         4,
-        "Those configuration detours return here without inventing a transcript",
+        "Those configuration detours return here without inventing a transcript.",
         TextStyle::muted(),
     )?;
 
-    // Cortex-aligned prompt jewel: draft + muted model · work mode info line.
+    // Cortex-aligned PromptJewel: draft + muted model · work mode info line.
     let draft_text = if draft.is_empty() {
         "Ask Code to start a task"
     } else {
         draft
     };
-    canvas.write(
-        COMPOSER_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        COMPOSER_TOP + 1,
-        2,
-        &format!("│ › {draft_text}"),
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        COMPOSER_TOP + 2,
-        2,
-        &format!("│   {model} · {work_style}"),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        COMPOSER_TOP + 3,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
+    let jewel = PromptJewel::new(draft_text, model, work_style)?.focused();
+    let x = outer_content_x();
+    for (index, line) in jewel.lines().into_iter().enumerate() {
+        canvas.write(COMPOSER_TOP + index as u16, x, &line.text, line.style)?;
+    }
     canvas.write(
         COMPOSER_TOP + 4,
         4,
-        "This is the primary start · subordinate resume and settings stay secondary",
+        "Primary start · resume and settings stay secondary",
         TextStyle::muted(),
     )?;
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;
@@ -823,7 +790,7 @@ fn render_empty(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "empty-guidance",
         "no-messages",
-        reference(6, 4, 70),
+        reference(5, 4, 70),
         "summary",
         None,
     );
@@ -834,7 +801,7 @@ fn render_empty(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "secondary-resume",
         "resume-sessions",
-        reference(10, 4, 30),
+        reference(8, 4, 30),
         "summary",
         Some(action(
             "action.empty.open-session-picker",
@@ -849,7 +816,7 @@ fn render_empty(fixture_id: &str) -> Result<AuditDocument, String> {
         fixture_id,
         "secondary-config",
         "configuration-entry",
-        reference(10, 34, 70),
+        reference(8, 34, 70),
         "summary",
         Some(action(
             "action.empty.open-model-picker",

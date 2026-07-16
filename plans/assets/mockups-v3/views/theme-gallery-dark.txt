@@ -3,28 +3,28 @@
     Theme choice                                                                                                        
     Preview the theme swatches before applying.                                                                         
                                                                                                                         
-    Theme gallery · temporary detail                                                                                    
+    Theme gallery                                                                                                       
     From theme picker · pending selection and origin stay intact on return                                              
-                                                                                                                        
     Five brand themes · swatches only use multi-hue samples                                                             
                                                                                                                         
     › Dark           cortex default   warm          [███ ███ ███ ███ ███]  active                                       
         Selected · labels stay readable; colors are sample only                                                         
     ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-                                                                                                                        
       Light          daytime          cool          [███ ███ ███ ███ ███]                                               
                                                                                                                         
     ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-                                                                                                                        
       VS Code dark   familiar         neutral       [███ ███ ███ ███ ███]                                               
                                                                                                                         
     ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-                                                                                                                        
       Monokai        vivid            high-contrast [███ ███ ███ ███ ███]                                               
                                                                                                                         
     ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-                                                                                                                        
       Ocean          cool blues       calm          [███ ███ ███ ███ ███]                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

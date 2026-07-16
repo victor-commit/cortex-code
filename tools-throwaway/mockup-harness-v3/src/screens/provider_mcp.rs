@@ -5702,36 +5702,35 @@ fn render_mcp_gate_pilot(
         TextStyle::muted(),
     )?;
 
+    // Cortex denser attention packing: cause · action on one muted/bright line.
     // Attention-first ordering: setup, sign-in, then health summary.
-    canvas.write(12, 4, "› Browser automation · Needs setup", TextStyle::accent())?;
+    canvas.write(11, 4, "› Browser automation · Needs setup", TextStyle::accent())?;
     canvas.write(
-        13,
+        12,
         6,
-        "Missing local tools needed for page checks.",
+        "Missing local tools needed for page checks · Enter to fix setup",
+        TextStyle::bright(),
+    )?;
+
+    canvas.write(14, 4, "  Project docs · Sign in needed", TextStyle::text())?;
+    canvas.write(
+        15,
+        6,
+        "This workspace library needs approval before use · Enter to sign in",
         TextStyle::muted(),
     )?;
-    canvas.write(14, 6, "Enter to fix setup", TextStyle::bright())?;
 
-    canvas.write(17, 4, "  Project docs · Sign in needed", TextStyle::text())?;
-    canvas.write(
-        18,
-        6,
-        "This workspace library needs approval before use.",
-        TextStyle::muted(),
-    )?;
-    canvas.write(19, 6, "Enter to sign in", TextStyle::bright())?;
-
-    canvas.write(22, 4, "  ○ 1 ready connection collapsed", TextStyle::muted())?;
-    canvas.write(23, 6, "Code search · Ready", TextStyle::text())?;
+    canvas.write(17, 4, "  ○ 1 ready connection collapsed", TextStyle::muted())?;
+    canvas.write(18, 6, "Code search · Ready", TextStyle::text())?;
 
     canvas.write(
-        26,
+        20,
         4,
         "Connection details and raw tools stay under diagnostics.",
         TextStyle::muted(),
     )?;
     canvas.write(
-        27,
+        21,
         4,
         "Return closes this branch to the conversation, not provider sign-in.",
         TextStyle::muted(),
@@ -5782,7 +5781,7 @@ fn render_mcp_gate_pilot(
             fixture_id,
             "capability-row",
             "browser-automation",
-            reference(12, 4, 38),
+            reference(11, 4, 38),
             "focused",
             None,
         ),
@@ -5791,7 +5790,7 @@ fn render_mcp_gate_pilot(
             fixture_id,
             "capability-row",
             "project-docs",
-            reference(17, 4, 34),
+            reference(14, 4, 34),
             "summary",
             None,
         ),
@@ -5800,7 +5799,7 @@ fn render_mcp_gate_pilot(
             fixture_id,
             "capability-row",
             "code-search-ready",
-            reference(23, 6, 24),
+            reference(18, 6, 24),
             "summary",
             None,
         ),

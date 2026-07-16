@@ -31,10 +31,10 @@
                                                                                │                                        
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Check the retry path in @retry                                                                                    
-  │   Then explain the failure path that still needs coverage before the merge; include a concise test plan with the    
-  │   Keep the summary short before we merge.                                                                           
-                                                                                                                        
+  │ › Check the retry path in @retry                                                                                 │  
+  │   Claude Opus 4.8 · Careful edits                                                                                │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

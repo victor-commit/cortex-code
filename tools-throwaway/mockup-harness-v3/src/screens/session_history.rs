@@ -680,27 +680,28 @@ fn render_timeline(
             TextStyle::text(),
         )?;
     }
+    // Denser Cortex timeline packing: 3-line event blocks with one blank rhythm.
     let events = [
         (
-            9,
+            8,
             "Today, 09:14",
             "Opened the retry review",
             "Started from the failing network test.",
         ),
         (
-            14,
+            12,
             "Today, 09:37",
             "Updated the retry policy",
             "Checkpoint · Fork available from this point.",
         ),
         (
-            19,
+            16,
             "Today, 10:06",
             "Tests passed",
             "All focused retry checks completed.",
         ),
         (
-            24,
+            20,
             "Today, 10:42",
             "Current · Review ready",
             "Latest stable state · saved draft is recoverable.",
@@ -721,13 +722,13 @@ fn render_timeline(
         canvas.write(row + 2, 8, detail, TextStyle::text())?;
     }
     canvas.write(
-        30,
+        25,
         4,
         "Selected point · Today, 09:37 · Updated the retry policy",
         TextStyle::text(),
     )?;
     canvas.write(
-        32,
+        27,
         4,
         "Historical points fork into a copy. Only the latest state can resume directly.",
         TextStyle::muted(),
@@ -769,7 +770,7 @@ fn render_timeline(
             None,
         ),
     ];
-    for (index, row) in [9_u16, 14, 19, 24].into_iter().enumerate() {
+    for (index, row) in [8_u16, 12, 16, 20].into_iter().enumerate() {
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -786,7 +787,7 @@ fn render_timeline(
             fixture_id,
             "selected-point",
             "retry-policy-checkpoint",
-            reference(30, 4, 64),
+            reference(25, 4, 64),
             "focused",
             None,
         ),

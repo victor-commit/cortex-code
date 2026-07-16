@@ -18,7 +18,7 @@
     Transcript, draft, pending task, and completed edits stay readable.                                                 
     Draft kept · Keep the risk note short before we publish.                                                            
                                                                                                                         
-    › Evidence Enter to Expand technical details                                                                        
+    › Evidence · Enter to Expand technical details                                                                      
                                                                                                                         
                                                                                                                         
                                                                                                                         

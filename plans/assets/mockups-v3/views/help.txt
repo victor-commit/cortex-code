@@ -3,9 +3,8 @@
     Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
                                                                                                                         
-    Help · temporary shortcut reference                                                                                 
+    Help · shortcuts for this conversation                                                                              
     From composer · paused conversation                                                                                 
-                                                                                                                        
     Filter › type to filter actions                                                                                     
                                                                                                                         
     Write                                                                                                               
@@ -22,6 +21,7 @@
       Open this reference · /help · Browse task-grouped shortcuts                                                       
       Open review findings · ctrl+r · Inspect the current review scope                                                  
       Search transcript · ctrl+f · Find matching turns without leaving the chat                                         
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

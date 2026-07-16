@@ -11,8 +11,10 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{subject_title_for_origin, Component, Inspector, InspectorTab},
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
+        components::{
+            subject_title_for_origin, Component, Inspector, InspectorTab, PromptJewel,
+        },
+        layout::{outer_content_x, CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
         tokens::TextStyle,
     },
 };
@@ -20,6 +22,7 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
+const WORK_MODE: &str = "Careful edits";
 const COMPOSER_TOP: u16 = 32;
 const COMPOSER_BOTTOM: u16 = 37;
 const DAILY_WORK_ORIGIN: &str = "Daily work · current conversation";
@@ -180,24 +183,13 @@ fn paint_shared_conversation(canvas: &mut Canvas) -> Result<(), String> {
 }
 
 fn composer_with_draft(canvas: &mut Canvas, draft: &str) -> Result<(), String> {
-    canvas.write(
-        COMPOSER_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        COMPOSER_TOP + 1,
-        2,
-        &format!("│ › {draft}"),
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        COMPOSER_BOTTOM,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
+    // Cortex PromptJewel with muted model · work mode info line.
+    let jewel = PromptJewel::new(draft, MODEL, WORK_MODE)?.focused();
+    let x = outer_content_x();
+    for (index, line) in jewel.lines().into_iter().enumerate() {
+        canvas.write(COMPOSER_TOP + index as u16, x, &line.text, line.style)?;
+    }
+    let _ = COMPOSER_BOTTOM;
     Ok(())
 }
 

@@ -12,8 +12,10 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{Component, Inspector, InspectorTab},
-        layout::{CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
+        components::{
+            subject_title_for_origin, Component, Inspector, InspectorTab, PromptJewel,
+        },
+        layout::{outer_content_x, CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
         tokens::TextStyle,
     },
 };
@@ -21,6 +23,7 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
+const WORK_MODE: &str = "Careful edits";
 const COMPOSER_TOP: u16 = 32;
 const COMPOSER_BOTTOM: u16 = 37;
 const DAILY_WORK_ORIGIN: &str = "Daily work · current conversation";
@@ -131,7 +134,13 @@ fn paint_shared_conversation(canvas: &mut Canvas) -> Result<(), String> {
         canvas.write(row, 4, &clipped, style)
     };
 
-    write_transcript(canvas, 2, DAILY_WORK_ORIGIN, TextStyle::muted())?;
+    // Subject title only (N-12) — audit keeps DAILY_WORK_ORIGIN journey tag.
+    write_transcript(
+        canvas,
+        2,
+        subject_title_for_origin(DAILY_WORK_ORIGIN),
+        TextStyle::muted(),
+    )?;
     write_transcript(canvas, 3, DAILY_WORK_TASK, TextStyle::bright())?;
     write_transcript(
         canvas,
@@ -165,30 +174,22 @@ fn paint_shared_conversation(canvas: &mut Canvas) -> Result<(), String> {
         TextStyle::muted(),
     )?;
 
-    // Full-width composer so the input remains recognizable under the inspector.
+    // Full-width jewel so the input remains recognizable under the inspector.
     composer_with_draft(canvas, DRAFT)?;
     Ok(())
 }
 
 fn composer_with_draft(canvas: &mut Canvas, draft: &str) -> Result<(), String> {
-    canvas.write(
-        COMPOSER_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        COMPOSER_TOP + 1,
-        2,
-        &format!("│ › {draft}"),
-        TextStyle::bright(),
-    )?;
-    canvas.write(
-        COMPOSER_BOTTOM,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
+    // Cortex PromptJewel with model · work mode info line (F-11), outer pad.
+    let jewel = PromptJewel::new(draft, MODEL, WORK_MODE)?.focused();
+    let x = outer_content_x();
+    for (index, line) in jewel.lines().into_iter().enumerate() {
+        canvas.write(COMPOSER_TOP + index as u16, x, &line.text, line.style)?;
+    }
+    // Right wall stays under transcript width awareness; jewel spans full outer
+    // content so the inspector divider overlays the rightmost region (same as
+    // prior full-width jewel).
+    let _ = COMPOSER_BOTTOM;
     Ok(())
 }
 
