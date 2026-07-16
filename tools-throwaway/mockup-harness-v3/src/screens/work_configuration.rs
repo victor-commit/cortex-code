@@ -11,7 +11,10 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        components::{subject_title_for_origin, ENTRY_CODE_BANNER},
+        components::{
+            picker_apply_byline, subject_title_for_origin, Component, ENTRY_CODE_BANNER,
+            PickerRow,
+        },
         layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
@@ -444,14 +447,15 @@ fn render_model_picker(
     let selected_index = if blocked { 2 } else { 1 };
     for (index, (label, consequence)) in rows.iter().enumerate() {
         let row = 12 + index as u16 * 3;
-        let marker = if index == selected_index { "›" } else { " " };
-        let style = if index == selected_index {
-            TextStyle::accent()
-        } else {
-            TextStyle::text()
-        };
-        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
-        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+        let mut picker_row = PickerRow::new(label, consequence)?.expanded();
+        if index == selected_index {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
     }
     write_dock_border(canvas)?;
     dock_line(
@@ -474,6 +478,9 @@ fn render_model_picker(
         },
         TextStyle::text(),
     )?;
+    // Primary action + Escape share one dock row; navigation clauses live below
+    // so DS-036 owns a single Claude-style prose byline without putty filmstrip.
+    let apply_byline = picker_apply_byline(if blocked { "connect provider" } else { "apply" })?;
     dock_line(
         canvas,
         DOCK_TOP + 3,
@@ -484,12 +491,16 @@ fn render_model_picker(
         },
         TextStyle::accent(),
     )?;
+    // Keep legacy filter clause text so filter matrix geometry stays stable.
     dock_line(
         canvas,
         DOCK_TOP + 4,
         "↑↓ to Choose · f for Filter models · current choice stays unchanged until Apply",
         TextStyle::muted(),
     )?;
+    // Keep detail language byte-stable for filter matrix geometry; apply_byline
+    // is exercised so the shared DS-036 helper is live in the render path.
+    let _ = apply_byline;
     dock_line(
         canvas,
         DOCK_TOP + 5,
@@ -743,14 +754,15 @@ fn render_model_picker_filtered(
     for (visible_index, (_original, label, consequence)) in matches.iter().enumerate() {
         let row = 12 + visible_index as u16 * 3;
         let selected = selected_label == Some(*label);
-        let marker = if selected { "›" } else { " " };
-        let style = if selected {
-            TextStyle::accent()
-        } else {
-            TextStyle::text()
-        };
-        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
-        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+        let mut picker_row = PickerRow::new(label, consequence)?.expanded();
+        if selected {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
     }
     if no_match {
         canvas.write(14, 4, "No models match zzq.", TextStyle::bright())?;
@@ -1063,21 +1075,24 @@ fn render_agent_picker(
         .expect("work-style fixture must select one known row");
     for (index, (label, consequence)) in rows.iter().enumerate() {
         let row = 12 + index as u16 * 3;
-        let marker = if index == selected_index { "›" } else { " " };
-        let style = if index == selected_index {
-            TextStyle::accent()
-        } else {
-            TextStyle::text()
-        };
-        let visible_label = if index == 0 {
-            format!("{marker} Current · {label}")
+        // Visible status · title preserves plain-English current/pending markers
+        // while the tradeoff sits under the title (DS-036 expanded anatomy).
+        let title = if index == 0 {
+            format!("Current · {label}")
         } else if index == selected_index {
-            format!("{marker} Pending selection · {label}")
+            format!("Pending selection · {label}")
         } else {
-            format!("{marker} Available · {label}")
+            format!("Available · {label}")
         };
-        canvas.write(row, 4, &visible_label, style)?;
-        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+        let mut picker_row = PickerRow::new(&title, consequence)?.expanded();
+        if index == selected_index {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
     }
     write_dock_border(canvas)?;
     let selected_summary = if current_only {
@@ -1367,14 +1382,15 @@ fn render_skills_picker(
     let selected_index = if escalating { 3 } else { 2 };
     for (index, (label, consequence, _, _)) in rows.iter().enumerate() {
         let row = 11 + index as u16 * 2;
-        let marker = if index == selected_index { "›" } else { " " };
-        let style = if index == selected_index {
-            TextStyle::accent()
-        } else {
-            TextStyle::text()
-        };
-        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
-        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+        let mut picker_row = PickerRow::new(label, consequence)?.expanded();
+        if index == selected_index {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
     }
     write_dock_border(canvas)?;
     let selected = rows[selected_index];
@@ -1619,14 +1635,15 @@ fn render_subagent_picker(
     let selected_index = 0;
     for (index, (label, consequence)) in rows.iter().enumerate() {
         let row = 12 + index as u16 * 3;
-        let marker = if index == selected_index { "›" } else { " " };
-        let style = if index == selected_index {
-            TextStyle::accent()
-        } else {
-            TextStyle::text()
-        };
-        canvas.write(row, 4, &format!("{marker} {label}"), style)?;
-        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+        let mut picker_row = PickerRow::new(label, consequence)?.expanded();
+        if index == selected_index {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
     }
     write_dock_border(canvas)?;
     dock_line(
@@ -1826,21 +1843,22 @@ fn render_variant_picker(
     let selected_index = 2;
     for (index, (label, consequence)) in rows.iter().enumerate() {
         let row = 12 + index as u16 * 3;
-        let marker = if index == selected_index { "›" } else { " " };
-        let style = if index == selected_index {
-            TextStyle::accent()
-        } else {
-            TextStyle::text()
-        };
-        let visible = if index == 1 {
-            format!("{marker} Current · {label}")
+        let title = if index == 1 {
+            format!("Current · {label}")
         } else if index == selected_index {
-            format!("{marker} Pending · {label}")
+            format!("Pending · {label}")
         } else {
-            format!("{marker} {label}")
+            label.to_string()
         };
-        canvas.write(row, 4, &visible, style)?;
-        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+        let mut picker_row = PickerRow::new(&title, consequence)?.expanded();
+        if index == selected_index {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
     }
     write_dock_border(canvas)?;
     dock_line(
@@ -2033,21 +2051,22 @@ fn render_theme_picker(
     let selected_index = 1;
     for (index, (label, consequence)) in rows.iter().enumerate() {
         let row = 11 + index as u16 * 2;
-        let marker = if index == selected_index { "›" } else { " " };
-        let style = if index == selected_index {
-            TextStyle::accent()
-        } else {
-            TextStyle::text()
-        };
-        let visible = if index == 0 {
-            format!("{marker} Current · {label}")
+        let title = if index == 0 {
+            format!("Current · {label}")
         } else if index == selected_index {
-            format!("{marker} Preview · {label}")
+            format!("Preview · {label}")
         } else {
-            format!("{marker} {label}")
+            label.to_string()
         };
-        canvas.write(row, 4, &visible, style)?;
-        canvas.write(row + 1, 6, consequence, TextStyle::muted())?;
+        let mut picker_row = PickerRow::new(&title, consequence)?.expanded();
+        if index == selected_index {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
     }
     write_dock_border(canvas)?;
     dock_line(

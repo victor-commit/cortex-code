@@ -11,7 +11,7 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
-        components::subject_title_for_origin,
+        components::{subject_title_for_origin, Component, PickerRow},
         layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::TextStyle,
     },
@@ -132,17 +132,16 @@ fn render_session_picker(
     for (index, (title, context, latest)) in rows.iter().enumerate() {
         let row = 11 + index as u16 * 5;
         let selected = index == selected_index;
-        canvas.write(
-            row,
-            4,
-            &format!("{} {title}", if selected { "›" } else { " " }),
-            if selected {
-                TextStyle::accent()
-            } else {
-                TextStyle::text()
-            },
-        )?;
-        canvas.write(row + 1, 6, context, TextStyle::muted())?;
+        // Title · tradeoff anatomy: conversation title then location/time tradeoff.
+        let mut picker_row = PickerRow::new(title, context)?.expanded();
+        if selected {
+            picker_row = picker_row.selected();
+        }
+        let lines = picker_row.lines();
+        canvas.write(row, 4, &lines[0].text, lines[0].style)?;
+        if let Some(tradeoff) = lines.get(1) {
+            canvas.write(row + 1, 4, &tradeoff.text, tradeoff.style)?;
+        }
         canvas.write(row + 2, 6, latest, TextStyle::text())?;
     }
 

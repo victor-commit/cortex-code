@@ -16,8 +16,9 @@ use crate::{
     },
     chrome::{
         components::{
-            composer_header_meta, subject_title_for_origin, user_turn_surface_strip,
-            ShortcutByline, ShortcutHint,
+            composer_header_meta, fuzzy_match_spans, fuzzy_match_style,
+            picker_apply_byline, subject_title_for_origin, user_turn_surface_strip,
+            PickerRow, ShortcutByline, ShortcutHint,
         },
         layout::{
             outer_content_x, ScreenComposition, StatusLine, ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP,
@@ -31,6 +32,7 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
+const WORK_MODE: &str = "Work mode";
 const DOCK_TOP: u16 = ACTION_DOCK_TOP;
 const DOCK_BOTTOM: u16 = ACTION_DOCK_BOTTOM;
 const FLOW2_FIXTURE: &str = "flow2.input-and-approval.stable";
@@ -2437,20 +2439,37 @@ fn render_multiline_composer(
     let cursor_offset = if inserted_file { 48 } else { 30 };
     transcript(canvas)?;
     write_dock_border(canvas)?;
+    // Jewel multi-line anatomy: draft meta · human model · work mode info on the
+    // first interior row keeps the fixed ActionDock height while carrying the
+    // jewel info line contract (VAL-V3-DS-036 / DS-031).
     dock_line(
         canvas,
         DOCK_TOP + 1,
-        &composer_header_meta(3)?,
+        &format!("{} · {MODEL} · {WORK_MODE}", composer_header_meta(3)?),
         TextStyle::bright(),
     )?;
     // Cursor remains available as semantic evidence (subject draft-offset-N) but
     // is no longer painted as implementation HUD text inside the composer jewel.
+    // Soft @mention accent only on the mention fragment keeps copper budget low.
     dock_line(
         canvas,
         DOCK_TOP + 2,
         &format!("› Check the retry path in {file_reference}█"),
         TextStyle::text(),
     )?;
+    // Mild mention accent (Info) on the @ token when present.
+    if file_reference.starts_with('@') {
+        canvas.write(
+            DOCK_TOP + 2,
+            outer_content_x() + 2 + "› Check the retry path in ".chars().count() as u16,
+            file_reference,
+            TextStyle {
+                foreground: crate::chrome::tokens::ColorToken::Info,
+                background: None,
+                bold: false,
+            },
+        )?;
+    }
     dock_line(
         canvas,
         DOCK_TOP + 3,
@@ -2600,6 +2619,7 @@ fn render_file_mention(
     draft_preview(canvas, query)?;
     let matches = fuzzy_file_matches(query);
     write_dock_border(canvas)?;
+    // Header carries query meta; byline (DS-036) is owned separately on the last dock row.
     dock_line(
         canvas,
         DOCK_TOP + 1,
@@ -2677,17 +2697,22 @@ fn render_file_mention(
         for (index, file) in matches.iter().enumerate() {
             let row = DOCK_TOP + 2 + index as u16;
             let selected = index == 0;
-            let marker = if selected { "›" } else { " " };
+            let mut picker_row = PickerRow::new(file.path, file.detail)?;
+            if selected {
+                picker_row = picker_row.selected();
+            }
+            // Title · tradeoff row, then mild Info fuzzy accents on path match runs.
             dock_line(
                 canvas,
                 row,
-                &format!("{marker} {} · {}", file.path, file.detail),
+                &picker_row.compact_line(),
                 if selected {
                     TextStyle::accent()
                 } else {
                     TextStyle::text()
                 },
             )?;
+            paint_fuzzy_title_accent(canvas, row, file.path, query, selected)?;
             pairs.push(semantic(
                 screen_id,
                 fixture_id,
@@ -2709,12 +2734,9 @@ fn render_file_mention(
                 ));
             }
         }
-        dock_line(
-            canvas,
-            DOCK_TOP + 5,
-            "› Submit prepared prompt · Tab to insert file · Esc to dismiss · ↑↓ to choose",
-            TextStyle::bright(),
-        )?;
+        // Dockling footer: primary · secondary · for orientation (DS-036 byline ownership).
+        let byline = "› Submit prepared prompt · Tab to insert file · Esc to dismiss · ↑↓ to choose";
+        dock_line(canvas, DOCK_TOP + 5, byline, TextStyle::bright())?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -2756,14 +2778,6 @@ fn render_file_mention(
         if row <= DOCK_TOP + 4 && !matches.is_empty() {
             dock_line(canvas, row, "", TextStyle::text())?;
         }
-    }
-    if !matches.is_empty() {
-        dock_line(
-            canvas,
-            DOCK_TOP + 5,
-            "› Submit prepared prompt · Tab to insert file · Esc to dismiss · ↑↓ to choose",
-            TextStyle::bright(),
-        )?;
     }
 
     let status = semantic(
@@ -2837,16 +2851,18 @@ fn render_slash_menu(
     slash_draft_preview(canvas, query)?;
     let matches = slash_matches(fragment);
     write_dock_border(canvas)?;
-    // Header carries match count and local keys so all four commands fit the dock body.
-    dock_line(
-        canvas,
-        DOCK_TOP + 1,
-        &format!(
-            "/ commands · query: {query} · {} matching · Enter to confirm · Esc to cancel",
-            matches.len()
-        ),
-        TextStyle::bright(),
-    )?;
+    // Header carries match count; Enter/Esc prose byline is listed explicitly so
+    // action RenderRefs keep stable character indexes for DS/geometry auditors.
+    let slash_header = format!(
+        "/ commands · query: {query} · {} matching · Enter to confirm · Esc to cancel",
+        matches.len()
+    );
+    debug_assert!(
+        slash_header.contains("Enter to confirm") && slash_header.contains("Esc to cancel"),
+        "slash-menu header must own the DS-036 confirm/cancel prose"
+    );
+    let _picker_byline = picker_apply_byline("confirm")?;
+    dock_line(canvas, DOCK_TOP + 1, &slash_header, TextStyle::bright())?;
 
     // Keep a stable owned subject id for filtered cases.
     let filter_subject_owned = if fragment == "ex" {
@@ -2960,17 +2976,22 @@ fn render_slash_menu(
                 break;
             }
             let selected = index == 0;
-            let marker = if selected { "›" } else { " " };
+            let mut picker_row = PickerRow::new(command.name, command.consequence)?;
+            if selected {
+                picker_row = picker_row.selected();
+            }
             dock_line(
                 canvas,
                 row,
-                &format!("{marker} {} · {}", command.name, command.consequence),
+                &picker_row.compact_line(),
                 if selected {
                     TextStyle::accent()
                 } else {
                     TextStyle::text()
                 },
             )?;
+            // Mild fuzzy accent on the command name match runs only.
+            paint_fuzzy_title_accent(canvas, row, command.name, query, selected)?;
             pairs.push(semantic(
                 screen_id,
                 fixture_id,
@@ -3222,11 +3243,15 @@ fn render_attachment_picker(
 
         // Three dock body rows: keep at least one unsupported label visible in the
         // default catalogue so eligibility is understandable without color.
+        // Row anatomy is shared title · tradeoff (VAL-V3-DS-036).
         let visible = attachment_visible_rows(&matches);
         for (index, candidate) in visible.iter().enumerate() {
             let row = DOCK_TOP + 3 + index as u16;
             let selected = first_eligible.is_some() && candidate.path == matches[first_eligible.unwrap()].path;
-            let marker = if selected { "›" } else { " " };
+            let mut picker_row = PickerRow::new(candidate.path, candidate.detail)?;
+            if selected {
+                picker_row = picker_row.selected();
+            }
             let style = if selected {
                 TextStyle::accent()
             } else if candidate.eligible {
@@ -3234,8 +3259,10 @@ fn render_attachment_picker(
             } else {
                 TextStyle::muted()
             };
-            let line = format!("{marker} {} · {}", candidate.path, candidate.detail);
-            dock_line(canvas, row, &line, style)?;
+            dock_line(canvas, row, &picker_row.compact_line(), style)?;
+            if !query.is_empty() {
+                paint_fuzzy_title_accent(canvas, row, candidate.path, query, selected)?;
+            }
             let subject = if candidate.eligible {
                 candidate.path.to_owned()
             } else {
@@ -3447,13 +3474,17 @@ fn render_export_picker(
     for (index, format) in EXPORT_FORMATS.iter().enumerate() {
         let row = DOCK_TOP + 2 + index as u16;
         let selected_row = index == selected_index;
-        let marker = if selected_row { "›" } else { " " };
         // Bracketed default badge is monochrome-distinct without color dependence.
         let default_badge = if format.is_default { " [default]" } else { "" };
-        let line = format!(
-            "{marker} {} · {} · {}{default_badge}",
-            format.name, format.artifact, format.consequence
+        let tradeoff = format!(
+            "{} · {}{default_badge}",
+            format.artifact, format.consequence
         );
+        let mut picker_row = PickerRow::new(format.name, &tradeoff)?;
+        if selected_row {
+            picker_row = picker_row.selected();
+        }
+        let line = picker_row.compact_line();
         debug_assert!(
             line.chars().count() <= 113,
             "export format row overflowed the dock body"
@@ -3801,15 +3832,19 @@ fn render_queue_manager(
     }
 
     // Two body rows for visible items (or one after authoritative refresh).
+    // Shared PickerRow title · tradeoff anatomy (DS-036): order/identity as
+    // title; summary payload + next badge as tradeoff.
     for (index, item) in items.iter().enumerate() {
         let row = DOCK_TOP + 3 + index as u16;
         let selected = item.identity == selected_identity;
-        let marker = if selected { "›" } else { " " };
         let next_badge = if item.runs_next { " · [next]" } else { "" };
-        let line = format!(
-            "{marker} {} · {} {} · {} {}{next_badge}",
-            item.order, item.identity, item.revision, item.summary, item.unit_bits
-        );
+        let title = format!("{} · {} {}", item.order, item.identity, item.revision);
+        let tradeoff = format!("{} {}{next_badge}", item.summary, item.unit_bits);
+        let mut picker_row = PickerRow::new(&title, &tradeoff)?;
+        if selected {
+            picker_row = picker_row.selected();
+        }
+        let line = picker_row.compact_line();
         debug_assert!(
             line.chars().count() <= 113,
             "queue item row overflowed the dock body"
@@ -4073,16 +4108,20 @@ fn render_command_palette(
     } else {
         "Enter to run · Esc to cancel"
     };
-    dock_line(
-        canvas,
-        DOCK_TOP + 1,
-        &format!(
-            "Filter actions · query: {} · {} matching · {enter_label}",
-            if query.is_empty() { "(all)" } else { query },
-            matches.len()
-        ),
-        TextStyle::bright(),
-    )?;
+    // Header carries filter meta + prose byline (DS-036) without a permanent putty bar.
+    let palette_header = format!(
+        "Filter actions · query: {} · {} matching · {enter_label}",
+        if query.is_empty() { "(all)" } else { query },
+        matches.len()
+    );
+    let _ = picker_apply_byline(if primary_opens_submenu {
+        "open scope"
+    } else if matches.is_empty() {
+        "cancel"
+    } else {
+        "run"
+    })?;
+    dock_line(canvas, DOCK_TOP + 1, &palette_header, TextStyle::bright())?;
 
     let filter_subject_owned = if query == "queue" {
         "query-queue".to_owned()
@@ -4201,21 +4240,25 @@ fn render_command_palette(
                 break;
             }
             let selected = index == 0;
-            let marker = if selected { "›" } else { " " };
             let disclosure = if action_row.opens_submenu { " ▸" } else { "" };
+            let tradeoff = format!("{}{disclosure}", action_row.consequence);
+            let mut picker_row = PickerRow::new(action_row.label, &tradeoff)?;
+            if selected {
+                picker_row = picker_row.selected();
+            }
             dock_line(
                 canvas,
                 row,
-                &format!(
-                    "{marker} {} · {}{disclosure}",
-                    action_row.label, action_row.consequence
-                ),
+                &picker_row.compact_line(),
                 if selected {
                     TextStyle::accent()
                 } else {
                     TextStyle::text()
                 },
             )?;
+            if !query.is_empty() {
+                paint_fuzzy_title_accent(canvas, row, action_row.label, query, selected)?;
+            }
             pairs.push(semantic(
                 screen_id,
                 fixture_id,
@@ -4384,11 +4427,14 @@ fn render_command_palette_submenu(
     for (index, row_item) in QUEUED_SUBMENU_ROWS.iter().enumerate() {
         let row = DOCK_TOP + 2 + index as u16;
         let selected = index == 0;
-        let marker = if selected { "›" } else { " " };
+        let mut picker_row = PickerRow::new(row_item.label, row_item.consequence)?;
+        if selected {
+            picker_row = picker_row.selected();
+        }
         dock_line(
             canvas,
             row,
-            &format!("{marker} {} · {}", row_item.label, row_item.consequence),
+            &picker_row.compact_line(),
             if selected {
                 TextStyle::accent()
             } else {
@@ -4713,6 +4759,26 @@ fn dock_line(canvas: &mut Canvas, row: u16, text: &str, style: TextStyle) -> Res
     canvas.write(row, x, "│", TextStyle::muted())?;
     canvas.write(row, x + 2, text, style)?;
     canvas.write(row, x + 115, "│", TextStyle::muted())?;
+    Ok(())
+}
+
+/// Mild Info accent on fuzzy match runs for the row title (path/name),
+/// leaving copper free for the selected `›` marker (VAL-V3-DS-036).
+fn paint_fuzzy_title_accent(
+    canvas: &mut Canvas,
+    row: u16,
+    title: &str,
+    query: &str,
+    selected: bool,
+) -> Result<(), String> {
+    // compact_line forms `› title · tradeoff` — title starts at dock body + 2.
+    let title_col = outer_content_x() + 2 + 2; // "│ › " or "│   "
+    let mut col = title_col;
+    for span in fuzzy_match_spans(title, query) {
+        let style = fuzzy_match_style(span.matched, selected);
+        canvas.write(row, col, &span.text, style)?;
+        col += span.text.chars().count() as u16;
+    }
     Ok(())
 }
 

@@ -400,6 +400,10 @@ pub struct PromptJewel {
     work_mode: String,
     focused: bool,
     width: u16,
+    /// Optional content-meta prefix for multi-line jewels (`Draft · 3 lines`).
+    draft_meta: Option<String>,
+    /// When true, draft newlines/indents expand into interior body rows.
+    multiline: bool,
 }
 
 impl PromptJewel {
@@ -447,7 +451,21 @@ impl PromptJewel {
             work_mode,
             focused: false,
             width: OUTER_CONTENT_WIDTH,
+            draft_meta: None,
+            multiline: false,
         })
+    }
+
+    /// Multi-line jewel: newlines become distinct body rows; a muted
+    /// `Draft · N lines` meta sits above the prefix draft. Info line still
+    /// holds human model · work mode (composer-multiline / VAL-V3-DS-036).
+    pub fn multiline(mut self, authored_line_count: usize) -> Result<Self, String> {
+        let meta = composer_header_meta(authored_line_count)?;
+        reject_composer_debug_meta(&meta)?;
+        validate_glyphs(&meta)?;
+        self.draft_meta = Some(meta);
+        self.multiline = true;
+        Ok(self)
     }
 
     /// Marks the jewel as focused so the interior prefix may spend ACCENT.
@@ -462,6 +480,10 @@ impl PromptJewel {
 
     pub fn info_line(&self) -> String {
         format!("{} · {}", self.model, self.work_mode)
+    }
+
+    pub fn draft_meta(&self) -> Option<&str> {
+        self.draft_meta.as_deref()
     }
 
     /// Join jewel rows with newlines for TXT-snapshot tests.
@@ -493,21 +515,54 @@ impl PromptJewel {
         let bottom = format!("╰{rail}╯");
         // Interior content width between the two `│` side walls.
         let inner = width.saturating_sub(2);
-        let draft_body = Self::pad_inner(&format!("{PROMPT_PREFIX} {}", self.draft), inner.saturating_sub(1));
-        // Leading space after `│` so `│ › draft…` reads as jewel.
-        let draft_row = format!("│ {draft_body}");
-        let draft_row = Self::pad_to_width(&draft_row, width);
+        let mut body: Vec<ComponentLine> = Vec::new();
+
+        if let Some(meta) = &self.draft_meta {
+            let meta_body = Self::pad_inner(meta, inner.saturating_sub(1));
+            body.push(ComponentLine::new(
+                Self::pad_to_width(&format!("│ {meta_body}"), width),
+                TextStyle::bright(),
+            ));
+        }
+
+        if self.multiline {
+            for (index, part) in self.draft.split('\n').enumerate() {
+                let content = if index == 0 {
+                    format!("{PROMPT_PREFIX} {part}")
+                } else {
+                    format!("  {part}")
+                };
+                let draft_body = Self::pad_inner(&content, inner.saturating_sub(1));
+                let style = if index == 0 {
+                    TextStyle::bright()
+                } else if part.trim_start().starts_with("include ") || part.starts_with("    ") {
+                    TextStyle::muted()
+                } else {
+                    TextStyle::text()
+                };
+                body.push(ComponentLine::new(
+                    Self::pad_to_width(&format!("│ {draft_body}"), width),
+                    style,
+                ));
+            }
+        } else {
+            let draft_body =
+                Self::pad_inner(&format!("{PROMPT_PREFIX} {}", self.draft), inner.saturating_sub(1));
+            // Leading space after `│` so `│ › draft…` reads as jewel.
+            let draft_row = Self::pad_to_width(&format!("│ {draft_body}"), width);
+            body.push(ComponentLine::new(draft_row, TextStyle::bright()));
+        }
+
         let info_body = Self::pad_inner(&format!("  {}", self.info_line()), inner.saturating_sub(1));
         let info_row = Self::pad_to_width(&format!("│ {info_body}"), width);
 
         // Borders stay muted/transparent; accent budget lives on the focused prefix
         // only (tracked via anatomy.accent_uses), never a filled strap.
-        vec![
-            ComponentLine::new(top, TextStyle::muted()),
-            ComponentLine::new(draft_row, TextStyle::bright()),
-            ComponentLine::new(info_row, TextStyle::muted()),
-            ComponentLine::new(bottom, TextStyle::muted()),
-        ]
+        let mut lines = vec![ComponentLine::new(top, TextStyle::muted())];
+        lines.extend(body);
+        lines.push(ComponentLine::new(info_row, TextStyle::muted()));
+        lines.push(ComponentLine::new(bottom, TextStyle::muted()));
+        lines
     }
 
     fn pad_to_width(row: &str, width: usize) -> String {
@@ -1248,6 +1303,208 @@ impl SelectionRow {
             label: label.to_owned(),
             consequence: consequence.to_owned(),
         }
+    }
+}
+
+/// Canonical bottom-dock picker row (VAL-V3-DS-036).
+///
+/// Anatomy is always `title · tradeoff` (or title alone when tradeoff is empty),
+/// with focus marked by the restrained `›` glyph and ACCENT text — never a filled
+/// selection strap. Selected tradeoffs may also paint under the title as a muted
+/// byline when `expanded` is true (multi-line catalog rows).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PickerRow {
+    title: String,
+    tradeoff: String,
+    selected: bool,
+    /// When true, tradeoff sits on its own muted secondary line (catalog rows).
+    /// When false, the row is a single `title · tradeoff` line (compact docks).
+    expanded: bool,
+}
+
+impl PickerRow {
+    pub fn new(title: &str, tradeoff: &str) -> Result<Self, String> {
+        let title = title.trim().to_owned();
+        let tradeoff = tradeoff.trim().to_owned();
+        if title.is_empty() {
+            return Err("picker row requires a subject title".to_owned());
+        }
+        if is_journey_breadcrumb_title(&title) {
+            return Err(format!(
+                "picker row title must not be a journey breadcrumb: {title}"
+            ));
+        }
+        if contains_bracket_key_atom(&title) || contains_bracket_key_atom(&tradeoff) {
+            return Err("picker row may not use bracket key atoms".to_owned());
+        }
+        if contains_global_putty_footer(&title) || contains_global_putty_footer(&tradeoff) {
+            return Err("picker row may not embed putty footer copy".to_owned());
+        }
+        validate_glyphs(&title)?;
+        validate_glyphs(&tradeoff)?;
+        Ok(Self {
+            title,
+            tradeoff,
+            selected: false,
+            expanded: false,
+        })
+    }
+
+    pub fn selected(mut self) -> Self {
+        self.selected = true;
+        self
+    }
+
+    pub fn expanded(mut self) -> Self {
+        self.expanded = true;
+        self
+    }
+
+    /// Single interior canvas line used by compact dock lists: `› Title · tradeoff`.
+    pub fn compact_line(&self) -> String {
+        let marker = if self.selected { "›" } else { " " };
+        if self.tradeoff.is_empty() {
+            format!("{marker} {}", self.title)
+        } else {
+            format!("{marker} {} · {}", self.title, self.tradeoff)
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn tradeoff(&self) -> &str {
+        &self.tradeoff
+    }
+
+    pub fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl Component for PickerRow {
+    fn lines(&self) -> Vec<ComponentLine> {
+        let marker = if self.selected { "›" } else { " " };
+        let title_style = if self.selected {
+            TextStyle::accent()
+        } else {
+            TextStyle::text()
+        };
+        if self.expanded {
+            let mut out = vec![ComponentLine::new(
+                format!("{marker} {}", self.title),
+                title_style,
+            )];
+            if !self.tradeoff.is_empty() {
+                out.push(ComponentLine::new(
+                    format!("  {}", self.tradeoff),
+                    TextStyle::muted(),
+                ));
+            }
+            out
+        } else {
+            vec![ComponentLine::new(self.compact_line(), title_style)]
+        }
+    }
+
+    fn anatomy(&self) -> ComponentAnatomy {
+        ComponentAnatomy {
+            primary_action_count: 0,
+            secondary_action_count: 0,
+            has_local_keys: false,
+            accent_uses: if self.selected { 1 } else { 0 },
+        }
+    }
+}
+
+/// Canonical DS-036 picker byline: `Enter to apply · Esc to cancel · ↑↓ to choose`.
+///
+/// Callers may specialize the Enter verb (`confirm`, `run`, `attach`, …) while
+/// keeping the shared Esc + navigate clauses.
+pub fn picker_apply_byline(enter_verb: &str) -> Result<String, String> {
+    let byline = ShortcutByline::enter_esc_choose(enter_verb, "cancel")?.render();
+    if contains_bracket_key_atom(&byline) {
+        return Err("picker byline may not emit bracket key atoms".to_owned());
+    }
+    if contains_global_putty_footer(&byline) {
+        return Err("picker byline may not look like a putty footer".to_owned());
+    }
+    Ok(byline)
+}
+
+/// Mild fuzzy-match paint spans: Info (not copper) for matched characters so
+/// accent budget stays free for the selected row marker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FuzzyMatchSpan {
+    pub text: String,
+    pub matched: bool,
+}
+
+/// Split `candidate` into contiguous matched / unmatched runs under a fuzzy
+/// subsequence against `query` (case-insensitive). Empty query yields one
+/// unmatched span of the full candidate.
+pub fn fuzzy_match_spans(candidate: &str, query: &str) -> Vec<FuzzyMatchSpan> {
+    let fragment = query.trim_start_matches(['@', '/']).to_ascii_lowercase();
+    if fragment.is_empty() {
+        return vec![FuzzyMatchSpan {
+            text: candidate.to_owned(),
+            matched: false,
+        }];
+    }
+    let wanted: Vec<char> = fragment.chars().collect();
+    let mut want_idx = 0usize;
+    let mut spans: Vec<FuzzyMatchSpan> = Vec::new();
+    let mut buf = String::new();
+    let mut matched_mode: Option<bool> = None;
+    for ch in candidate.chars() {
+        let is_match = want_idx < wanted.len() && ch.to_ascii_lowercase() == wanted[want_idx];
+        if is_match {
+            want_idx += 1;
+        }
+        match matched_mode {
+            Some(mode) if mode == is_match => buf.push(ch),
+            Some(_) => {
+                spans.push(FuzzyMatchSpan {
+                    text: std::mem::take(&mut buf),
+                    matched: matched_mode.unwrap_or(false),
+                });
+                buf.push(ch);
+                matched_mode = Some(is_match);
+            }
+            None => {
+                buf.push(ch);
+                matched_mode = Some(is_match);
+            }
+        }
+    }
+    if !buf.is_empty() {
+        spans.push(FuzzyMatchSpan {
+            text: buf,
+            matched: matched_mode.unwrap_or(false),
+        });
+    }
+    if spans.is_empty() {
+        spans.push(FuzzyMatchSpan {
+            text: candidate.to_owned(),
+            matched: false,
+        });
+    }
+    spans
+}
+
+/// Style for a mild fuzzy highlight: Info for match runs, plain Text otherwise.
+pub fn fuzzy_match_style(matched: bool, selected_row: bool) -> TextStyle {
+    if matched {
+        TextStyle {
+            foreground: ColorToken::Info,
+            background: None,
+            bold: false,
+        }
+    } else if selected_row {
+        TextStyle::accent()
+    } else {
+        TextStyle::text()
     }
 }
 

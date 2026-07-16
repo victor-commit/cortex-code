@@ -30,7 +30,7 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Draft · 3 lines                                                                                                  │  
+  │ Draft · 3 lines · Claude Opus 4.8 · Work mode                                                                    │  
   │ › Check the retry path in @retry█                                                                                │  
   │   Then explain the failure path that still needs coverage before the merge;                                      │  
   │     include a concise test plan with the visible recovery behavior.                                              │  
