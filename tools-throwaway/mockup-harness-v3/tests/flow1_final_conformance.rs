@@ -22,7 +22,14 @@ use mockup_harness_v3::{
     scenario::replay_case, FlowOwner, ImplementationStatus,
 };
 
-const DAILY_WORK_ORIGIN: &str = "Daily work · current conversation";
+/// Pre-Cortex fixture origin retained for historical fixtures.
+const DAILY_WORK_ORIGIN_LEGACY: &str = "Daily work · current conversation";
+/// Cortex redesign origin label used on live conversation / inspector frames.
+const DAILY_WORK_ORIGIN_GROK: &str = "Current conversation";
+
+fn keeps_daily_work_origin(text: &str) -> bool {
+    text.contains(DAILY_WORK_ORIGIN_GROK) || text.contains(DAILY_WORK_ORIGIN_LEGACY)
+}
 
 /// Exact 24 Flow 1 states required by VAL-V3-F1-059.
 const FLOW1_IDS: &[&str] = &[
@@ -736,7 +743,7 @@ fn progressive_disclosure_adds_useful_information_and_round_trips() {
     ] {
         let text = render_pair(screen_id, fixture_id).render_txt();
         assert!(
-            text.contains(DAILY_WORK_ORIGIN),
+            keeps_daily_work_origin(&text),
             "{screen_id}: inspector must keep conversation origin"
         );
         assert!(
@@ -890,7 +897,7 @@ fn default_density_favors_transcript_and_readable_measure() {
             | "sidebar-todo"
             | "sidebar-subagents" => {
                 assert!(
-                    text.contains(DAILY_WORK_ORIGIN)
+                    keeps_daily_work_origin(&text)
                         && (text.contains("Find where the server")
                             || text.contains("shared request guard")
                             || text.contains("rate limit")),
@@ -900,7 +907,7 @@ fn default_density_favors_transcript_and_readable_measure() {
             _ => {
                 // Conversation shells keep the request/answer or live work readable.
                 assert!(
-                    text.contains(DAILY_WORK_ORIGIN)
+                    keeps_daily_work_origin(&text)
                         || text.contains("Code")
                         || text.contains("You ·")
                         || text.contains("rate limit")
