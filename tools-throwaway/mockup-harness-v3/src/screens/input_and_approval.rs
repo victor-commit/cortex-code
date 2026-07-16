@@ -308,12 +308,31 @@ const QUEUE_ITEMS: [QueueItem; 2] = [
     },
 ];
 
+/// Paint FLOW2 subject title + task chrome when the origin is the shared input
+/// pause window **or** when a public/canonical permission gallery render would
+/// otherwise open with only a You line (N-12).
+fn paints_flow2_subject_chrome(screen_id: &str, fixture_id: &str) -> bool {
+    if fixture_id == FLOW2_FIXTURE {
+        return true;
+    }
+    matches!(
+        screen_id,
+        "permission-shell" | "permission-file-edit" | "permission-deny-reason"
+    ) && (fixture_id == "public-audit"
+        || fixture_id.starts_with("canonical.permission-")
+        || fixture_id.starts_with("canonical."))
+}
+
 pub fn render(screen_id: &str, fixture_id: &str) -> Result<AuditDocument, String> {
     let statusline = StatusLine::new(PROJECT_PATH, BRANCH, MODEL)?;
     ScreenComposition::new(screen_id, Surface::ActionDock, statusline.clone()).validate()?;
 
     let mut canvas = Canvas::new();
-    if fixture_id == FLOW2_FIXTURE {
+    // Subject chrome for FLOW2 and for public/canonical permission IDs.
+    // Gallery publication uses `public-audit` / `canonical.<id>` for screens
+    // that are not bound to a flow step fixture; those still must paint a
+    // human subject title (N-12) rather than jumping straight to the You line.
+    if paints_flow2_subject_chrome(screen_id, fixture_id) {
         canvas.write(2, 4, subject_title_for_origin(FLOW2_ORIGIN), TextStyle::muted())?;
         canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
     }

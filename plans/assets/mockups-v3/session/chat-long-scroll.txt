@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Review earlier turns, then return to the latest work.                                                               
-    ↑ 12 earlier turns · [ctrl+u] Jump to earlier · reading older work                                                  
+    ↑ 12 earlier turns · ctrl+u to jump earlier · reading older work                                                    
                                                                                                                         
     You · where do refresh tokens get persisted?                                                                        
                                                                                                                         

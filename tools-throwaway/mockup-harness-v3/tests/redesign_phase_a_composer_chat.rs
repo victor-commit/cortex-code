@@ -185,3 +185,70 @@ fn permission_shell_dock_uses_prose_bylines() {
         "permission dock needs a prose byline"
     );
 }
+
+#[test]
+fn chat_long_scroll_uses_prose_ctrl_u_without_brackets() {
+    for fixture in ["public-audit", "session.history.earlier", "session.history.latest"] {
+        let audit = audit_screen("chat-long-scroll", fixture)
+            .unwrap_or_else(|err| panic!("chat-long-scroll/{fixture} must render: {err}"));
+        let text = audit.render_txt();
+        assert!(
+            !text.contains("[ctrl+u]"),
+            "chat-long-scroll/{fixture} still paints [ctrl+u] brackets"
+        );
+        assert!(
+            !contains_bracket_key_atom(&text),
+            "chat-long-scroll/{fixture} emits bracket key atoms"
+        );
+        assert!(
+            text.contains("ctrl+u to jump earlier")
+                || text.contains("ctrl+u to jump to earlier")
+                || text.contains("Ctrl+U to jump earlier"),
+            "chat-long-scroll/{fixture} must paint prose ctrl+u byline (VAL-V3-DS-008 lowercase); got:\n{}",
+            text.lines().take(8).collect::<Vec<_>>().join("\n")
+        );
+        assert!(
+            !text.contains("Ctrl+U") && !text.contains("Ctrl+"),
+            "chat-long-scroll/{fixture} must use lowercase chord form (VAL-V3-DS-008)"
+        );
+        assert!(
+            !text.contains("Daily work ·"),
+            "chat-long-scroll/{fixture} must keep subject title, not journey crumb"
+        );
+    }
+}
+
+#[test]
+fn public_permission_screens_paint_subject_titles() {
+    // Gallery uses public-audit / canonical.<id> for permission IDs not bound
+    // to a first-three flow step fixture. Subject chrome must still paint.
+    for (screen_id, fixture) in [
+        ("permission-file-edit", "public-audit"),
+        ("permission-file-edit", "canonical.permission-file-edit"),
+        ("permission-deny-reason", "public-audit"),
+        ("permission-deny-reason", "canonical.permission-deny-reason"),
+        ("permission-shell", "public-audit"),
+    ] {
+        let audit = audit_screen(screen_id, fixture)
+            .unwrap_or_else(|err| panic!("{screen_id}/{fixture} must render: {err}"));
+        let text = audit.render_txt();
+        let top = text
+            .lines()
+            .take(6)
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        assert!(
+            top.contains(&"Paused conversation"),
+            "{screen_id}/{fixture} must paint subject title 'Paused conversation'; top lines: {top:?}"
+        );
+        assert!(
+            !is_journey_breadcrumb_title(top.first().copied().unwrap_or("")),
+            "{screen_id}/{fixture} paints journey crumb as title: {top:?}"
+        );
+        assert!(
+            !contains_bracket_key_atom(&text),
+            "{screen_id}/{fixture} emits bracket key atoms"
+        );
+    }
+}

@@ -291,7 +291,7 @@ pub fn composer_header_meta(authored_line_count: usize) -> Result<String, String
 
 fn is_key_chord_token(inner: &str) -> bool {
     let token = inner.trim();
-    if token.is_empty() || token.len() > 12 {
+    if token.is_empty() || token.len() > 24 {
         return false;
     }
     // File/content chips such as `[attachment: path]` are not key chords.
@@ -299,6 +299,12 @@ fn is_key_chord_token(inner: &str) -> bool {
         return false;
     }
     let lower = token.to_ascii_lowercase();
+    // Any modifier+key chord inside brackets is banned (N-11), not only the
+    // small historical ctrl+k/g/c/d denylist. Covers [ctrl+u], [alt+enter],
+    // [shift+tab], [meta+k], multi-modifier chords, etc.
+    if is_modifier_key_chord(&lower) {
+        return true;
+    }
     matches!(
         lower.as_str(),
         "enter"
@@ -315,10 +321,6 @@ fn is_key_chord_token(inner: &str) -> bool {
             | "/"
             | "?"
             | "sc"
-            | "ctrl+k"
-            | "ctrl+g"
-            | "ctrl+c"
-            | "ctrl+d"
     ) || token
         .chars()
         .all(|c| "↑↓←→".contains(c) && !c.is_whitespace())
@@ -326,6 +328,48 @@ fn is_key_chord_token(inner: &str) -> bool {
             && token
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '^'))
+}
+
+/// True for tokens like `ctrl+u`, `alt+enter`, `shift+tab`, `meta+k`, `cmd+s`,
+/// or multi-modifier forms such as `ctrl+shift+p`. Plain content tokens and
+/// bare keys were already handled by `is_key_chord_token`.
+fn is_modifier_key_chord(lower: &str) -> bool {
+    const MODIFIERS: &[&str] = &[
+        "ctrl", "control", "alt", "option", "shift", "meta", "cmd", "super",
+    ];
+    let parts: Vec<&str> = lower.split('+').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    let (mods, key_parts) = parts.split_at(parts.len() - 1);
+    let key = key_parts[0];
+    if key.is_empty() || !mods.iter().all(|m| MODIFIERS.contains(m)) {
+        return false;
+    }
+    // Key side: short alphanumeric chord key or a named control key / arrow.
+    key.chars().all(|c| c.is_ascii_alphanumeric() || "↑↓←→".contains(c))
+        || matches!(
+            key,
+            "enter"
+                | "esc"
+                | "escape"
+                | "tab"
+                | "space"
+                | "return"
+                | "up"
+                | "down"
+                | "left"
+                | "right"
+                | "home"
+                | "end"
+                | "pgup"
+                | "pgdn"
+                | "pageup"
+                | "pagedown"
+                | "del"
+                | "delete"
+                | "backspace"
+        )
 }
 
 fn noun_clause(verb: &str) -> String {

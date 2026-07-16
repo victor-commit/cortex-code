@@ -349,6 +349,47 @@ fn shortcut_byline_renders_claude_style_prose_without_brackets() {
 }
 
 #[test]
+fn bracket_key_atom_detector_rejects_any_modifier_chord() {
+    // Historical gap: only ctrl+k/g/c/d were denylisted, so [ctrl+u] slipped
+    // through Phase-A zero-bracket gallery scans. Any ctrl+/alt+/shift+/meta+
+    // chord inside brackets must trip the scan (N-11).
+    for residual in [
+        "[ctrl+u] Jump to earlier",
+        "↑ 12 earlier turns · [ctrl+u] Jump to earlier · reading older work",
+        "press [ctrl+k] to open",
+        "hint [alt+enter] submit",
+        "hint [shift+tab] reverse",
+        "hint [meta+k] command",
+        "hint [cmd+s] save",
+        "hint [ctrl+shift+p] palette",
+        "type [enter] to send",
+        "press [esc] to cancel",
+        "keys [↑↓] to move",
+    ] {
+        assert!(
+            contains_bracket_key_atom(residual),
+            "expected bracket key atom detection for residual: {residual}"
+        );
+    }
+
+    // Content chips and prose bylines are not chord atoms.
+    // VAL-V3-DS-008: painted modifier chords are lowercase (`ctrl+u to …`).
+    for allowed in [
+        "ctrl+u to jump earlier",
+        "Ctrl+U to jump earlier",
+        "Enter to send · Esc to cancel",
+        "[attachment: assets/retry-diagram.png]",
+        "src/net/retry_policy.rs",
+        "Paused conversation",
+    ] {
+        assert!(
+            !contains_bracket_key_atom(allowed),
+            "false positive bracket scan for: {allowed}"
+        );
+    }
+}
+
+#[test]
 fn dual_branch_prose_or_bracket_helpers_accept_shortcut_byline_form() {
     let prose = "› Apply model · Esc to Cancel\nEnter to apply model · Esc to cancel";
     assert!(has_enter_control(prose));

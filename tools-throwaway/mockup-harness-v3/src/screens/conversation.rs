@@ -5134,7 +5134,7 @@ fn render_chat_long_scroll(
         canvas.write(
             6,
             4,
-            "↑ 12 earlier turns · [ctrl+u] Jump to earlier",
+            "↑ 12 earlier turns · ctrl+u to jump earlier",
             TextStyle::text(),
         )?;
         canvas.write(
@@ -5186,7 +5186,7 @@ fn render_chat_long_scroll(
         canvas.write(
             4,
             4,
-            "↑ 12 earlier turns · [ctrl+u] Jump to earlier · reading older work",
+            "↑ 12 earlier turns · ctrl+u to jump earlier · reading older work",
             TextStyle::text(),
         )?;
         canvas.write(
