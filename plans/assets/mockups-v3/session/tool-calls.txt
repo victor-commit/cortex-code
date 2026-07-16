@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-     You · Find where the server applies the rate limit and explain the safe path.                                      
+     › You · Find where the server applies the rate limit and explain the safe path.                                    
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -10,14 +10,12 @@
     I am checking the shared rules, then the failing suite, while scanning code.                                        
                                                                                                                         
                                                                                                                         
-    ✓ Read session rules · Complete · 0.2s · found the shared guard                                                     
+    ✓ Read session rules · 0.2s · found the shared guard                                                                
                                                                                                                         
-    ✗ Run rate-limit tests · Needs attention · 41s · 2 of 38 tests failed                                               
-      Tests assert the wrong recovery message. · r to retry tests                                                       
+    ✗ Ran rate-limit tests · 41s · 2 of 38 tests failed                                                                 
+      Tests assert the wrong recovery message. · Enter to retry tests                                                   
                                                                                                                         
-    ● Search project code · Running · 12s elapsed · 118 of 240 files · 1 match so far                                   
-                                                                                                                        
-                                                                                                                        
+    ● Searching project code · 12s · 118 of 240 files · 1 match so far                                                  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +28,13 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+  ● Running · 12s                                                                                                       
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                     
-                                                                                                                        
-                                                                                                                        
-    Enter to send                                                                                                       
+  │ › Reply to Code                                                                                                  │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+    Enter to send                                                                                                       
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

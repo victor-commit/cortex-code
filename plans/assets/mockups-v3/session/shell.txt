@@ -2,19 +2,19 @@
                                                                                                                         
     Current conversation                                                                                                
     Check the branch, then run the focused tests.                                                                       
-    You · Check the branch, then run the focused tests.                                                                 
+     › You · Check the branch, then run the focused tests.                                                              
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
     I will check the branch state first, then run the focused suite.                                                    
                                                                                                                         
-    ✓ Shell · git status --short --branch · Complete · exit 0 · 0.2s                                                    
+    ✓ Ran git status --short --branch · exit 0 · 0.2s                                                                   
       ⎿ ## master...origin/master [ahead 1]                                                                             
       ⎿ M crates/server/src/models/session.rs                                                                           
       ⎿ ?? crates/server/tests/login_regression.rs                                                                      
                                                                                                                         
-    ● Shell · cargo test --workspace · Running · running · 4s elapsed · Esc to stop command                             
+    ● Running cargo test --workspace · running · 4s elapsed · Esc to stop command                                       
       ⎿ Compiling cortex-server v0.1.0                                                                                  
       ⎿ Finished test profile in 3.1s                                                                                   
       ⎿ test routes::login::rate_limited ... ok                                                                         
@@ -29,12 +29,12 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
+  ● Running · 4s · Esc to stop                                                                                          
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Type a follow-up, it will wait until this command finishes                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  │ › Type a follow-up, it will wait until this command finishes                                                     │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

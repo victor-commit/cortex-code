@@ -32,9 +32,9 @@
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ › Ask Code to start a task                                                                                          
-  │                                                                                                                     
-                                                                                                                        
-    This is the primary start · subordinate resume and settings stay secondary                                          
+  │   Claude Opus 4.8 · Careful edits                                                                                   
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+    This is the primary start · subordinate resume and settings stay secondary                                          
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

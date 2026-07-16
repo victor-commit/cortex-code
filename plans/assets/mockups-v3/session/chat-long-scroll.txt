@@ -4,7 +4,7 @@
     Review earlier turns, then return to the latest work.                                                               
     ↑ 12 earlier turns · ctrl+u to jump earlier · reading older work                                                    
                                                                                                                         
-    You · where do refresh tokens get persisted?                                                                        
+     › You · where do refresh tokens get persisted?                                                                     
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
@@ -12,7 +12,7 @@
     writes them through store::persist() at issue time and rotates the                                                  
     row in place on every refresh.                                                                                      
                                                                                                                         
-    You · add an integration test that proves rotation invalidates the old token                                        
+     › You · add an integration test that proves rotation invalidates the old token                                     
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Add a short note about the remaining risk.                                                                        
-                                                                                                                        
-                                                                                                                        
-    Enter to send                                                                                                       
+  │ › Add a short note about the remaining risk.                                                                     │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+    Enter to send                                                                                                       
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

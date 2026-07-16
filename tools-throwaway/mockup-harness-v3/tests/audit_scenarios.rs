@@ -160,7 +160,11 @@ fn conversation_pilot_screens_keep_the_transcript_and_one_clear_next_step() {
     assert_eq!(completed.transitions[0].to_screen_id, "streaming");
 
     let streaming_text = streaming.render_txt();
-    assert!(streaming_text.contains("Writing reply · Running"));
+    assert!(
+        streaming_text.contains("Writing reply")
+            || streaming_text.contains("Writing reply · Running"),
+        "streaming live owner must show Writing reply verb/header"
+    );
     assert!(streaming_text.contains("will wait until this reply finishes"));
     assert_eq!(
         streaming

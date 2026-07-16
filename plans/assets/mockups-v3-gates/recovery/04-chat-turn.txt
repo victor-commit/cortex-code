@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                     
-      Keep the risk note short before we publish.                                                                       
-      u for Undo last checkpoint                                                                                        
+  │ › Reply to Code                                                                                                  │  
+  │   Keep the risk note short before we publish.                                                                    │  
+  ╰───u for Undo last checkpoint─────────────────────────────────────────────────────────────────────────────────────╯  
     Enter to send                                                                                                       
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

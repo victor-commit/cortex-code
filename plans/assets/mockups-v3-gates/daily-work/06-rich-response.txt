@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-     You · Find where the server applies the rate limit and explain the safe path.                                      
+     › You · Find where the server applies the rate limit and explain the safe path.                                    
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                     
-                                                                                                                        
-                                                                                                                        
-    Enter to send                                                                                                       
+  │ › Reply to Code                                                                                                  │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+    Enter to send                                                                                                       
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

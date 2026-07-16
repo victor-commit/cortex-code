@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-     You · Find where the server applies the rate limit and explain the safe path.                                      
+     › You · Find where the server applies the rate limit and explain the safe path.                                    
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -10,13 +10,10 @@
     I checked the session guard first. It stays complete while the search continues.                                    
                                                                                                                         
                                                                                                                         
-    ✓ Checked session rules · Complete · 0.2s · found the shared guard                                                  
+    ✓ Read session rules · 0.2s · found the shared guard                                                                
                                                                                                                         
                                                                                                                         
-    ● Search project code · Running · 4s elapsed · 128 of 400 files · 3 matches so far · Esc to stop search             
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+    ● Searching project code · 4s · 128 of 400 files · 3 matches so far · Esc to stop search                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +27,14 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+  ● Running · 4s · Esc to stop                                                                                          
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Type a follow-up, it will wait until this search finishes                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  │ › Type a follow-up, it will wait until this search finishes                                                      │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

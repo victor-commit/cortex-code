@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Continue from the compacted conversation summary.                                                                   
-    You · /compact                                                                                                      
+     › You · /compact                                                                                                   
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Resume from the compacted summary                                                                                 
-                                                                                                                        
-                                                                                                                        
-    Enter to send                                                                                                       
+  │ › Resume from the compacted summary                                                                              │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+    Enter to send                                                                                                       
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

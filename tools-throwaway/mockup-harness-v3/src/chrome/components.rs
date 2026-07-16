@@ -922,6 +922,100 @@ impl ActivityState {
     }
 }
 
+/// Present/past tool verbs for the Cortex-informed activity stream (VAL-V3-DS-033).
+///
+/// Caller supplies the object phrase (`project code`, `session rules`); the
+/// component conjugating creates `Searching project code` / `Searched project code`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolVerb {
+    Read,
+    Search,
+    Run,
+    Edit,
+    Write,
+    Shell,
+    Task,
+    Respond,
+}
+
+impl ToolVerb {
+    pub const fn present(self) -> &'static str {
+        match self {
+            Self::Read => "Reading",
+            Self::Search => "Searching",
+            Self::Run => "Running",
+            Self::Edit => "Editing",
+            Self::Write => "Writing",
+            Self::Shell => "Running",
+            Self::Task => "Working on",
+            Self::Respond => "Writing",
+        }
+    }
+
+    pub const fn past(self) -> &'static str {
+        match self {
+            Self::Read => "Read",
+            Self::Search => "Searched",
+            Self::Run => "Ran",
+            Self::Edit => "Edited",
+            Self::Write => "Wrote",
+            Self::Shell => "Ran",
+            Self::Task => "Finished",
+            Self::Respond => "Wrote",
+        }
+    }
+
+    /// Compose present/past + object into the user-visible tool header.
+    pub fn phrase(self, object: &str, past: bool) -> String {
+        let verb = if past { self.past() } else { self.present() };
+        let object = object.trim();
+        if object.is_empty() {
+            verb.to_owned()
+        } else {
+            format!("{verb} {object}")
+        }
+    }
+}
+
+/// Elbow disclosure line under a tool row (`⎿ detail`), closed glyph only.
+pub fn tool_elbow_line(detail: &str) -> Result<ComponentLine, String> {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        return Err("tool elbow requires detail".to_owned());
+    }
+    if contains_bracket_key_atom(detail) {
+        return Err("tool elbow may not use bracket key atoms".to_owned());
+    }
+    let text = format!("  ⎿ {detail}");
+    validate_glyphs(&text)?;
+    Ok(ComponentLine::new(text, TextStyle::muted()))
+}
+
+/// Collapsed fold-group summary such as `Read 3 files` (VAL-V3-DS-033).
+pub fn tool_fold_summary(
+    verb: ToolVerb,
+    count: u32,
+    unit: &str,
+) -> Result<ComponentLine, String> {
+    if count == 0 {
+        return Err("tool fold summary requires a non-zero count".to_owned());
+    }
+    let unit = unit.trim();
+    if unit.is_empty() {
+        return Err("tool fold summary requires a unit".to_owned());
+    }
+    let text = format!("✓ {} {count} {unit}", verb.past());
+    validate_glyphs(&text)?;
+    Ok(ComponentLine::new(
+        text,
+        TextStyle {
+            foreground: ColorToken::Ok,
+            background: None,
+            bold: false,
+        },
+    ))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActivityRow {
     label: String,
@@ -930,6 +1024,9 @@ pub struct ActivityRow {
     elapsed: Option<String>,
     interrupt: Option<String>,
     compact: bool,
+    /// When true, the label already carries present/past verb tense so the
+    /// state noun (`Running`/`Complete`) is omitted from the header (DS-033).
+    verb_first: bool,
 }
 
 impl ActivityRow {
@@ -941,6 +1038,26 @@ impl ActivityRow {
             elapsed: None,
             interrupt: None,
             compact: false,
+            verb_first: false,
+        }
+    }
+
+    /// Build a Cortex-style verb-first tool row from a typed verb + object.
+    ///
+    /// Running/waiting use present tense; success/failure/expanded use past.
+    pub fn tool(verb: ToolVerb, object: &str, state: ActivityState, detail: &str) -> Self {
+        let past = matches!(
+            state,
+            ActivityState::Succeeded | ActivityState::Failed | ActivityState::Expanded
+        );
+        Self {
+            label: verb.phrase(object, past),
+            state,
+            detail: detail.to_owned(),
+            elapsed: None,
+            interrupt: None,
+            compact: false,
+            verb_first: true,
         }
     }
 
@@ -960,16 +1077,26 @@ impl ActivityRow {
         self.compact = true;
         self
     }
+
+    /// Mark the label as already verb-conjugated (omit Running/Complete noun).
+    pub fn verb_first(mut self) -> Self {
+        self.verb_first = true;
+        self
+    }
 }
 
 impl Component for ActivityRow {
     fn lines(&self) -> Vec<ComponentLine> {
-        let mut summary = format!(
-            "{} {} · {}",
-            self.state.marker(),
-            self.label,
-            self.state.label()
-        );
+        let mut summary = if self.verb_first {
+            format!("{} {}", self.state.marker(), self.label)
+        } else {
+            format!(
+                "{} {} · {}",
+                self.state.marker(),
+                self.label,
+                self.state.label()
+            )
+        };
         if let Some(elapsed) = &self.elapsed {
             summary.push_str(&format!(" · {elapsed}"));
         }

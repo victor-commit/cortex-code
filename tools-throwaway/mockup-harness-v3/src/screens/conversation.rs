@@ -13,11 +13,12 @@ use crate::{
     },
     chrome::{
         components::{
-            subject_title_for_origin, user_turn_surface_line, ActivityRow, ActivityState,
-            Component, DisclosureBlock, DisclosureState, ENTRY_CODE_BANNER, ShortcutByline,
-            ShortcutHint,
+            subject_title_for_origin, tool_elbow_line, user_turn_surface_strip, ActivityRow,
+            ActivityState, Component, DisclosureBlock, DisclosureState, PromptJewel,
+            ShortcutByline, ShortcutHint, ToolVerb, TurnBusyKind, TurnStatusBand,
+            ENTRY_CODE_BANNER,
         },
-        layout::{CANVAS_ROWS, StatusLine},
+        layout::{outer_content_x, CANVAS_ROWS, StatusLine},
         tokens::TextStyle,
     },
 };
@@ -25,8 +26,11 @@ use crate::{
 const PROJECT_PATH: &str = "~/project";
 const BRANCH: &str = "main";
 const MODEL: &str = "Claude Opus 4.8";
+const WORK_MODE: &str = "Work mode";
 const COMPOSER_TOP: u16 = 32;
 const COMPOSER_BOTTOM: u16 = 37;
+/// Busy turn-status band sits one row above the jewel (VAL-V3-DS-032).
+const TURN_STATUS_ROW: u16 = 31;
 const DAILY_WORK_TASK: &str =
     "Find where the server applies the rate limit and explain the safe path.";
 const DAILY_WORK_ORIGIN: &str = "Daily work · current conversation";
@@ -817,7 +821,8 @@ fn render_flow2_resumed_turn(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     // Keep the continuous You-phrase (same as banner task), then the immutable body.
-    canvas.write(5, 4, FLOW2_YOU_LINE, TextStyle::bright())?;
+    // User surface strip (VAL-V3-DS-034) — never plain bright bare text.
+    paint_user_turn(canvas, 5, 4, FLOW2_YOU_LINE)?;
     canvas.write(
         7,
         4,
@@ -1699,11 +1704,11 @@ fn render_mission_return_chat_turn(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let completed = fixture_id.contains("mission.complete") || fixture_id.contains("approve");
-    canvas.write(
+    paint_user_turn(
+        canvas,
         5,
         4,
         "You · Turn the release work into a mission and walk me through it.",
-        TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
@@ -2662,11 +2667,14 @@ fn render_streaming(
         "That keeps sign-in, refresh, and sign-out on the same safety rule.",
         TextStyle::text(),
     )?;
-    let live = ActivityRow::new(
-        "Writing reply",
+    // Verb-first live activity + turn-status band (busy only).
+    let live = ActivityRow::tool(
+        ToolVerb::Respond,
+        "reply",
         ActivityState::Running,
-        "24s elapsed · 2 sections received",
+        "2 sections received",
     )
+    .with_elapsed("24s")
     .with_interrupt("Stop reply")
     .compact();
     write_component(canvas, 13, 4, &live)?;
@@ -2676,6 +2684,8 @@ fn render_streaming(
         "When this reply is complete, Code will automatically search project files.",
         TextStyle::muted(),
     )?;
+    // Band stop is generic Esc to stop; activity row keeps Esc to stop reply.
+    paint_turn_status(canvas, TurnBusyKind::Responding, "24s", None, Some("stop"))?;
     composer(
         canvas,
         "Type a follow-up, it will wait until this reply finishes",
@@ -2898,23 +2908,29 @@ fn render_tool_running(
         "I checked the session guard first. It stays complete while the search continues.",
         TextStyle::text(),
     )?;
-    let completed = ActivityRow::new(
-        "Checked session rules",
+    // Present/past verbs, scannable one-liners (VAL-V3-DS-033).
+    let completed = ActivityRow::tool(
+        ToolVerb::Read,
+        "session rules",
         ActivityState::Succeeded,
         "found the shared guard",
     )
     .with_elapsed("0.2s")
     .compact();
     write_component(canvas, 12, 4, &completed)?;
-    let active = ActivityRow::new(
-        "Search project code",
+    let active = ActivityRow::tool(
+        ToolVerb::Search,
+        "project code",
         ActivityState::Running,
         "128 of 400 files · 3 matches so far",
     )
-    .with_elapsed("4s elapsed")
+    .with_elapsed("4s")
     .with_interrupt("Stop search")
     .compact();
     write_component(canvas, 15, 4, &active)?;
+    // Busy band stays generic (Responding/Running + timer + stop). Tool object
+    // lives only on the activity row so bijection stays one live owner.
+    paint_turn_status(canvas, TurnBusyKind::Running, "4s", None, Some("stop"))?;
     composer(
         canvas,
         "Type a follow-up, it will wait until this search finishes",
@@ -3037,8 +3053,10 @@ fn render_tool_success(
         "The result shows the shared guard applied by both login and API routes.",
         TextStyle::text(),
     )?;
-    let success = ActivityRow::new(
-        "Search project code",
+    // Past-tense verb header; idle → no turn-status band.
+    let success = ActivityRow::tool(
+        ToolVerb::Search,
+        "project code",
         ActivityState::Succeeded,
         "3 matches in 400 files",
     )
@@ -3309,8 +3327,9 @@ fn render_tool_interrupted_chat_turn(
 ) -> Result<ScreenEvidence, String> {
     paint_user_turn(canvas, 4, 4, daily_user_request(fixture_id))?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
-    let completed = ActivityRow::new(
-        "Checked session rules",
+    let completed = ActivityRow::tool(
+        ToolVerb::Read,
+        "session rules",
         ActivityState::Succeeded,
         "found the shared guard",
     )
@@ -3613,8 +3632,9 @@ fn render_tool_success_expanded(
         "The result shows the shared guard applied by both login and API routes.",
         TextStyle::text(),
     )?;
-    let success = ActivityRow::new(
-        "Search project code",
+    let success = ActivityRow::tool(
+        ToolVerb::Search,
+        "project code",
         ActivityState::Expanded,
         "3 matches in 400 files",
     )
@@ -3627,24 +3647,13 @@ fn render_tool_success_expanded(
         "▾ Result details · 3 focused matches · Enter to collapse",
         TextStyle::text(),
     )?;
-    canvas.write(
-        15,
-        4,
-        "  middleware/rate_limit.rs:42 · shared enforce() entry",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        16,
-        4,
-        "  routes/login.rs:88 · login quota path",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "  routes/api.rs:17 · API quota path",
-        TextStyle::muted(),
-    )?;
+    // Elbow paths under the same tool region (VAL-V3-DS-033).
+    let e1 = tool_elbow_line("middleware/rate_limit.rs:42 · shared enforce() entry")?;
+    canvas.write(15, 4, &e1.text, e1.style)?;
+    let e2 = tool_elbow_line("routes/login.rs:88 · login quota path")?;
+    canvas.write(16, 4, &e2.text, e2.style)?;
+    let e3 = tool_elbow_line("routes/api.rs:17 · API quota path")?;
+    canvas.write(17, 4, &e3.text, e3.style)?;
     canvas.write(
         19,
         4,
@@ -3736,16 +3745,18 @@ fn render_tool_calls(
         "I am checking the shared rules, then the failing suite, while scanning code.",
         TextStyle::text(),
     )?;
-    let completed = ActivityRow::new(
-        "Read session rules",
+    let completed = ActivityRow::tool(
+        ToolVerb::Read,
+        "session rules",
         ActivityState::Succeeded,
         "found the shared guard",
     )
     .with_elapsed("0.2s")
     .compact();
     write_component(canvas, 12, 4, &completed)?;
-    let failed = ActivityRow::new(
-        "Run rate-limit tests",
+    let failed = ActivityRow::tool(
+        ToolVerb::Run,
+        "rate-limit tests",
         ActivityState::Failed,
         "2 of 38 tests failed",
     )
@@ -3755,17 +3766,19 @@ fn render_tool_calls(
     canvas.write(
         15,
         6,
-        "Tests assert the wrong recovery message. · r to retry tests",
+        "Tests assert the wrong recovery message. · Enter to retry tests",
         TextStyle::text(),
     )?;
-    let running = ActivityRow::new(
-        "Search project code",
+    let running = ActivityRow::tool(
+        ToolVerb::Search,
+        "project code",
         ActivityState::Running,
         "118 of 240 files · 1 match so far",
     )
-    .with_elapsed("12s elapsed")
+    .with_elapsed("12s")
     .compact();
     write_component(canvas, 17, 4, &running)?;
+    paint_turn_status(canvas, TurnBusyKind::Running, "12s", None, None)?;
     composer(canvas, "Reply to Code", Some("Send reply"))?;
 
     let request = semantic(
@@ -3857,11 +3870,11 @@ fn render_tool_task(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
+    paint_user_turn(
+        canvas,
         4,
         4,
         "You · Audit the auth module and add the rate-limit tests.",
-        TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
@@ -3870,8 +3883,9 @@ fn render_tool_task(
         "I split the audit from the test work so findings can guide the patch.",
         TextStyle::text(),
     )?;
-    let audit_task = ActivityRow::new(
-        "Audit the auth module",
+    let audit_task = ActivityRow::tool(
+        ToolVerb::Task,
+        "auth module audit",
         ActivityState::Succeeded,
         "6 findings ready",
     )
@@ -3884,28 +3898,32 @@ fn render_tool_task(
         "› Task details · expand findings · Enter to expand",
         TextStyle::text(),
     )?;
-    let tests = ActivityRow::new(
-        "Add rate-limit tests",
+    let tests = ActivityRow::tool(
+        ToolVerb::Task,
+        "rate-limit tests",
         ActivityState::Running,
         "2 of 3 files · in progress",
     )
-    .with_elapsed("48s elapsed")
+    .with_elapsed("48s")
     .compact();
     write_component(canvas, 15, 4, &tests)?;
-    let queued = ActivityRow::new(
-        "Build the test suite",
+    let queued = ActivityRow::tool(
+        ToolVerb::Task,
+        "test suite build",
         ActivityState::Waiting,
         "queued after the test files",
     )
     .compact();
     write_component(canvas, 17, 4, &queued)?;
-    let blocked = ActivityRow::new(
-        "Review refresh session risk",
+    let blocked = ActivityRow::tool(
+        ToolVerb::Task,
+        "refresh session risk",
         ActivityState::Failed,
         "Blocked · needs a decision",
     )
     .compact();
     write_component(canvas, 19, 4, &blocked)?;
+    paint_turn_status(canvas, TurnBusyKind::Running, "48s", None, None)?;
     composer(
         canvas,
         "Type a follow-up, it will wait until this turn finishes",
@@ -4006,11 +4024,11 @@ fn render_tool_task_expanded(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
+    paint_user_turn(
+        canvas,
         4,
         4,
         "You · Audit the auth module and add the rate-limit tests.",
-        TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
@@ -4019,8 +4037,9 @@ fn render_tool_task_expanded(
         "I split the audit from the test work so findings can guide the patch.",
         TextStyle::text(),
     )?;
-    let audit_task = ActivityRow::new(
-        "Audit the auth module",
+    let audit_task = ActivityRow::tool(
+        ToolVerb::Task,
+        "auth module audit",
         ActivityState::Expanded,
         "6 findings ready",
     )
@@ -4033,52 +4052,40 @@ fn render_tool_task_expanded(
         "▾ Task details · findings for this audit · Enter to collapse",
         TextStyle::text(),
     )?;
-    canvas.write(
-        14,
-        4,
-        "  ✗ Needs attention · Refresh tokens skip revoked sessions.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        15,
-        4,
-        "  ✗ Needs attention · Test helper creates a session without token state.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        16,
-        4,
-        "  ● Review · Login retries share no per-user limit.",
-        TextStyle::text(),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "  ✓ Complete · Logout already invalidates the active token.",
-        TextStyle::text(),
-    )?;
-    let tests = ActivityRow::new(
-        "Add rate-limit tests",
+    let e1 = tool_elbow_line("Needs attention · Refresh tokens skip revoked sessions.")?;
+    canvas.write(14, 4, &e1.text, TextStyle::text())?;
+    let e2 = tool_elbow_line("Needs attention · Test helper creates a session without token state.")?;
+    canvas.write(15, 4, &e2.text, TextStyle::text())?;
+    let e3 = tool_elbow_line("Review · Login retries share no per-user limit.")?;
+    canvas.write(16, 4, &e3.text, TextStyle::text())?;
+    let e4 = tool_elbow_line("Complete · Logout already invalidates the active token.")?;
+    canvas.write(17, 4, &e4.text, TextStyle::text())?;
+    let tests = ActivityRow::tool(
+        ToolVerb::Task,
+        "rate-limit tests",
         ActivityState::Running,
         "2 of 3 files · in progress",
     )
-    .with_elapsed("48s elapsed")
+    .with_elapsed("48s")
     .compact();
     write_component(canvas, 19, 4, &tests)?;
-    let queued = ActivityRow::new(
-        "Build the test suite",
+    let queued = ActivityRow::tool(
+        ToolVerb::Task,
+        "test suite build",
         ActivityState::Waiting,
         "queued after the test files",
     )
     .compact();
     write_component(canvas, 21, 4, &queued)?;
-    let blocked = ActivityRow::new(
-        "Review refresh session risk",
+    let blocked = ActivityRow::tool(
+        ToolVerb::Task,
+        "refresh session risk",
         ActivityState::Failed,
         "Blocked · needs a decision",
     )
     .compact();
     write_component(canvas, 23, 4, &blocked)?;
+    paint_turn_status(canvas, TurnBusyKind::Running, "48s", None, None)?;
     composer(
         canvas,
         "Type a follow-up, it will wait until this turn finishes",
@@ -4340,11 +4347,11 @@ fn render_shell(
     ) {
         return render_shell_interaction(canvas, screen_id, fixture_id, mode);
     }
-    canvas.write(
+    paint_user_turn(
+        canvas,
         4,
         4,
         "You · Check the branch, then run the focused tests.",
-        TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
@@ -4355,60 +4362,38 @@ fn render_shell(
     )?;
 
     // Completed command with captured output kept inline under the turn.
-    let completed = ActivityRow::new(
-        "Shell · git status --short --branch",
+    let completed = ActivityRow::tool(
+        ToolVerb::Shell,
+        "git status --short --branch",
         ActivityState::Succeeded,
         "exit 0 · 0.2s",
     )
     .compact();
     write_component(canvas, 11, 4, &completed)?;
-    canvas.write(
-        12,
-        4,
-        "  ⎿ ## master...origin/master [ahead 1]",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        13,
-        4,
-        "  ⎿ M crates/server/src/models/session.rs",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        14,
-        4,
-        "  ⎿ ?? crates/server/tests/login_regression.rs",
-        TextStyle::muted(),
-    )?;
+    let o1 = tool_elbow_line("## master...origin/master [ahead 1]")?;
+    canvas.write(12, 4, &o1.text, o1.style)?;
+    let o2 = tool_elbow_line("M crates/server/src/models/session.rs")?;
+    canvas.write(13, 4, &o2.text, o2.style)?;
+    let o3 = tool_elbow_line("?? crates/server/tests/login_regression.rs")?;
+    canvas.write(14, 4, &o3.text, o3.style)?;
 
     match mode {
         "interrupted" => {
-            let interrupted = ActivityRow::new(
-                "Shell · cargo test --workspace",
+            let interrupted = ActivityRow::tool(
+                ToolVerb::Shell,
+                "cargo test --workspace",
                 ActivityState::Failed,
                 "Interrupted · exit status kept",
             )
             .with_elapsed("4s")
             .compact();
             write_component(canvas, 16, 4, &interrupted)?;
-            canvas.write(
-                17,
-                4,
-                "  ⎿ Compiling cortex-server v0.1.0",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                18,
-                4,
-                "  ⎿ Finished test profile in 3.1s",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                19,
-                4,
-                "  ⎿ test routes::login::rate_limited ... ok",
-                TextStyle::muted(),
-            )?;
+            let e1 = tool_elbow_line("Compiling cortex-server v0.1.0")?;
+            canvas.write(17, 4, &e1.text, e1.style)?;
+            let e2 = tool_elbow_line("Finished test profile in 3.1s")?;
+            canvas.write(18, 4, &e2.text, e2.style)?;
+            let e3 = tool_elbow_line("test routes::login::rate_limited ... ok")?;
+            canvas.write(19, 4, &e3.text, e3.style)?;
             canvas.write(
                 21,
                 4,
@@ -4418,37 +4403,22 @@ fn render_shell(
             composer(canvas, "Reply to Code", Some("Send reply"))?;
         }
         "completed" => {
-            let finished = ActivityRow::new(
-                "Shell · cargo test --workspace",
+            let finished = ActivityRow::tool(
+                ToolVerb::Shell,
+                "cargo test --workspace",
                 ActivityState::Succeeded,
                 "exit 0 · 4.2s",
             )
             .compact();
             write_component(canvas, 16, 4, &finished)?;
-            canvas.write(
-                17,
-                4,
-                "  ⎿ Compiling cortex-server v0.1.0",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                18,
-                4,
-                "  ⎿ Finished test profile in 3.1s",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                19,
-                4,
-                "  ⎿ test routes::login::rate_limited ... ok",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                20,
-                4,
-                "  ⎿ test routes::api::quota_enforced ... ok",
-                TextStyle::muted(),
-            )?;
+            let e1 = tool_elbow_line("Compiling cortex-server v0.1.0")?;
+            canvas.write(17, 4, &e1.text, e1.style)?;
+            let e2 = tool_elbow_line("Finished test profile in 3.1s")?;
+            canvas.write(18, 4, &e2.text, e2.style)?;
+            let e3 = tool_elbow_line("test routes::login::rate_limited ... ok")?;
+            canvas.write(19, 4, &e3.text, e3.style)?;
+            let e4 = tool_elbow_line("test routes::api::quota_enforced ... ok")?;
+            canvas.write(20, 4, &e4.text, e4.style)?;
             canvas.write(
                 22,
                 4,
@@ -4458,38 +4428,24 @@ fn render_shell(
             composer(canvas, "Reply to Code", Some("Send reply"))?;
         }
         _ => {
-            let running = ActivityRow::new(
-                "Shell · cargo test --workspace",
+            let running = ActivityRow::tool(
+                ToolVerb::Shell,
+                "cargo test --workspace",
                 ActivityState::Running,
                 "running · 4s elapsed",
             )
             .with_interrupt("Stop command")
             .compact();
             write_component(canvas, 16, 4, &running)?;
-            canvas.write(
-                17,
-                4,
-                "  ⎿ Compiling cortex-server v0.1.0",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                18,
-                4,
-                "  ⎿ Finished test profile in 3.1s",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                19,
-                4,
-                "  ⎿ test routes::login::rate_limited ... ok",
-                TextStyle::muted(),
-            )?;
-            canvas.write(
-                20,
-                4,
-                "  ⎿ test routes::api::quota_enforced ... █",
-                TextStyle::muted(),
-            )?;
+            let e1 = tool_elbow_line("Compiling cortex-server v0.1.0")?;
+            canvas.write(17, 4, &e1.text, e1.style)?;
+            let e2 = tool_elbow_line("Finished test profile in 3.1s")?;
+            canvas.write(18, 4, &e2.text, e2.style)?;
+            let e3 = tool_elbow_line("test routes::login::rate_limited ... ok")?;
+            canvas.write(19, 4, &e3.text, e3.style)?;
+            let e4 = tool_elbow_line("test routes::api::quota_enforced ... █")?;
+            canvas.write(20, 4, &e4.text, e4.style)?;
+            paint_turn_status(canvas, TurnBusyKind::Running, "4s", None, Some("stop"))?;
             composer(
                 canvas,
                 "Type a follow-up, it will wait until this command finishes",
@@ -4668,11 +4624,11 @@ fn render_todo_list(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let advanced = todo_mode(fixture_id) == "advanced";
-    canvas.write(
+    paint_user_turn(
+        canvas,
         4,
         4,
         "You · Implement rate limiting on the login endpoint.",
-        TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(9, 4, "Updated plan", TextStyle::bright())?;
@@ -4892,7 +4848,7 @@ fn render_compact(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(4, 4, "You · /compact", TextStyle::bright())?;
+    paint_user_turn(canvas, 4, 4, "You · /compact")?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(9, 4, "Conversation compacted", TextStyle::bright())?;
     canvas.write(
@@ -5137,11 +5093,11 @@ fn render_chat_long_scroll(
             "↑ 12 earlier turns · ctrl+u to jump earlier",
             TextStyle::text(),
         )?;
-        canvas.write(
+        paint_user_turn(
+            canvas,
             8,
             4,
             "You · why keep the old token around for five minutes after rotation?",
-            TextStyle::bright(),
         )?;
         canvas.write(10, 4, "Code", TextStyle::bright())?;
         canvas.write(
@@ -5189,11 +5145,11 @@ fn render_chat_long_scroll(
             "↑ 12 earlier turns · ctrl+u to jump earlier · reading older work",
             TextStyle::text(),
         )?;
-        canvas.write(
+        paint_user_turn(
+            canvas,
             6,
             4,
             "You · where do refresh tokens get persisted?",
-            TextStyle::bright(),
         )?;
         canvas.write(8, 4, "Code", TextStyle::bright())?;
         canvas.write(
@@ -5214,11 +5170,11 @@ fn render_chat_long_scroll(
             "row in place on every refresh.",
             TextStyle::text(),
         )?;
-        canvas.write(
+        paint_user_turn(
+            canvas,
             14,
             4,
             "You · add an integration test that proves rotation invalidates the old token",
-            TextStyle::bright(),
         )?;
         canvas.write(16, 4, "Code", TextStyle::bright())?;
         canvas.write(
@@ -5384,31 +5340,22 @@ fn composer(
     placeholder: &str,
     action_label: Option<&str>,
 ) -> Result<(), String> {
-    canvas.write(
-        COMPOSER_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    // Jewel draft line. Mentions keep accent when `@` is present (F-10).
-    if placeholder.contains('@') {
-        canvas.write(COMPOSER_TOP + 1, 2, "│ › ", TextStyle::bright())?;
-        paint_composer_body(canvas, COMPOSER_TOP + 1, 6, placeholder)?;
-    } else {
-        canvas.write(
-            COMPOSER_TOP + 1,
-            2,
-            &format!("│ › {placeholder}"),
-            TextStyle::bright(),
-        )?;
+    // jewel (F-11 / VAL-V3-DS-031): contiguous rounded border + model info.
+    // Optional Enter byline sits under the jewel, never a putty footer.
+    let jewel = PromptJewel::new(placeholder, MODEL, WORK_MODE)?.focused();
+    let x = outer_content_x();
+    for (index, line) in jewel.lines().into_iter().enumerate() {
+        let row = COMPOSER_TOP + index as u16;
+        // Mentions keep accent on the draft body while walls stay muted.
+        if index == 1 && placeholder.contains('@') {
+            canvas.write(row, x, "│ › ", TextStyle::bright())?;
+            paint_composer_body(canvas, row, x + 4, placeholder)?;
+            let wall_col = x + jewel.width().saturating_sub(1);
+            canvas.write(row, wall_col, "│", TextStyle::bright())?;
+        } else {
+            canvas.write(row, x, &line.text, line.style)?;
+        }
     }
-    canvas.write(
-        COMPOSER_BOTTOM,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    // Local prose byline only — never bracket chords (N-11 / F-8 / F-10).
     if let Some(action_label) = action_label {
         let enter_verb = if action_label.eq_ignore_ascii_case("Send reply") {
             "send"
@@ -5418,7 +5365,8 @@ fn composer(
             action_label
         };
         let byline = ShortcutByline::new(vec![ShortcutHint::new("Enter", enter_verb)?])?.render();
-        canvas.write(COMPOSER_BOTTOM - 1, 4, &byline, TextStyle::muted())?;
+        // Jewel occupies COMPOSER_TOP..+3; prose byline sits on the reserved row under it.
+        canvas.write(COMPOSER_TOP + 4, x + 2, &byline, TextStyle::muted())?;
     }
     Ok(())
 }
@@ -5429,27 +5377,29 @@ fn composer_with_draft(
     attachment: &str,
     action_label: Option<&str>,
 ) -> Result<(), String> {
-    canvas.write(
-        COMPOSER_TOP,
-        2,
-        &format!("╭{}╮", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
-    canvas.write(COMPOSER_TOP + 1, 2, "│ › ", TextStyle::bright())?;
-    paint_composer_body(canvas, COMPOSER_TOP + 1, 6, draft)?;
-    // Content chips keep attachment brackets (allowed); they are not key chords.
-    canvas.write(
-        COMPOSER_TOP + 2,
-        2,
-        &format!("│   [attachment: {attachment}]"),
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        COMPOSER_BOTTOM,
-        2,
-        &format!("╰{}╯", "─".repeat(114)),
-        TextStyle::muted(),
-    )?;
+    let jewel = PromptJewel::new(draft, MODEL, WORK_MODE)?.focused();
+    let x = outer_content_x();
+    for (index, line) in jewel.lines().into_iter().enumerate() {
+        let row = COMPOSER_TOP + index as u16;
+        if index == 1 {
+            canvas.write(row, x, "│ › ", TextStyle::bright())?;
+            paint_composer_body(canvas, row, x + 4, draft)?;
+            let wall_col = x + jewel.width().saturating_sub(1);
+            canvas.write(row, wall_col, "│", TextStyle::bright())?;
+        } else if index == 2 {
+            // Attachment chip lives on the info-row alternative.
+            canvas.write(
+                row,
+                x,
+                &format!("│   [attachment: {attachment}]"),
+                TextStyle::muted(),
+            )?;
+            let wall_col = x + jewel.width().saturating_sub(1);
+            canvas.write(row, wall_col, "│", TextStyle::muted())?;
+        } else {
+            canvas.write(row, x, &line.text, line.style)?;
+        }
+    }
     if let Some(action_label) = action_label {
         let byline = ShortcutByline::new(vec![ShortcutHint::new(
             "Enter",
@@ -5460,15 +5410,38 @@ fn composer_with_draft(
             },
         )?])?
         .render();
-        canvas.write(COMPOSER_BOTTOM - 1, 4, &byline, TextStyle::muted())?;
+        canvas.write(COMPOSER_TOP + 4, x + 2, &byline, TextStyle::muted())?;
     }
     Ok(())
 }
 
-/// Write a user-turn line with SURFACE wash when the text fits.
+/// Write a user-turn strip with SURFACE wash + closed `›` (VAL-V3-DS-034).
 fn paint_user_turn(canvas: &mut Canvas, row: u16, column: u16, text: &str) -> Result<(), String> {
-    let line = user_turn_surface_line(text)?;
+    let line = user_turn_surface_strip(text)?;
     canvas.write(row, column, &line.text, line.style)
+}
+
+/// Busy-only turn-status band between stream and jewel (VAL-V3-DS-032 / F-12).
+/// Idle callers must omit this so the band collapses to height 0.
+fn paint_turn_status(
+    canvas: &mut Canvas,
+    kind: TurnBusyKind,
+    timer: &str,
+    detail: Option<&str>,
+    stop_verb: Option<&str>,
+) -> Result<(), String> {
+    let mut band = TurnStatusBand::busy(kind, timer)?;
+    if let Some(detail) = detail {
+        band = band.with_detail(detail);
+    }
+    if let Some(verb) = stop_verb {
+        band = band.with_stop(verb)?;
+    }
+    let x = outer_content_x();
+    for (index, line) in band.lines().into_iter().enumerate() {
+        canvas.write(TURN_STATUS_ROW + index as u16, x, &line.text, line.style)?;
+    }
+    Ok(())
 }
 
 /// Paint composer body, applying ACCENT only to `@mention` spans (budget-safe).
@@ -5718,14 +5691,16 @@ fn render_streaming_interaction(
                 "That earlier detail stays in view while new lines arrive below.",
                 TextStyle::text(),
             )?;
-            let live = ActivityRow::new(
-                "Writing reply",
+            let live = ActivityRow::tool(
+                ToolVerb::Respond,
+                "reply",
                 ActivityState::Running,
                 "new output waiting below",
             )
             .with_interrupt("Stop reply")
             .compact();
             write_component(canvas, 14, 4, &live)?;
+            paint_turn_status(canvas, TurnBusyKind::Responding, "12s", None, Some("stop"))?;
             canvas.write(
                 16,
                 4,
@@ -5802,14 +5777,16 @@ fn render_streaming_interaction(
                 "The latest paragraph landed here after Jump to newest.",
                 TextStyle::text(),
             )?;
-            let live = ActivityRow::new(
-                "Writing reply",
+            let live = ActivityRow::tool(
+                ToolVerb::Respond,
+                "reply",
                 ActivityState::Running,
                 "latest output visible",
             )
             .with_interrupt("Stop reply")
             .compact();
             write_component(canvas, 14, 4, &live)?;
+            paint_turn_status(canvas, TurnBusyKind::Responding, "12s", None, Some("stop"))?;
             canvas.write(
                 16,
                 4,
@@ -5830,14 +5807,16 @@ fn render_streaming_interaction(
                 "The shared request guard applies the limit before route work begins.",
                 TextStyle::text(),
             )?;
-            let live = ActivityRow::new(
-                "Writing reply",
+            let live = ActivityRow::tool(
+                ToolVerb::Respond,
+                "reply",
                 ActivityState::Running,
                 "24s · two queued follow-ups waiting",
             )
             .with_interrupt("Stop reply")
             .compact();
             write_component(canvas, 12, 4, &live)?;
+            paint_turn_status(canvas, TurnBusyKind::Responding, "24s", None, Some("stop"))?;
             canvas.write(
                 14,
                 4,
@@ -6130,11 +6109,11 @@ fn render_shell_interaction(
     fixture_id: &str,
     mode: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(
+    paint_user_turn(
+        canvas,
         4,
         4,
         "You · Check the branch, then run the focused tests.",
-        TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(
@@ -6537,11 +6516,11 @@ fn render_tool_task_controls(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let mode = tool_task_mode(fixture_id);
-    canvas.write(
+    paint_user_turn(
+        canvas,
         4,
         4,
         "You · Audit the auth module and add the rate-limit tests.",
-        TextStyle::bright(),
     )?;
     canvas.write(7, 4, "Code", TextStyle::bright())?;
     canvas.write(

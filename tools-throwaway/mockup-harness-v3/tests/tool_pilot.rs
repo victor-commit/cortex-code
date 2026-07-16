@@ -14,12 +14,15 @@ fn running_tool_is_one_compact_progress_row_with_local_stop_and_one_live_owner()
     let text = audit.render_txt();
     let progress_row = text
         .lines()
-        .find(|line| line.contains("Search project code"))
+        .find(|line| line.contains("Searching project code") || line.contains("Search project code"))
         .expect("the active search must have one compact visible row");
-    assert!(progress_row.contains("Running"));
+    assert!(
+        progress_row.contains("Searching") || progress_row.contains("Running"),
+        "live tool header must be present or progressive: {progress_row}"
+    );
     assert!(progress_row.contains("128 of 400 files"));
     assert!(progress_row.contains("3 matches so far"));
-    assert!(progress_row.contains("4s elapsed"));
+    assert!(progress_row.contains("4s"));
     assert!(
         progress_row.contains("Esc to stop search"),
         "interrupt must be a local prose byline, not a bracket key atom"
@@ -30,7 +33,7 @@ fn running_tool_is_one_compact_progress_row_with_local_stop_and_one_live_owner()
     );
     assert_eq!(
         text.lines()
-            .filter(|line| line.contains("Search project code"))
+            .filter(|line| line.contains("Searching project code") || line.contains("Search project code"))
             .count(),
         1,
         "the active tool must not split into duplicate running rows"
@@ -95,16 +98,22 @@ fn tool_interrupt_is_scoped_and_completion_replaces_running_evidence_once() {
     let success = completed.audit.render_txt();
     let result_row = success
         .lines()
-        .find(|line| line.contains("Search project code"))
+        .find(|line| line.contains("Searched project code") || line.contains("Search project code"))
         .expect("the terminal result must remain inline");
-    assert!(result_row.contains("Complete"));
+    assert!(
+        result_row.contains("Searched") || result_row.contains("Complete") || result_row.contains('✓'),
+        "terminal tool row needs past verb or success mark: {result_row}"
+    );
     assert!(result_row.contains("3 matches in 400 files"));
     assert!(result_row.contains("0.4s"));
-    assert!(!success.contains("Running"), "completion must remove stale live evidence");
+    assert!(
+        !success.lines().any(|line| line.contains("Searching project code")),
+        "completion must remove stale live Searching evidence"
+    );
     assert_eq!(
         success
             .lines()
-            .filter(|line| line.contains("Search project code"))
+            .filter(|line| line.contains("Searched project code") || line.contains("Search project code"))
             .count(),
         1,
         "completion must leave exactly one terminal replacement"

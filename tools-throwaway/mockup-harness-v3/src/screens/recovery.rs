@@ -58,7 +58,7 @@ const STALE_APPROVAL: &str = "Approval for the risks note · Stale · needs re-r
 const TOOL_USER_PROMPT: &str =
     "You · Summarize the remaining release notes and the still-open risks.";
 const TOOL_COMPLETED: &str = "Read session rules";
-const TOOL_FAILED_NAME: &str = "Write release notes patch";
+const TOOL_FAILED_NAME: &str = "Wrote release notes patch";
 const TOOL_INTENDED_EFFECT: &str = "Update notes/release.md with the accepted retry wording";
 const TOOL_PARTIAL_OUTPUT: &str = "Prepared the first two bullet lines";
 const TOOL_CAUSE_MISSING_FILE: &str = "The repo map file is missing";
@@ -1133,7 +1133,7 @@ fn render_tool_failed(
     canvas.write(
         9,
         4,
-        &format!("✓ {TOOL_COMPLETED} · Complete · shared guard found"),
+        &format!("✓ {TOOL_COMPLETED} · shared guard found"),
         TextStyle::text(),
     )?;
     canvas.write(

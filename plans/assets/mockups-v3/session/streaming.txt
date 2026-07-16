@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-     You · Find where the server applies the rate limit and explain the safe path.                                      
+     › You · Find where the server applies the rate limit and explain the safe path.                                    
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -11,7 +11,7 @@
                                                                                                                         
     That keeps sign-in, refresh, and sign-out on the same safety rule.                                                  
                                                                                                                         
-    ● Writing reply · Running · 24s elapsed · 2 sections received · Esc to stop reply                                   
+    ● Writing reply · 24s · 2 sections received · Esc to stop reply                                                     
                                                                                                                         
     When this reply is complete, Code will automatically search project files.                                          
                                                                                                                         
@@ -29,12 +29,12 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
+  ● Responding · 24s · Esc to stop                                                                                      
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Type a follow-up, it will wait until this reply finishes                                                          
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  │ › Type a follow-up, it will wait until this reply finishes                                                       │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

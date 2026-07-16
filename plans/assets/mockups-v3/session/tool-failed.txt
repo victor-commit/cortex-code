@@ -7,9 +7,9 @@
                                                                                                                         
     Code                                                                                                                
                                                                                                                         
-    ✓ Read session rules · Complete · shared guard found                                                                
+    ✓ Read session rules · shared guard found                                                                           
                                                                                                                         
-    ✗ Write release notes patch · Needs attention                                                                       
+    ✗ Wrote release notes patch · Needs attention                                                                       
       Update notes/release.md with the accepted retry wording                                                           
       Partial output · Prepared the first two bullet lines                                                              
                                                                                                                         

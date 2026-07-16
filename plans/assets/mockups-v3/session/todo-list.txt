@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Implement rate limiting on the login endpoint.                                                                      
-    You · Implement rate limiting on the login endpoint.                                                                
+     › You · Implement rate limiting on the login endpoint.                                                             
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Type a follow-up, it runs after this turn…                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  │ › Type a follow-up, it runs after this turn…                                                                     │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

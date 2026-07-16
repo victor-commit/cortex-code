@@ -2,7 +2,7 @@
                                                                                                                         
     Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
-     You · Find where the server applies the rate limit and explain the safe path.                                      
+     › You · Find where the server applies the rate limit and explain the safe path.                                    
                                                                                                                         
                                                                                                                         
     Code                                                                                                                
@@ -10,7 +10,7 @@
     The result shows the shared guard applied by both login and API routes.                                             
                                                                                                                         
                                                                                                                         
-    ✓ Search project code · Complete · 0.4s · 3 matches in 400 files                                                    
+    ✓ Searched project code · 0.4s · 3 matches in 400 files                                                             
                                                                                                                         
                                                                                                                         
     Shared guard applied · ready for the full answer.                                                                   
@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                     
-                                                                                                                        
-                                                                                                                        
-    Enter to continue                                                                                                   
+  │ › Reply to Code                                                                                                  │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+    Enter to continue                                                                                                   
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

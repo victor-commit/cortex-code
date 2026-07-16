@@ -11,7 +11,7 @@ const RECOVERY_ORIGIN: &str = "Recovery · paused conversation";
 const USER_PROMPT: &str =
     "You · Summarize the remaining release notes and the still-open risks.";
 const COMPLETED_TOOL: &str = "Read session rules";
-const FAILED_TOOL: &str = "Write release notes patch";
+const FAILED_TOOL: &str = "Wrote release notes patch";
 const INTENDED_EFFECT: &str = "Update notes/release.md with the accepted retry wording";
 const PARTIAL_OUTPUT: &str = "Prepared the first two bullet lines";
 const MISSING_FILE_CAUSE: &str = "The repo map file is missing";

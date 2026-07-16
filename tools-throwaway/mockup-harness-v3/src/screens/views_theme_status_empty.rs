@@ -35,6 +35,7 @@ const STATUS_TASK: &str =
 const STATUS_DRAFT: &str = "Also list the tests that should cover the search.";
 
 const COMPOSER_TOP: u16 = 32;
+#[allow(dead_code)]
 const COMPOSER_BOTTOM: u16 = 37;
 
 /// Approved theme preview rows shared by dark and light galleries (content parity).
@@ -764,39 +765,40 @@ fn render_empty(fixture_id: &str) -> Result<AuditDocument, String> {
         TextStyle::muted(),
     )?;
 
+    // Cortex-aligned prompt jewel: draft + muted model · work mode info line.
+    let draft_text = if draft.is_empty() {
+        "Ask Code to start a task"
+    } else {
+        draft
+    };
     canvas.write(
         COMPOSER_TOP,
         2,
         &format!("╭{}╮", "─".repeat(114)),
         TextStyle::muted(),
     )?;
-    let composer_line = if draft.is_empty() {
-        "│ › Ask Code to start a task".to_owned()
-    } else {
-        format!("│ › {draft}")
-    };
     canvas.write(
         COMPOSER_TOP + 1,
         2,
-        &composer_line,
+        &format!("│ › {draft_text}"),
         TextStyle::bright(),
     )?;
     canvas.write(
         COMPOSER_TOP + 2,
         2,
-        "│",
+        &format!("│   {model} · {work_style}"),
         TextStyle::muted(),
     )?;
     canvas.write(
-        COMPOSER_BOTTOM - 1,
-        4,
-        "This is the primary start · subordinate resume and settings stay secondary",
-        TextStyle::muted(),
-    )?;
-    canvas.write(
-        COMPOSER_BOTTOM,
+        COMPOSER_TOP + 3,
         2,
         &format!("╰{}╯", "─".repeat(114)),
+        TextStyle::muted(),
+    )?;
+    canvas.write(
+        COMPOSER_TOP + 4,
+        4,
+        "This is the primary start · subordinate resume and settings stay secondary",
         TextStyle::muted(),
     )?;
     canvas.write(CANVAS_ROWS - 1, 2, statusline.text(), statusline.style())?;

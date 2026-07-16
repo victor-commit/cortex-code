@@ -3,7 +3,7 @@
     Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
                                                                                                                         
-    You · Check the retry path before we merge.                                                                         
+     › You · Check the retry path before we merge.                                                                      
                                                                                                                         
     Check the retry path in @src/net/retry_policy.rs                                                                    
     Then explain the failure path that still needs coverage before the merge;                                           
@@ -31,10 +31,10 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Add a short note about the remaining test hunk.                                                                   
-                                                                                                                        
-                                                                                                                        
-    Enter to send                                                                                                       
+  │ › Add a short note about the remaining test hunk.                                                                │  
+  │   Claude Opus 4.8 · Work mode                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+    Enter to send                                                                                                       
+                                                                                                                        
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

@@ -7887,7 +7887,7 @@ fn apply_tool_failed_identity(state: &mut ScenarioState) {
     state.paused_activity_id = TOOL_PENDING.to_owned();
     state.scroll_anchor = "tool-failed".to_owned();
     state.transcript =
-        "You · Summarize the remaining release notes and the still-open risks.\n✓ Read session rules · Complete\n✗ Write release notes patch · Needs attention\nPartial output · Prepared the first two bullet lines"
+        "You · Summarize the remaining release notes and the still-open risks.\n✓ Read session rules · shared guard found\n✗ Wrote release notes patch · Needs attention\nPartial output · Prepared the first two bullet lines"
             .to_owned();
     state.partial_response = "Prepared the first two bullet lines".to_owned();
     state.state_hash = state_hash(state);
