@@ -5,10 +5,10 @@
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Runtime detail                                                                                                      
+    Advanced · Runtime detail                                                                                           
     Advanced concurrency view. Opening this does not change scheduling.                                                 
                                                                                                                         
-    Needs attention                                                                                                     
+    Needs attention · 3/3                                                                                               
     ✗ Conflict on the safe publish path                                                                                 
       Consequence · parallel edits wait until you pause or replan.                                                      
                                                                                                                         
@@ -18,7 +18,7 @@
     ○ Quarantine · risky draft branch kept aside                                                                        
       Consequence · that branch will not merge until review accepts it.                                                 
                                                                                                                         
-    Running cleanly                                                                                                     
+    Running cleanly · 2 quiet                                                                                           
       Throughput · notes work and completed checks stay healthy.                                                        
       Workers ready · two quiet capacity lines collapsed.                                                               
                                                                                                                         

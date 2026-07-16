@@ -5,7 +5,7 @@
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Tool evidence                                                                                                       
+    Advanced · Tool evidence                                                                                            
     Focused diagnostics for the selected tool call. Secrets stay redacted.                                              
                                                                                                                         
     Origin · validation on the safe publish path                                                                        

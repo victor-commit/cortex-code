@@ -5,7 +5,7 @@
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Quality report · pass                                                                                               
+    Advanced · Quality report · pass                                                                                    
     Advisory dimensions only. This report never completes the mission.                                                  
                                                                                                                         
     Result · Pass · supporting dimensions are healthy                                                                   

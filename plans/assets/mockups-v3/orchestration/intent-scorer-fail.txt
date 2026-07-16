@@ -5,7 +5,7 @@
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Quality report · needs repair                                                                                       
+    Advanced · Quality report · needs repair                                                                            
     Advisory only. A failing report routes to repair, not completion.                                                   
                                                                                                                         
     Result · Fail · one dimension blocks a safe completion claim                                                        

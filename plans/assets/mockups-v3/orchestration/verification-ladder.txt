@@ -5,7 +5,7 @@
                                                                                                                         
     You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Validation stages                                                                                                   
+    Advanced · Validation stages                                                                                        
     Decision view for the current validation run. Mission counts stay unchanged.                                        
                                                                                                                         
     Origin · failure on the safe publish path                                                                           

@@ -1353,8 +1353,9 @@ fn render_workflow_monitor(
         );
     }
 
-    // F6-058 Mission Control anatomy: live status, counters, zoned body.
-    write_status_band(canvas, 10, LiveState::Running, "Active work", 1, 3)?;
+    // F6-058/F6-060 Mission Control + Cortex dashboard: live marker, counters,
+    // zoned body, calm idle (no invented Needs attention chrome).
+    write_status_band(canvas, 10, LiveState::Running, "Monitor", 1, 3)?;
     let card = MissionCard::new(MISSION_GOAL, "Running", 1, 2, None, "View progress");
     write_component(canvas, 12, 4, &card)?;
     let zones = ZonedPanel::new(vec![
@@ -2696,7 +2697,10 @@ fn lifecycle_passive(
     ))
 }
 
-/// First progress disclosure: human task groups only (VAL-V3-F6-013/014/056).
+/// First progress disclosure: human task groups only (VAL-V3-F6-013/014/056/060).
+///
+/// Cortex dashboard + Mission Control: exception-first grouping, header counters,
+/// calm omission of empty Needs attention when healthy. Internals stay out.
 fn render_progress_disclosure(
     canvas: &mut Canvas,
     screen_id: &str,
@@ -2707,6 +2711,19 @@ fn render_progress_disclosure(
 ) -> Result<ScreenEvidence, String> {
     let completed = 1usize;
     let remaining = if attention { 3usize } else { 2usize };
+    // Compact live band over denser progress groups (F6-060).
+    write_status_band(
+        canvas,
+        9,
+        if attention {
+            LiveState::NeedsAttention
+        } else {
+            LiveState::Running
+        },
+        "Progress",
+        completed,
+        completed + remaining,
+    )?;
     let card = MissionCard::new(
         MISSION_GOAL,
         "Running",
@@ -2720,17 +2737,41 @@ fn render_progress_disclosure(
     let mut row: u16 = 15;
     if expand_working {
         // Local one-group expansion only (VAL-V3-F6-056).
-        canvas.write(row, 4, "Working · expanded", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Working",
+            Some(PanelCounter::Label("6 expanded".into())),
+            true,
+        )?;
         row += 1;
         for task in PROGRESS_WORKING_FULL {
             canvas.write(row, 4, &format!("  ● {task}"), TextStyle::text())?;
             row += 1;
         }
-        canvas.write(row, 4, "Needs attention", TextStyle::muted())?;
+        write_group_header(
+            canvas,
+            row,
+            "Needs attention",
+            Some(PanelCounter::Fraction {
+                done: 0,
+                total: 1,
+            }),
+            false,
+        )?;
         row += 1;
         canvas.write(row, 4, "  … still bounded below", TextStyle::muted())?;
         row += 1;
-        canvas.write(row, 4, "Recently completed", TextStyle::muted())?;
+        write_group_header(
+            canvas,
+            row,
+            "Recently completed",
+            Some(PanelCounter::Fraction {
+                done: 1,
+                total: 1,
+            }),
+            false,
+        )?;
         row += 1;
         canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         row += 2;
@@ -2739,7 +2780,16 @@ fn render_progress_disclosure(
         canvas.write(row, 4, "View workers", TextStyle::muted())?;
     } else if bounded {
         // Bound each group and publish exact omitted counts.
-        canvas.write(row, 4, "Needs attention", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Needs attention",
+            Some(PanelCounter::Fraction {
+                done: PROGRESS_BOUND,
+                total: PROGRESS_NEEDS_FULL.len(),
+            }),
+            true,
+        )?;
         row += 1;
         for task in PROGRESS_NEEDS_VISIBLE.iter().take(PROGRESS_BOUND) {
             canvas.write(row, 4, &format!("  ✗ {task}"), TextStyle::text())?;
@@ -2754,7 +2804,16 @@ fn render_progress_disclosure(
         )?;
         row += 2;
 
-        canvas.write(row, 4, "Working", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Working",
+            Some(PanelCounter::Fraction {
+                done: PROGRESS_BOUND,
+                total: PROGRESS_WORKING_FULL.len(),
+            }),
+            true,
+        )?;
         row += 1;
         for task in PROGRESS_WORKING_VISIBLE.iter().take(PROGRESS_BOUND) {
             canvas.write(row, 4, &format!("  ● {task}"), TextStyle::text())?;
@@ -2769,7 +2828,16 @@ fn render_progress_disclosure(
         )?;
         row += 2;
 
-        canvas.write(row, 4, "Recently completed", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Recently completed",
+            Some(PanelCounter::Fraction {
+                done: PROGRESS_BOUND,
+                total: PROGRESS_COMPLETED_FULL.len(),
+            }),
+            true,
+        )?;
         row += 1;
         for task in PROGRESS_COMPLETED_VISIBLE.iter().take(PROGRESS_BOUND) {
             canvas.write(row, 4, &format!("  ✓ {task}"), TextStyle::muted())?;
@@ -2791,18 +2859,45 @@ fn render_progress_disclosure(
         row += 1;
         canvas.write(row, 4, "Open team board", TextStyle::muted())?;
     } else if attention {
-        // Exception-first ordered groups with Needs attention non-empty.
-        canvas.write(row, 4, "Needs attention", TextStyle::bright())?;
+        // Exception-first ordered groups with Needs attention non-empty (F6-060).
+        write_group_header(
+            canvas,
+            row,
+            "Needs attention",
+            Some(PanelCounter::Fraction {
+                done: 1,
+                total: 1,
+            }),
+            true,
+        )?;
         row += 1;
         canvas.write(row, 4, &format!("  ✗ {TASK_3}"), TextStyle::text())?;
         row += 1;
         canvas.write(row, 4, &format!("    {FAILURE_CAUSE}"), TextStyle::muted())?;
         row += 2;
-        canvas.write(row, 4, "Working", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Working",
+            Some(PanelCounter::Fraction {
+                done: 1,
+                total: 1,
+            }),
+            true,
+        )?;
         row += 1;
         canvas.write(row, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
         row += 2;
-        canvas.write(row, 4, "Recently completed", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Recently completed",
+            Some(PanelCounter::Fraction {
+                done: 1,
+                total: 1,
+            }),
+            true,
+        )?;
         row += 1;
         canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         row += 2;
@@ -2813,11 +2908,29 @@ fn render_progress_disclosure(
         canvas.write(row, 4, "Open team board", TextStyle::muted())?;
     } else {
         // Healthy first disclosure: omit empty Needs attention group (VAL-V3-F6-013).
-        canvas.write(row, 4, "Working", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Working",
+            Some(PanelCounter::Fraction {
+                done: 1,
+                total: 1,
+            }),
+            true,
+        )?;
         row += 1;
         canvas.write(row, 4, &format!("  ● {TASK_2}"), TextStyle::text())?;
         row += 2;
-        canvas.write(row, 4, "Recently completed", TextStyle::bright())?;
+        write_group_header(
+            canvas,
+            row,
+            "Recently completed",
+            Some(PanelCounter::Fraction {
+                done: 1,
+                total: 1,
+            }),
+            true,
+        )?;
         row += 1;
         canvas.write(row, 4, &format!("  ✓ {TASK_1}"), TextStyle::muted())?;
         row += 2;
@@ -3248,8 +3361,10 @@ fn render_team_board(
         ));
     }
 
-    // First board level: Mission Control zoned ownership surface (VAL-V3-F6-021/058).
-    write_status_band(canvas, 7, LiveState::NeedsAttention, "Team board", 1, 3)?;
+    // First board level: Cortex dashboard blocks-first ownership surface
+    // (VAL-V3-F6-021/058/060). Live band stage is "Ownership" so the status
+    // marker is not restated as "Needs attention · Team board" noise.
+    write_status_band(canvas, 7, LiveState::NeedsAttention, "Ownership", 1, 3)?;
     canvas.write(
         8,
         4,
@@ -3461,8 +3576,10 @@ fn render_workflow_monitor_failure(
         FAILURE_CAUSE
     };
 
-    // F6-058 Mission Control failure anatomy: live needs-attention band + zones.
-    write_status_band(canvas, 10, LiveState::NeedsAttention, "Needs attention", 1, 3)?;
+    // F6-058/F6-060: status band uses stage "Failure" so the live marker is not
+    // restated twice as "Needs attention · Needs attention". Zones remain
+    // exception-first with reconcilable counters.
+    write_status_band(canvas, 10, LiveState::NeedsAttention, "Failure", 1, 3)?;
     write_mission_summary(
         canvas,
         12,
@@ -4451,7 +4568,8 @@ fn render_verification_ladder(
     canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
-    canvas.write(7, 4, "Validation stages", TextStyle::bright())?;
+    // Advanced · validation detail stays de-emphasized vs default mission dashboard.
+    canvas.write(7, 4, "Advanced · Validation stages", TextStyle::muted())?;
     canvas.write(
         8,
         4,
@@ -4642,7 +4760,12 @@ fn render_verification_stage_evidence(
     canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
-    canvas.write(7, 4, "Stage evidence · Held-out checks", TextStyle::bright())?;
+    canvas.write(
+        7,
+        4,
+        "Advanced · Stage evidence · Held-out checks",
+        TextStyle::muted(),
+    )?;
     canvas.write(
         8,
         4,
@@ -4779,7 +4902,7 @@ fn render_intent_scorer_pass(
     canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
-    canvas.write(7, 4, "Quality report · pass", TextStyle::bright())?;
+    canvas.write(7, 4, "Advanced · Quality report · pass", TextStyle::muted())?;
     canvas.write(
         8,
         4,
@@ -4916,7 +5039,12 @@ fn render_intent_scorer_fail(
     canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
-    canvas.write(7, 4, "Quality report · needs repair", TextStyle::bright())?;
+    canvas.write(
+        7,
+        4,
+        "Advanced · Quality report · needs repair",
+        TextStyle::muted(),
+    )?;
     canvas.write(
         8,
         4,
@@ -5071,7 +5199,7 @@ fn render_concurrency_metrics(
     canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
-    canvas.write(7, 4, "Runtime detail", TextStyle::bright())?;
+    canvas.write(7, 4, "Advanced · Runtime detail", TextStyle::muted())?;
     canvas.write(
         8,
         4,
@@ -5079,8 +5207,17 @@ fn render_concurrency_metrics(
         TextStyle::muted(),
     )?;
 
-    // Exceptions first: conflicts, held work, quarantine.
-    canvas.write(10, 4, "Needs attention", TextStyle::bright())?;
+    // Exceptions first: conflicts, held work, quarantine — counters on headers (F6-060).
+    write_group_header(
+        canvas,
+        10,
+        "Needs attention",
+        Some(PanelCounter::Fraction {
+            done: 3,
+            total: 3,
+        }),
+        true,
+    )?;
     canvas.write(11, 4, "✗ Conflict on the safe publish path", TextStyle::text())?;
     canvas.write(
         12,
@@ -5104,7 +5241,13 @@ fn render_concurrency_metrics(
     )?;
 
     // Healthy throughput after exceptions.
-    canvas.write(20, 4, "Running cleanly", TextStyle::muted())?;
+    write_group_header(
+        canvas,
+        20,
+        "Running cleanly",
+        Some(PanelCounter::Label("2 quiet".into())),
+        false,
+    )?;
     canvas.write(
         21,
         4,
@@ -5216,7 +5359,7 @@ fn render_tool_envelope(
     canvas.write(2, 4, subject_title_for_origin(MISSION_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, MISSION_TASK, TextStyle::bright())?;
     canvas.write(5, 4, USER_PROMPT, TextStyle::bright())?;
-    canvas.write(7, 4, "Tool evidence", TextStyle::bright())?;
+    canvas.write(7, 4, "Advanced · Tool evidence", TextStyle::muted())?;
     canvas.write(
         8,
         4,
@@ -5432,6 +5575,32 @@ fn write_status_band(
         .with_stage(stage)
         .with_fraction(done, total)?;
     write_component(canvas, row, 4, &band)
+}
+/// Progress/board group header with optional Mission Control counter (F6-060).
+fn write_group_header(
+    canvas: &mut Canvas,
+    row: u16,
+    title: &str,
+    counter: Option<PanelCounter>,
+    bright: bool,
+) -> Result<(), String> {
+    let mut header = PanelHeader::new(title);
+    if let Some(counter) = counter {
+        header = header.with_counter(counter);
+    }
+    // PanelHeader always paints bright; for de-emphasized groups we hand-compose.
+    if bright {
+        write_component(canvas, row, 4, &header)?;
+    } else {
+        let text = header
+            .lines()
+            .into_iter()
+            .next()
+            .map(|line| line.text)
+            .unwrap_or_else(|| title.to_owned());
+        canvas.write(row, 4, &text, TextStyle::muted())?;
+    }
+    Ok(())
 }
 
 /// Mission-local prose byline (temporary detail / mission strip only).
