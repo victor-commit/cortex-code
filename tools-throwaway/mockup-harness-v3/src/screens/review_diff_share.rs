@@ -14,7 +14,7 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{DiffBlock, DiffKind, DetailView},
+        components::{subject_title_for_origin, DiffBlock, DiffKind, DetailView},
         layout::{
             ACTION_DOCK_BOTTOM, ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine,
             SurfaceLayout,
@@ -110,7 +110,7 @@ fn render_review(
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
     let selected = selected_finding_for_fixture(fixture_id);
-    canvas.write(2, 4, DAILY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(DAILY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, DAILY_TASK, TextStyle::bright())?;
     canvas.write(5, 4, "Code review · temporary detail", TextStyle::bright())?;
     canvas.write(
@@ -158,11 +158,11 @@ fn render_review(
         "Read-only inspection · files, staging, approvals, tasks, and transcript stay unchanged",
         TextStyle::muted(),
     )?;
-    canvas.write(22, 4, "› [enter] Open selected evidence", TextStyle::accent())?;
+    canvas.write(22, 4, "› Open selected evidence", TextStyle::accent())?;
     canvas.write(
         23,
         4,
-        "[↑↓] Choose finding · [esc] Return to conversation",
+        "↑↓ to choose finding · Esc to return to conversation",
         TextStyle::muted(),
     )?;
 
@@ -383,7 +383,7 @@ fn render_diff_viewer(
             )
         };
 
-    canvas.write(2, 4, DAILY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(DAILY_ORIGIN), TextStyle::muted())?;
     canvas.write(
         3,
         4,
@@ -465,19 +465,19 @@ fn render_diff_viewer(
     canvas.write(
         25,
         4,
-        &format!("[n] Next file · {next_label}"),
+        &format!("n for Next file · {next_label}"),
         TextStyle::text(),
     )?;
     canvas.write(
         26,
         4,
-        &format!("[p] Previous file · {prev_label}"),
+        &format!("p for Previous file · {prev_label}"),
         TextStyle::text(),
     )?;
     canvas.write(
         28,
         4,
-        "› [esc] Return to selected finding",
+        "› Esc to return to selected finding",
         TextStyle::accent(),
     )?;
 
@@ -702,7 +702,7 @@ fn render_share(
     let variant = share_variant(fixture_id);
 
     // Keep the originating conversation transcript visible above the dock.
-    canvas.write(2, 4, DAILY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(DAILY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, DAILY_TASK, TextStyle::bright())?;
     canvas.write(
         5,
@@ -756,7 +756,7 @@ fn render_share(
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "› [enter] Copy link · [r] Revoke this local share · [esc] Return",
+                "› Copy link · r for Revoke this local share · Esc to return",
                 TextStyle::accent(),
             )?;
         }
@@ -788,7 +788,7 @@ fn render_share(
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "› [enter] Confirm revoke · [esc] Keep share and return",
+                "› Confirm revoke · Esc to keep share and return",
                 TextStyle::accent(),
             )?;
         }
@@ -820,7 +820,7 @@ fn render_share(
             dock_line(
                 canvas,
                 DOCK_TOP + 5,
-                "› [esc] Return to conversation",
+                "› Esc to return to conversation",
                 TextStyle::accent(),
             )?;
         }

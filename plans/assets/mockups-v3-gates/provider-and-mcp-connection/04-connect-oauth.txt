@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Provider connection · blocked model action                                                                          
+    Connections                                                                                                         
     Authorize OpenAI                                                                                                    
                                                                                                                         
     Browser one-time code · approve on the sign-in page                                                                 
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Browser sign-in · OpenAI                                                                                         │  
   │ Waiting · reopen browser stays secondary · cancel stops cleanly                                                  │  
-  │   [r] Reopen browser · secondary only                                                                            │  
-  │   [esc] Cancel sign-in                                                                                           │  
+  │   r for Reopen browser · secondary only                                                                          │  
+  │   Esc to cancel sign-in                                                                                          │  
   │ Cancel invalidates this attempt and releases any local return.                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

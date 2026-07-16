@@ -33,7 +33,7 @@
   │ Selected · Review images · session-local                                                                         │  
   │ Pending set · Commit cleanly, Design reviews, Review images · apply once.                                        │  
   │ › Apply skills · Esc to Cancel                                                                                   │  
-  │ [space] Toggle · ↑↓ to Move · enabled state is labeled on each row                                               │  
+  │ Space to toggle · ↑↓ to move · enabled state is labeled on each row                                              │  
   │ No filter · four session skills fit on one screen                                                                │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

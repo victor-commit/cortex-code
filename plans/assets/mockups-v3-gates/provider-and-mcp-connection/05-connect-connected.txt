@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Provider connection · blocked model action                                                                          
+    Connections                                                                                                         
     Connect the model needed for this conversation.                                                                     
                                                                                                                         
     OpenAI is connected                                                                                                 
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Provider ready                                                                                                   │  
   │ Draft and pending GPT-5.2 Codex stay exactly as left. · never into MCP.                                          │  
-  │ › [enter] Continue                                                                                               │  
-  │   [esc] Close · Return to model choices                                                                          │  
+  │ › Continue                                                                                                       │  
+  │   Esc to close · Return to model choices                                                                         │  
   │ Continue resumes the blocked model action exactly once.                                                          │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

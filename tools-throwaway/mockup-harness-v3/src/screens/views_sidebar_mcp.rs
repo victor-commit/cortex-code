@@ -11,7 +11,7 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{Component, Inspector, InspectorTab},
+        components::{subject_title_for_origin, Component, Inspector, InspectorTab},
         layout::{CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
         tokens::TextStyle,
     },
@@ -141,7 +141,7 @@ fn paint_shared_conversation(canvas: &mut Canvas) -> Result<(), String> {
         canvas.write(row, 4, &clipped, style)
     };
 
-    write_transcript(canvas, 2, DAILY_WORK_ORIGIN, TextStyle::muted())?;
+    write_transcript(canvas, 2, subject_title_for_origin(DAILY_WORK_ORIGIN), TextStyle::muted())?;
     write_transcript(canvas, 3, DAILY_WORK_TASK, TextStyle::bright())?;
     write_transcript(
         canvas,
@@ -382,7 +382,7 @@ fn paint_attention(
     canvas.write(
         top + 11,
         INSPECTOR_LEFT,
-        "› [enter] Open MCP",
+        "› Open MCP",
         TextStyle::accent(),
     )?;
     canvas.write(
@@ -465,7 +465,7 @@ fn paint_all_ready(
     canvas.write(
         top + 9,
         INSPECTOR_LEFT,
-        "› [enter] Open MCP",
+        "› Open MCP",
         TextStyle::accent(),
     )?;
     canvas.write(

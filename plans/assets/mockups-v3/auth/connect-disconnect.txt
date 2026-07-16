@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Provider connection · blocked model action                                                                          
+    Connections                                                                                                         
     Confirm disconnect                                                                                                  
                                                                                                                         
     Disconnect Anthropic?                                                                                               
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · Anthropic · Connected                                                                                 │  
   │ Disconnect removes only this named target and source.                                                            │  
-  │ › [enter] Disconnect Anthropic                                                                                   │  
-  │   [esc] Cancel · keep connected                                                                                  │  
+  │ › Disconnect Anthropic                                                                                           │  
+  │   Esc to cancel · keep connected                                                                                 │  
   │ Credential remains until you confirm disconnect.                                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

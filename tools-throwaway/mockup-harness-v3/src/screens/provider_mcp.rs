@@ -12,7 +12,7 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::ENTRY_CODE_BANNER,
+        components::{subject_title_for_origin, ENTRY_CODE_BANNER},
         layout::{ACTION_DOCK_TOP, CANVAS_ROWS, ScreenComposition, StatusLine},
         tokens::{ColorToken, TextStyle},
     },
@@ -91,9 +91,9 @@ impl ProviderOrigin {
 
     fn login_cancel_hint(self) -> &'static str {
         match self {
-            Self::BlockedModel => "  [esc] Cancel · return to model choices",
-            Self::Onboarding => "  [esc] Cancel · return to onboarding",
-            Self::Conversation => "  [esc] Cancel · return to conversation",
+            Self::BlockedModel => "  Esc to cancel · return to model choices",
+            Self::Onboarding => "  Esc to cancel · return to onboarding",
+            Self::Conversation => "  Esc to cancel · return to conversation",
         }
     }
 
@@ -419,7 +419,8 @@ fn render_login(
         canvas.write(2 + offset as u16, 4, line, TextStyle::accent())?;
     }
     let origin_label = origin.visible_label();
-    canvas.write(10, 4, origin_label, TextStyle::muted())?;
+    let painted_origin = subject_title_for_origin(origin_label);
+    canvas.write(10, 4, painted_origin, TextStyle::muted())?;
     canvas.write(12, 4, "Connect a model provider", TextStyle::bright())?;
     canvas.write(
         14,
@@ -445,7 +446,7 @@ fn render_login(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        "› [enter] Choose a provider",
+        "› Choose a provider",
         TextStyle::accent(),
     )?;
     dock_line(canvas, DOCK_TOP + 4, origin.login_cancel_hint(), TextStyle::muted())?;
@@ -574,7 +575,7 @@ fn render_connect_provider(
     let selected = &PROVIDER_CATALOGUE[selected_idx];
     let prefer_disconnect = fixture_id.contains("disconnect");
 
-    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(3, 4, subject_title_for_origin(origin_label), TextStyle::muted())?;
     let banner = origin.blocked_banner();
     canvas.write(4, 4, banner, TextStyle::bright())?;
     canvas.write(6, 4, "Choose a provider", TextStyle::bright())?;
@@ -651,10 +652,10 @@ fn render_connect_provider(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        &format!("› [enter] {primary_label}"),
+        &format!("› {primary_label}"),
         TextStyle::accent(),
     )?;
-    dock_line(canvas, DOCK_TOP + 4, "  [esc] Back", TextStyle::muted())?;
+    dock_line(canvas, DOCK_TOP + 4, "  Esc to go back", TextStyle::muted())?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
@@ -729,7 +730,7 @@ fn render_connect_provider(
     let primary_end = if gate_exact_spans {
         28
     } else {
-        4 + format!("› [enter] {primary_label}")
+        4 + format!("› {primary_label}")
             .chars()
             .count() as u16
     };
@@ -839,7 +840,7 @@ fn render_connect_method(
     let selected = methods[selected_idx];
     let title = format!("Sign in to {}", provider.name);
 
-    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(3, 4, subject_title_for_origin(origin_label), TextStyle::muted())?;
     canvas.write(4, 4, &title, TextStyle::bright())?;
     canvas.write(
         6,
@@ -897,10 +898,10 @@ fn render_connect_method(
     dock_line(
         canvas,
         DOCK_TOP + 3,
-        &format!("› [enter] {primary_label}"),
+        &format!("› {primary_label}"),
         TextStyle::accent(),
     )?;
-    dock_line(canvas, DOCK_TOP + 4, "  [esc] Back", TextStyle::muted())?;
+    dock_line(canvas, DOCK_TOP + 4, "  Esc to go back", TextStyle::muted())?;
     dock_line(
         canvas,
         DOCK_TOP + 5,
@@ -980,7 +981,7 @@ fn render_connect_method(
     let primary_end = if method_gate_exact {
         42
     } else {
-        4 + format!("› [enter] {primary_label}")
+        4 + format!("› {primary_label}")
             .chars()
             .count() as u16
     };
@@ -1163,7 +1164,7 @@ fn render_connect_apikey(
     let validation = api_key_validation_copy(state);
     let handling = source.handling_note();
 
-    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(3, 4, subject_title_for_origin(origin_label), TextStyle::muted())?;
     canvas.write(4, 4, &title, TextStyle::bright())?;
     canvas.write(
         6,
@@ -1246,7 +1247,7 @@ fn render_connect_apikey(
     )?;
     dock_line(canvas, DOCK_TOP + 2, source.dock_note(), TextStyle::text())?;
     let primary_row = match primary {
-        Some((label, _, _, _, _)) => format!("› [enter] {label}"),
+        Some((label, _, _, _, _)) => format!("› {label}"),
         None => "  Waiting · no connect action yet".to_owned(),
     };
     dock_line(
@@ -1265,7 +1266,7 @@ fn render_connect_apikey(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Cancel · discard key input",
+        "  Esc to cancel · discard key input",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -1503,7 +1504,7 @@ fn render_connect_oauth(
     let title = format!("Authorize {}", provider.name);
     let scope_line = oauth_scope_line(fixture_id);
 
-    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(3, 4, subject_title_for_origin(origin_label), TextStyle::muted())?;
     canvas.write(4, 4, &title, TextStyle::bright())?;
 
     let flow_label = match flow {
@@ -1726,10 +1727,10 @@ fn render_connect_oauth(
     };
     dock_line(canvas, DOCK_TOP + 2, dock_note, TextStyle::text())?;
     let primary_row = match primary {
-        Some((label, _, _, _, _)) => format!("› [enter] {label}"),
+        Some((label, _, _, _, _)) => format!("› {label}"),
         None => {
             // Secondary reopen remains visible but is not the primary owner during wait.
-            "  [r] Reopen browser · secondary only".to_owned()
+            "  r for Reopen browser · secondary only".to_owned()
         }
     };
     dock_line(
@@ -1745,7 +1746,7 @@ fn render_connect_oauth(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Cancel sign-in",
+        "  Esc to cancel sign-in",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -2159,9 +2160,9 @@ fn render_connect_connected(
         ProviderOrigin::Onboarding => "Return to onboarding",
         ProviderOrigin::Conversation => "Return to conversation",
     };
-    let primary_row = format!("› [enter] {primary_label}");
+    let primary_row = format!("› {primary_label}");
 
-    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(3, 4, subject_title_for_origin(origin_label), TextStyle::muted())?;
     canvas.write(4, 4, task, TextStyle::muted())?;
     canvas.write(6, 4, &success_line, TextStyle::bright())?;
     canvas.write(
@@ -2209,7 +2210,7 @@ fn render_connect_connected(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        &format!("  [esc] Close · {destination_line}"),
+        &format!("  Esc to close · {destination_line}"),
         TextStyle::muted(),
     )?;
     dock_line(canvas, DOCK_TOP + 5, return_hint, TextStyle::muted())?;
@@ -2376,7 +2377,7 @@ fn render_connect_disconnect(
     let plan = disconnect_source_plan(fixture_id);
     let question = format!("Disconnect {}?", target.name);
     let primary_label = format!("Disconnect {}", target.name);
-    let primary_row = format!("› [enter] {primary_label}");
+    let primary_row = format!("› {primary_label}");
 
     let (removable_line, remaining_line, availability_line, impact_line) = match plan {
         DisconnectSourcePlan::OnlyRemovableLocal => (
@@ -2421,7 +2422,7 @@ fn render_connect_disconnect(
         ),
     };
 
-    canvas.write(3, 4, origin_label, TextStyle::muted())?;
+    canvas.write(3, 4, subject_title_for_origin(origin_label), TextStyle::muted())?;
     canvas.write(4, 4, "Confirm disconnect", TextStyle::bright())?;
     canvas.write(6, 4, &question, TextStyle::bright())?;
     canvas.write(
@@ -2461,7 +2462,7 @@ fn render_connect_disconnect(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "  [esc] Cancel · keep connected",
+        "  Esc to cancel · keep connected",
         TextStyle::muted(),
     )?;
     dock_line(
@@ -4578,13 +4579,13 @@ fn render_mcp(
     let mut pairs: Vec<(SemanticCandidate, SemanticEvent)> = Vec::new();
     let mut transitions: Vec<TransitionTrace> = Vec::new();
 
-    canvas.write(2, 4, view.header_title, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(view.header_title), TextStyle::muted())?;
     pairs.push(semantic(
         screen_id,
         fixture_id,
         "origin",
         "mcp-origin",
-        reference(2, 4, view.header_title.len() as u16),
+        reference(2, 4, subject_title_for_origin(view.header_title).len() as u16),
         "summary",
         None,
     ));
@@ -4993,10 +4994,11 @@ fn render_mcp(
             // Dense attention packing: cause + action on one muted line when possible.
             let cause = cap.display_cause();
             if let Some(action_label) = state.primary_action() {
+                // Claude prose affordance (F-8 / N-11): never wrap the action in bracket chords.
                 let action_bit = if selected {
-                    format!("[enter] {action_label}")
+                    action_label.to_owned()
                 } else {
-                    format!("[{action_label}]")
+                    format!("Enter to {}", action_label.to_ascii_lowercase())
                 };
                 let detail = if cause.is_empty() {
                     action_bit
@@ -5139,7 +5141,7 @@ fn render_mcp(
     )?;
 
     // Action region.
-    let primary_line = format!("› [enter] {}", view.primary_label);
+    let primary_line = format!("› {}", view.primary_label);
     canvas.write(31, 4, &primary_line, TextStyle::accent())?;
     pairs.push(semantic(
         screen_id,
@@ -5159,7 +5161,7 @@ fn render_mcp(
         canvas.write(
             32,
             4,
-            &format!("  [a] {}", view.secondary_label),
+            &format!("  a for {}", view.secondary_label),
             TextStyle::muted(),
         )?;
         pairs.push(semantic(
@@ -5175,7 +5177,7 @@ fn render_mcp(
                 false,
             )),
         ));
-        canvas.write(33, 4, "  [esc] Cancel", TextStyle::muted())?;
+        canvas.write(33, 4, "  Esc to cancel", TextStyle::muted())?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -5203,7 +5205,7 @@ fn render_mcp(
         canvas.write(
             32,
             4,
-            &format!("  [d] {}", view.secondary_label),
+            &format!("  d for {}", view.secondary_label),
             TextStyle::muted(),
         )?;
         pairs.push(semantic(
@@ -5226,7 +5228,7 @@ fn render_mcp(
         canvas.write(
             33,
             4,
-            &format!("  [esc] {cancel_label}"),
+            &format!("  Esc to {cancel_label}"),
             TextStyle::muted(),
         )?;
         pairs.push(semantic(
@@ -5256,7 +5258,7 @@ fn render_mcp(
         canvas.write(
             32,
             4,
-            &format!("  [d] {}", view.secondary_label),
+            &format!("  d for {}", view.secondary_label),
             TextStyle::muted(),
         )?;
         pairs.push(semantic(
@@ -5273,7 +5275,7 @@ fn render_mcp(
             )),
         ));
         // Primary already carries Back; avoid a second identical action identity.
-        canvas.write(33, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+        canvas.write(33, 4, "  Esc to return to conversation", TextStyle::muted())?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -5315,7 +5317,7 @@ fn render_mcp(
         canvas.write(
             32,
             4,
-            &format!("  [c] {}", view.secondary_label),
+            &format!("  c for {}", view.secondary_label),
             TextStyle::muted(),
         )?;
         // Secondary cancel uses a distinct identity from the esc cancel so
@@ -5334,7 +5336,7 @@ fn render_mcp(
             "summary",
             Some(action(secondary_cancel_id, view.secondary_label, false)),
         ));
-        canvas.write(33, 4, "  [esc] Keep blocked", TextStyle::muted())?;
+        canvas.write(33, 4, "  Esc to keep blocked", TextStyle::muted())?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -5378,7 +5380,7 @@ fn render_mcp(
         canvas.write(
             32,
             4,
-            &format!("  [s] {}", view.secondary_label),
+            &format!("  s for {}", view.secondary_label),
             TextStyle::muted(),
         )?;
         pairs.push(semantic(
@@ -5401,7 +5403,7 @@ fn render_mcp(
         canvas.write(
             33,
             4,
-            &format!("  [r] {tertiary_label}"),
+            &format!("  r for {tertiary_label}"),
             TextStyle::muted(),
         )?;
         pairs.push(semantic(
@@ -5470,7 +5472,7 @@ fn render_mcp(
             canvas.write(
                 32,
                 4,
-                &format!("  [d] {}", view.secondary_label),
+                &format!("  d for {}", view.secondary_label),
                 TextStyle::muted(),
             )?;
             pairs.push(semantic(
@@ -5486,7 +5488,7 @@ fn render_mcp(
                     false,
                 )),
             ));
-            canvas.write(33, 4, "  [esc] Close diagnostics", TextStyle::muted())?;
+            canvas.write(33, 4, "  Esc to close diagnostics", TextStyle::muted())?;
             pairs.push(semantic(
                 screen_id,
                 fixture_id,
@@ -5522,7 +5524,7 @@ fn render_mcp(
             canvas.write(
                 32,
                 4,
-                &format!("  [d] {}", view.secondary_label),
+                &format!("  d for {}", view.secondary_label),
                 TextStyle::muted(),
             )?;
             pairs.push(semantic(
@@ -5538,7 +5540,7 @@ fn render_mcp(
                     false,
                 )),
             ));
-            canvas.write(33, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+            canvas.write(33, 4, "  Esc to return to conversation", TextStyle::muted())?;
             pairs.push(semantic(
                 screen_id,
                 fixture_id,
@@ -5571,7 +5573,7 @@ fn render_mcp(
         canvas.write(
             32,
             4,
-            &format!("  [d] {}", view.secondary_label),
+            &format!("  d for {}", view.secondary_label),
             TextStyle::muted(),
         )?;
         pairs.push(semantic(
@@ -5587,7 +5589,7 @@ fn render_mcp(
                 false,
             )),
         ));
-        canvas.write(33, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+        canvas.write(33, 4, "  Esc to return to conversation", TextStyle::muted())?;
         pairs.push(semantic(
             screen_id,
             fixture_id,
@@ -5678,7 +5680,7 @@ fn render_mcp_gate_pilot(
     screen_id: &str,
     fixture_id: &str,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, FLOW4_MCP_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(FLOW4_MCP_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, FLOW4_MCP_TASK, TextStyle::bright())?;
     canvas.write(
         5,
@@ -5708,7 +5710,7 @@ fn render_mcp_gate_pilot(
         "Missing local tools needed for page checks.",
         TextStyle::muted(),
     )?;
-    canvas.write(14, 6, "[enter] Fix setup", TextStyle::bright())?;
+    canvas.write(14, 6, "Enter to fix setup", TextStyle::bright())?;
 
     canvas.write(17, 4, "  Project docs · Sign in needed", TextStyle::text())?;
     canvas.write(
@@ -5717,7 +5719,7 @@ fn render_mcp_gate_pilot(
         "This workspace library needs approval before use.",
         TextStyle::muted(),
     )?;
-    canvas.write(19, 6, "[enter] Sign in", TextStyle::bright())?;
+    canvas.write(19, 6, "Enter to sign in", TextStyle::bright())?;
 
     canvas.write(22, 4, "  ○ 1 ready connection collapsed", TextStyle::muted())?;
     canvas.write(23, 6, "Code search · Ready", TextStyle::text())?;
@@ -5734,9 +5736,9 @@ fn render_mcp_gate_pilot(
         "Return closes this branch to the conversation, not provider sign-in.",
         TextStyle::muted(),
     )?;
-    canvas.write(30, 4, "› [enter] Fix setup", TextStyle::accent())?;
-    canvas.write(31, 4, "  [d] Open diagnostics", TextStyle::muted())?;
-    canvas.write(32, 4, "  [esc] Return to conversation", TextStyle::muted())?;
+    canvas.write(30, 4, "› Fix setup", TextStyle::accent())?;
+    canvas.write(31, 4, "  d for Open diagnostics", TextStyle::muted())?;
+    canvas.write(32, 4, "  Esc to return to conversation", TextStyle::muted())?;
 
     let pairs = [
         semantic(

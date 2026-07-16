@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Provider connection · blocked model action                                                                          
+    Connections                                                                                                         
     GPT-5.2 Codex is waiting for a provider connection.                                                                 
                                                                                                                         
     Choose a provider                                                                                                   
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · OpenAI · Not connected                                                                                │  
   │ Connecting unlocks GPT-5.2 Codex for the paused model choice.                                                    │  
-  │ › [enter] Connect OpenAI                                                                                         │  
-  │   [esc] Back                                                                                                     │  
+  │ › Connect OpenAI                                                                                                 │  
+  │   Esc to go back                                                                                                 │  
   │ Back keeps provider choice and drafts unchanged.                                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

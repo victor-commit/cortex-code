@@ -61,10 +61,10 @@ fn login_blocked_model_origin_offers_one_primary_and_safe_exit() {
 
     assert!(text.contains("Connect a model provider"));
     assert!(text.contains("Code needs a provider"));
-    assert!(text.contains("› [enter] Choose a provider"));
-    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")) || text.contains("[esc] Back"));
+    assert!(text.contains("› Choose a provider"));
+    assert!((text.contains("Esc to cancel") || text.contains("Esc to cancel") || text.contains("Esc to")) || text.contains("Esc to go back"));
     assert!(text.contains("does not attempt") || text.contains("without connecting") || text.contains("no auth"));
-    assert!(text.contains("Provider connection · blocked model action"));
+    assert!((text.contains("Connections") || text.contains("Provider connection · blocked model action")));
     assert_eq!(
         audit
             .events
@@ -95,8 +95,8 @@ fn login_onboarding_origin_cancels_to_onboarding() {
         audit_screen("login", "auth.login.onboarding").expect("onboarding login must render");
     audit.validate().expect("onboarding login audit");
     let text = audit.render_txt();
-    assert!(text.contains("Provider connection · onboarding"));
-    assert!(text.contains("› [enter] Choose a provider"));
+    assert!((text.contains("First-run setup") || text.contains("Provider connection · onboarding")));
+    assert!(text.contains("› Choose a provider"));
     assert!((text.contains("Esc to") || text.contains("[esc]")));
     assert!(
         text.contains("onboarding") || text.contains("first-run") || text.contains("setup"),
@@ -120,7 +120,7 @@ fn login_conversation_origin_cancels_to_chat_turn() {
         audit_screen("login", "auth.login.conversation").expect("conversation login must render");
     audit.validate().expect("conversation login audit");
     let text = audit.render_txt();
-    assert!(text.contains("Provider connection · conversation"));
+    assert!((text.contains("Current conversation") || text.contains("Provider connection · conversation")));
     assert!(text.contains("draft") || text.contains("conversation stays"));
     assert!(audit.transitions.iter().any(|t| {
         t.action_id == "action.login.cancel" && t.to_screen_id == "chat-turn" && t.kind == "cancel"
@@ -163,7 +163,7 @@ fn connect_provider_catalogue_is_human_and_stateful() {
 
     // Default unconnected selection offers Connect.
     assert!(text.contains("Connect OpenAI") || text.contains("Connect Anthropic") || text.contains("Connect Google") || text.contains("Connect OpenRouter"));
-    assert!(text.contains("[esc] Back") || (text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
+    assert!(text.contains("Esc to go back") || (text.contains("Esc to cancel") || text.contains("Esc to cancel") || text.contains("Esc to")));
 
     assert!(audit.transitions.iter().any(|t| {
         t.action_id == "action.connect-provider.connect"
@@ -217,18 +217,21 @@ fn connect_provider_backs_restore_login_for_gate_chain() {
 
 #[test]
 fn connect_provider_origin_copy_matches_fixture() {
-    for (fixture, origin_tag) in [
+    for (fixture, origin_tag, painted_subject) in [
         (
             "auth.connect-provider.onboarding",
             "Provider connection · onboarding",
+            "First-run setup",
         ),
         (
             "auth.connect-provider.blocked-model",
             "Provider connection · blocked model action",
+            "Connections",
         ),
         (
             "auth.connect-provider.conversation",
             "Provider connection · conversation",
+            "Current conversation",
         ),
     ] {
         let audit = audit_screen("connect-provider", fixture)
@@ -238,8 +241,8 @@ fn connect_provider_origin_copy_matches_fixture() {
             .unwrap_or_else(|err| panic!("{fixture} audit: {err}"));
         let text = audit.render_txt();
         assert!(
-            text.contains(origin_tag),
-            "{fixture} must show visible origin {origin_tag}"
+            text.contains(painted_subject) || text.contains(origin_tag),
+            "{fixture} must paint subject {painted_subject} (audit origin {origin_tag})"
         );
         assert_eq!(
             audit
@@ -439,9 +442,9 @@ fn gate_login_fixture_remains_blocked_model_compatible() {
     let audit = audit_screen("login", "gate.provider-and-mcp.login").expect("gate login");
     audit.validate().expect("gate login valid");
     let text = audit.render_txt();
-    assert!(text.contains("Provider connection · blocked model action"));
-    assert!(text.contains("› [enter] Choose a provider"));
-    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
+    assert!((text.contains("Connections") || text.contains("Provider connection · blocked model action")));
+    assert!(text.contains("› Choose a provider"));
+    assert!((text.contains("Esc to cancel") || text.contains("Esc to cancel") || text.contains("Esc to")));
 }
 
 #[test]

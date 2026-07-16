@@ -18,8 +18,8 @@ fn login_offers_one_provider_path_without_mcp_adjacency() {
     let text = audit.render_txt();
     assert!(text.contains("Connect a model provider"));
     assert!(text.contains("Code needs a provider before it can use the models in this project."));
-    assert!(text.contains("› [enter] Choose a provider"));
-    assert!((text.contains("Esc to cancel") || text.contains("[esc] Cancel") || text.contains("Esc to")));
+    assert!(text.contains("› Choose a provider"));
+    assert!((text.contains("Esc to cancel") || text.contains("Esc to cancel") || text.contains("Esc to")));
     assert!(
         !text.to_lowercase().contains("mcp"),
         "login is the provider entry and must not present MCP as a neighbor"
@@ -58,7 +58,7 @@ fn connect_provider_lists_human_named_states_and_preserves_origin() {
         .expect("provider catalogue audit must remain bijective");
 
     let text = audit.render_txt();
-    assert!(text.contains("Provider connection · blocked model action"));
+    assert!((text.contains("Connections") || text.contains("Provider connection · blocked model action")));
     assert!(text.contains("GPT-5.2 Codex is waiting for a provider connection."));
     assert!(text.contains("OpenRouter"));
     assert!(text.contains("Anthropic"));
@@ -68,8 +68,8 @@ fn connect_provider_lists_human_named_states_and_preserves_origin() {
     assert!(text.contains("Connected"));
     assert!(text.contains("Not connected"));
     assert!(text.contains("› OpenAI"));
-    assert!(text.contains("› [enter] Connect OpenAI"));
-    assert!(text.contains("[esc] Back"));
+    assert!(text.contains("› Connect OpenAI"));
+    assert!(text.contains("Esc to go back") || text.contains("Back"));
     assert!(!text.contains("openai-provider-id"));
     assert!(!text.contains("oauth2"));
     assert!(!text.to_lowercase().contains("mcp server"));
@@ -99,8 +99,8 @@ fn connect_method_shows_only_applicable_sign_in_choices_for_openai() {
     assert!(text.contains("Use an API key"));
     assert!(text.contains("authorize in your browser"));
     assert!(text.contains("paste a key stored only on this machine"));
-    assert!(text.contains("› [enter] Continue with browser sign-in"));
-    assert!(text.contains("[esc] Back"));
+    assert!(text.contains("› Continue with browser sign-in"));
+    assert!(text.contains("Esc to go back") || text.contains("Back"));
     assert!(!text.contains("device_code"));
     assert!(!text.contains("PKCE"));
     assert!(!text.contains("transport"));
@@ -132,12 +132,12 @@ fn connect_oauth_is_live_and_cancelable_without_connecting() {
     assert!(text.contains("WDJB-MJHT"));
     assert!(text.contains("● Waiting for authorization"));
     // Live wait has zero primary; secondary reopen + Cancel only.
-    assert!(!text.contains("› [enter] I've authorized"));
+    assert!(!text.contains("› I've authorized"));
     assert!(
         text.contains("Reopen browser") || text.contains("secondary"),
         "reopen stays secondary during wait"
     );
-    assert!(text.contains("[esc] Cancel sign-in"));
+    assert!(text.contains("Esc to cancel sign-in"));
     assert!(!text.contains("device_code"));
     assert!(!text.contains("client_secret"));
     assert!(
@@ -171,7 +171,7 @@ fn connect_connected_returns_to_blocked_model_origin_not_mcp() {
         .expect("connected audit must remain bijective");
 
     let text = audit.render_txt();
-    assert!(text.contains("Provider connection · blocked model action"));
+    assert!((text.contains("Connections") || text.contains("Provider connection · blocked model action")));
     assert!(text.contains("OpenAI is connected"));
     assert!(text.contains("✓ Connected"));
     assert!(text.contains("GPT-5.2 Codex can use this provider now."));
@@ -179,8 +179,8 @@ fn connect_connected_returns_to_blocked_model_origin_not_mcp() {
     assert!(
         text.contains("› Continue")
             || text.contains("Enter to continue")
-            || text.contains("› [enter] Continue")
-            || text.contains("› [enter] Return to model choices")
+            || text.contains("› Continue")
+            || text.contains("› Return to model choices")
             || text.contains("Return to model choices"),
         "primary must be Continue or the historic return label"
     );
@@ -247,7 +247,7 @@ fn mcp_is_capability_led_attention_first_and_separate_from_providers() {
     audit.validate().expect("mcp audit must remain bijective");
 
     let text = audit.render_txt();
-    assert!(text.contains("MCP · conversation capabilities"));
+    assert!((text.contains("MCP capabilities") || text.contains("MCP · conversation capabilities")));
     assert!(text.contains("Illustrative detour"));
     assert!(text.contains("separate capability branch"));
     assert!(text.contains("Fix the capabilities this conversation needs."));
@@ -260,7 +260,7 @@ fn mcp_is_capability_led_attention_first_and_separate_from_providers() {
     assert!(text.contains("Ready"));
     assert!(text.contains("1 ready connection collapsed"));
     assert!(
-        text.contains("› [enter] Fix setup")
+        text.contains("› Fix setup")
             || text.contains("› Fix setup")
             || text.contains("Enter to fix setup")
             || text.contains("Fix setup"),
@@ -268,12 +268,12 @@ fn mcp_is_capability_led_attention_first_and_separate_from_providers() {
     );
     assert!(
         text.contains("Esc to return to conversation")
-            || text.contains("[esc] Return to conversation")
+            || text.contains("Esc to return to conversation")
             || text.contains("Return to conversation"),
         "return-to-conversation guidance must remain readable"
     );
     assert!(
-        !text.contains("Provider connection · blocked model action"),
+        !(text.contains("Provider connection · blocked model action")),
         "MCP detour must not pretend the blocked-model provider origin still owns this frame"
     );
     assert!(
@@ -363,10 +363,16 @@ fn flow4_ordered_mcp_detour_rewrites_identity_openly() {
     let connected_text = connected_audit.render_txt();
     let mcp_text = mcp_audit.render_txt();
 
-    assert!(connected_text.contains("Provider connection · blocked model action"));
+    assert!(
+        connected_text.contains("Connections")
+            || connected_text.contains("Provider connection · blocked model action")
+    );
     assert!(connected_text.contains("GPT-5.2 Codex"));
     assert!(mcp_text.contains("Illustrative detour"));
-    assert!(mcp_text.contains("MCP · conversation capabilities"));
+    assert!(
+        mcp_text.contains("MCP capabilities")
+            || mcp_text.contains("MCP · conversation capabilities")
+    );
     assert!(mcp_text.contains("Fix the capabilities this conversation needs."));
 
     let bridge = replay_case("provider-to-mcp-bridge", 1).expect("ordered detour bridge must replay");

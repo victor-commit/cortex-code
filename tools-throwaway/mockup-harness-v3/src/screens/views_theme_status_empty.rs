@@ -13,6 +13,7 @@ use crate::{
         RenderRef, SemanticCandidate, SemanticEvent, TransitionTrace, WorkStyleEvidence,
     },
     chrome::{
+        components::subject_title_for_origin,
         layout::{CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
         tokens::{ColorToken, TextStyle, Theme},
     },
@@ -207,7 +208,7 @@ fn paint_theme_gallery(
     fixture_id: &str,
     selected: usize,
 ) -> Result<ScreenEvidence, String> {
-    canvas.write(2, 4, FLOW3_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(FLOW3_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, FLOW3_TASK, TextStyle::bright())?;
     canvas.write(
         5,
@@ -341,13 +342,13 @@ fn paint_theme_gallery(
     canvas.write(
         34,
         4,
-        "› [esc] Return to theme picker · keeps pending selection and origin",
+        "› Esc to return to theme picker · keeps pending selection and origin",
         TextStyle::accent(),
     )?;
     canvas.write(
         35,
         4,
-        "[↑↓] Choose theme · apply stays on the picker, not this gallery",
+        "↑↓ to choose theme · apply stays on the picker, not this gallery",
         TextStyle::muted(),
     )?;
     push_pair(
@@ -407,7 +408,7 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
     SurfaceLayout::for_surface(Surface::TemporaryDetailView).validate()?;
 
     let mut canvas = Canvas::new();
-    canvas.write(2, 4, STATUS_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(STATUS_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, STATUS_TASK, TextStyle::bright())?;
     canvas.write(
         5,
@@ -502,9 +503,9 @@ fn render_status(fixture_id: &str) -> Result<AuditDocument, String> {
         32,
         4,
         if advanced {
-            "› [esc] Return to conversation · Draft and turn stay exactly where you left them"
+            "› Esc to return to conversation · Draft and turn stay exactly where you left them"
         } else {
-            "› [d] Details · [esc] Return · keeps draft, selection, and origin"
+            "› d for Details · Esc to return · keeps draft, selection, and origin"
         },
         TextStyle::accent(),
     )?;
@@ -736,7 +737,7 @@ fn render_empty(fixture_id: &str) -> Result<AuditDocument, String> {
     let mut canvas = Canvas::new();
     // Restrained entry brand (optional ACCENT ASCII is skipped on empty to
     // keep the composer dominant; origin chip only).
-    canvas.write(2, 4, EMPTY_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(EMPTY_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, EMPTY_TASK, TextStyle::bright())?;
     canvas.write(
         6,

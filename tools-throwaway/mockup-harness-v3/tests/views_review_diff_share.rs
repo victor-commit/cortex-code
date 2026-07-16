@@ -265,7 +265,7 @@ fn inspection_is_read_only_with_no_mutation_actions() {
         }
         assert!(
             !text.to_lowercase().contains("[i] include")
-                && !text.to_lowercase().contains("[enter] finish")
+                && !text.to_lowercase().contains("enter to finish")
                 && !text.to_lowercase().contains("allow once"),
             "{screen} must not show Flow 2 mutation controls"
         );

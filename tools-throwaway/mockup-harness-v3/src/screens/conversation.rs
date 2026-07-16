@@ -1852,7 +1852,7 @@ fn render_recovery_chat_turn(
     canvas.write(
         COMPOSER_TOP + 3,
         6,
-        "[u] Undo last checkpoint",
+        "u for Undo last checkpoint",
         TextStyle::muted(),
     )?;
 

@@ -12,7 +12,7 @@ use crate::{
         SemanticCandidate, SemanticEvent, TransitionTrace,
     },
     chrome::{
-        components::{Component, DetailView, Inspector, InspectorTab},
+        components::{subject_title_for_origin, Component, DetailView, Inspector, InspectorTab},
         layout::{CANVAS_ROWS, ScreenComposition, StatusLine, SurfaceLayout},
         tokens::TextStyle,
     },
@@ -215,7 +215,7 @@ fn paint_flow2_conversation(canvas: &mut Canvas) -> Result<(), String> {
         let clipped = truncate_to(text, TRANSCRIPT_WIDTH);
         canvas.write(row, 4, &clipped, style)
     };
-    write(canvas, 2, FLOW2_ORIGIN, TextStyle::muted())?;
+    write(canvas, 2, subject_title_for_origin(FLOW2_ORIGIN), TextStyle::muted())?;
     write(canvas, 3, FLOW2_TASK, TextStyle::bright())?;
     write(canvas, 5, FLOW2_YOU, TextStyle::bright())?;
     write(canvas, 8, "Code", TextStyle::bright())?;
@@ -452,7 +452,7 @@ fn paint_queue_inspector(
     }
 
     let manage_row = content_top + 3 + (items.len() as u16) * 4 + 1;
-    write_inspector(canvas, manage_row, "[m] Manage queue", TextStyle::accent())?;
+    write_inspector(canvas, manage_row, "m for Manage queue", TextStyle::accent())?;
     write_inspector(
         canvas,
         manage_row + 1,
@@ -593,7 +593,7 @@ fn render_help(fixture_id: &str) -> Result<AuditDocument, String> {
     let no_results = !filter.is_empty() && matching.is_empty();
 
     let mut canvas = Canvas::new();
-    canvas.write(2, 4, FLOW2_ORIGIN, TextStyle::muted())?;
+    canvas.write(2, 4, subject_title_for_origin(FLOW2_ORIGIN), TextStyle::muted())?;
     canvas.write(3, 4, FLOW2_TASK, TextStyle::bright())?;
     canvas.write(5, 4, "Help · temporary shortcut reference", TextStyle::bright())?;
     canvas.write(6, 4, origin, TextStyle::muted())?;
@@ -728,7 +728,7 @@ fn render_help(fixture_id: &str) -> Result<AuditDocument, String> {
     canvas.write(
         34,
         4,
-        "› [esc] Return · restores origin, draft, cursor, selection, and scroll",
+        "› Esc to return · restores origin, draft, cursor, selection, and scroll",
         TextStyle::accent(),
     )?;
     canvas.write(

@@ -1415,7 +1415,7 @@ fn render_skills_picker(
     dock_line(
         canvas,
         DOCK_TOP + 4,
-        "[space] Toggle · ↑↓ to Move · enabled state is labeled on each row",
+        "Space to toggle · ↑↓ to move · enabled state is labeled on each row",
         TextStyle::muted(),
     )?;
     dock_line(

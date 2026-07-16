@@ -57,7 +57,9 @@ fn sidebar_queue_preserves_transcript_composer_and_active_queue_context() {
 
     // VAL-V3-F2-045: narrowed transcript + one composer + active Queue context.
     assert!(
-        text.contains("Input and approval") || text.contains("paused conversation"),
+        text.contains("Paused conversation")
+            || text.contains("Input and approval")
+            || text.contains("paused conversation"),
         "origin must stay recognizable beside the queue inspector"
     );
     assert!(

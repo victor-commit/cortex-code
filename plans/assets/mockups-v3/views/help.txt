@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Input and approval · paused conversation                                                                            
+    Paused conversation                                                                                                 
     Check the retry path before we merge.                                                                               
                                                                                                                         
     Help · temporary shortcut reference                                                                                 
@@ -32,7 +32,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    › [esc] Return · restores origin, draft, cursor, selection, and scroll                                              
+    › Esc to return · restores origin, draft, cursor, selection, and scroll                                             
     This temporary reference is the only place for grouped shortcuts                                                    
                                                                                                                         
                                                                                                                         

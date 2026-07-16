@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                │ Inspector                              
-    Input and approval · paused conversation                                   │ › Queue                                
+    Paused conversation                                                        │ › Queue                                
     Check the retry path before we merge.                                      │ Esc to return to conversation          
                                                                                │                                        
     You · Check the retry path before we merge.                                │                                        
@@ -19,7 +19,7 @@
                                                                                │   [attachment: queue-notes-b.md]       
                                                                                │                                        
                                                                                │                                        
-                                                                               │ [m] Manage queue                       
+                                                                               │ m for Manage queue                     
                                                                                │ opens shared IDs · apply/cancel        
                                                                                │                                        
                                                                                │                                        

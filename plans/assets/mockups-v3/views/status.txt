@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
                                                                                                                         
     Session status · temporary detail                                                                                   
@@ -30,7 +30,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    › [d] Details · [esc] Return · keeps draft, selection, and origin                                                   
+    › d for Details · Esc to return · keeps draft, selection, and origin                                                
     This view answers configuration questions without duplicating the statusline                                        
                                                                                                                         
                                                                                                                         

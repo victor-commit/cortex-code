@@ -1,7 +1,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Provider connection · blocked model action                                                                          
+    Connections                                                                                                         
     Sign in to OpenAI                                                                                                   
                                                                                                                         
     Only the methods this provider supports are shown.                                                                  
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Selected · Browser sign-in                                                                                       │  
   │ You keep control of the browser steps. Your keystroke never leaves this device.                                  │  
-  │ › [enter] Continue with browser sign-in                                                                          │  
-  │   [esc] Back                                                                                                     │  
+  │ › Continue with browser sign-in                                                                                  │  
+  │   Esc to go back                                                                                                 │  
   │ Back keeps the OpenAI provider choice.                                                                           │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

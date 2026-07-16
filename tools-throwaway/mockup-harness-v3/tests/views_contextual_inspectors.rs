@@ -27,7 +27,7 @@ fn assert_no_private_traces(text: &str) {
 
 fn assert_transcript_and_composer(text: &str) {
     assert!(
-        (text.contains("Current conversation") || text.contains("Daily work · current conversation")),
+        (text.contains("Current conversation") || (text.contains("Current conversation") || text.contains("Daily work · current conversation"))),
         "origin must remain recognizable beside the inspector"
     );
     assert!(
@@ -434,7 +434,7 @@ fn inspector_close_restores_origin_conversation_and_draft() {
         }
         let text = replay.audit.render_txt();
         assert!(
-            (text.contains("Current conversation") || text.contains("Daily work · current conversation")),
+            (text.contains("Current conversation") || (text.contains("Current conversation") || text.contains("Daily work · current conversation"))),
             "returned conversation must show the same origin"
         );
         assert!(

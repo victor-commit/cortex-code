@@ -8,7 +8,7 @@
      ██████   ████    █████   █████                                                                                     
                                                                                                                         
                                                                                                                         
-    Provider connection · blocked model action                                                                          
+    Connections                                                                                                         
                                                                                                                         
     Connect a model provider                                                                                            
                                                                                                                         
@@ -32,8 +32,8 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Next step                                                                                                        │  
   │ Choose a provider that can run GPT-5.2 Codex.                                                                    │  
-  │ › [enter] Choose a provider                                                                                      │  
-  │   [esc] Cancel · return to model choices                                                                         │  
+  │ › Choose a provider                                                                                              │  
+  │   Esc to cancel · return to model choices                                                                        │  
   │ Cancel does not attempt a connection.                                                                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

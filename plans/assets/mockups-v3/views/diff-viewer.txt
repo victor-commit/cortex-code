@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Diff · temporary detail · from the selected review finding                                                          
     Selected finding · high · middleware.rs:42 · unbounded wait when cap is zero                                        
                                                                                                                         
@@ -23,10 +23,10 @@
     Any approve or apply would open the Flow 2 decision dock first                                                      
                                                                                                                         
                                                                                                                         
-    [n] Next file · next: src/net/retry_policy.rs (file 2 of 2)                                                         
-    [p] Previous file · previous stays on file 1 of 2                                                                   
+    n for Next file · next: src/net/retry_policy.rs (file 2 of 2)                                                       
+    p for Previous file · previous stays on file 1 of 2                                                                 
                                                                                                                         
-    › [esc] Return to selected finding                                                                                  
+    › Esc to return to selected finding                                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         

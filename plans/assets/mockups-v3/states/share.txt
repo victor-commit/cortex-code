@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
                                                                                                                         
     You · Find where the server applies the rate limit and explain the safe path.                                       
@@ -34,7 +34,7 @@
   │ Scope · rate-limit path conversation · read-only transcript                                                      │  
   │ Access · local only · not remote · result is read-only                                                           │  
   │ Link · http://127.0.0.1:3200/share/shr-71b2ce                                                                    │  
-  │ › [enter] Copy link · [r] Revoke this local share · [esc] Return                                                 │  
+  │ › Copy link · r for Revoke this local share · Esc to return                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
   ~/project · main · Claude Opus 4.8                                                                                    

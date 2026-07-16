@@ -214,7 +214,7 @@ fn status_detail_answers_configuration_questions() {
     assert!(
         text.contains("Advanced raw metadata stays hidden")
             || text.contains("open Details")
-            || text.contains("[d] Details"),
+            || text.contains("d for Details"),
         "advanced disclosure behind default"
     );
     assert!(

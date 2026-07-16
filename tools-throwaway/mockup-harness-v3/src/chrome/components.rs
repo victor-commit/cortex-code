@@ -209,16 +209,26 @@ pub fn subject_title_for_origin(journey_or_subject: &str) -> &'static str {
         "Input and approval · paused conversation" => "Paused conversation",
         "Work configuration · current conversation" => "Work configuration",
         "Work configuration · onboarding" => "First-run setup",
+        "Work configuration · theme choice" => "Theme choice",
         "Provider and MCP · connect" | "Provider and MCP · connections" => "Connections",
+        // Flow 4 provider origin labels (painted subject titles; audit keeps journey tags).
+        "Provider connection · blocked model action" => "Connections",
+        "Provider connection · onboarding" => "First-run setup",
+        "Provider connection · conversation" => "Current conversation",
+        "MCP · conversation capabilities" => "MCP capabilities",
         "Recovery · paused conversation" => "Recovery",
         "Mission · current conversation" => "Mission",
+        "Start · empty conversation" => "Empty conversation",
         // Already-human subjects and unknown custom titles pass through via a small set
         // of known fixtures; callers with non-static copy should paint their own subject.
         "Current conversation" => "Current conversation",
         "Paused conversation" => "Paused conversation",
         "Work configuration" => "Work configuration",
+        "Theme choice" => "Theme choice",
         "First-run setup" => "First-run setup",
         "Connections" => "Connections",
+        "MCP capabilities" => "MCP capabilities",
+        "Empty conversation" => "Empty conversation",
         "Recovery" => "Recovery",
         "Mission" => "Mission",
         _ if is_journey_breadcrumb_title(trimmed) => {
@@ -232,6 +242,9 @@ pub fn subject_title_for_origin(journey_or_subject: &str) -> &'static str {
                         "current conversation" => "Current conversation",
                         "paused conversation" => "Paused conversation",
                         "onboarding" => "First-run setup",
+                        "theme choice" => "Theme choice",
+                        "blocked model action" => "Connections",
+                        "conversation capabilities" => "MCP capabilities",
                         other if other.eq_ignore_ascii_case("connect") => "Connections",
                         _ => "Conversation",
                     };
@@ -239,6 +252,15 @@ pub fn subject_title_for_origin(journey_or_subject: &str) -> &'static str {
             }
             "Conversation"
         }
+        // Provider-connection family is not in the historical FORBIDDEN prefix list but
+        // still functions as a painted journey crumb — strip to a subject.
+        _ if trimmed.starts_with("Provider connection ·") => match trimmed {
+            "Provider connection · blocked model action" => "Connections",
+            "Provider connection · onboarding" => "First-run setup",
+            "Provider connection · conversation" => "Current conversation",
+            _ => "Connections",
+        },
+        _ if trimmed.starts_with("MCP ·") => "MCP capabilities",
         _ => "Conversation",
     }
 }

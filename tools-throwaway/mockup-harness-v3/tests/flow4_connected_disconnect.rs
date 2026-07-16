@@ -138,7 +138,7 @@ fn connect_connected_returns_to_blocked_origin_not_mcp() {
     .expect("connected");
     audit.validate().expect("audit");
     let text = audit.render_txt();
-    assert!(text.contains("Provider connection · blocked model action"));
+    assert!((text.contains("Connections") || text.contains("Provider connection · blocked model action")));
     assert!(
         !text.contains("Continue to MCP")
             && !text.contains("Open MCP now")

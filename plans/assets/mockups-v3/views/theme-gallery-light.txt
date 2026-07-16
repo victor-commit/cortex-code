@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Work configuration · theme choice                                                                                   
+    Theme choice                                                                                                        
     Preview the theme swatches before applying.                                                                         
                                                                                                                         
     Theme gallery · temporary detail                                                                                    
@@ -32,8 +32,8 @@
                                                                                                                         
     Selected · Dark · preview samples stay temporary until Apply                                                        
                                                                                                                         
-    › [esc] Return to theme picker · keeps pending selection and origin                                                 
-    [↑↓] Choose theme · apply stays on the picker, not this gallery                                                     
+    › Esc to return to theme picker · keeps pending selection and origin                                                
+    ↑↓ to choose theme · apply stays on the picker, not this gallery                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         

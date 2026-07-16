@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    MCP · conversation capabilities                                                                                     
+    MCP capabilities                                                                                                    
     Fix the capabilities this conversation needs.                                                                       
                                                                                                                         
     Illustrative detour · separate capability branch                                                                    
@@ -12,12 +12,12 @@
                                                                                                                         
     › Browser automation · Needs setup                                                                                  
       Missing local tools needed for page checks.                                                                       
-      [enter] Fix setup                                                                                                 
+      Enter to fix setup                                                                                                
                                                                                                                         
                                                                                                                         
       Project docs · Sign in needed                                                                                     
       This workspace library needs approval before use.                                                                 
-      [enter] Sign in                                                                                                   
+      Enter to sign in                                                                                                  
                                                                                                                         
                                                                                                                         
       ○ 1 ready connection collapsed                                                                                    
@@ -28,9 +28,9 @@
     Return closes this branch to the conversation, not provider sign-in.                                                
                                                                                                                         
                                                                                                                         
-    › [enter] Fix setup                                                                                                 
-      [d] Open diagnostics                                                                                              
-      [esc] Return to conversation                                                                                      
+    › Fix setup                                                                                                         
+      d for Open diagnostics                                                                                            
+      Esc to return to conversation                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         

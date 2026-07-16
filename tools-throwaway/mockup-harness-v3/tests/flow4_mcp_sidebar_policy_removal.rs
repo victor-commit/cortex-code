@@ -93,7 +93,7 @@ fn sidebar_mcp_stays_compact_and_contextual() {
         "sidebar must summarize a compact total"
     );
     assert!(
-        text.contains("Open MCP") || text.contains("[enter] Open MCP"),
+        text.contains("Open MCP") || text.contains("Open MCP"),
         "sidebar must expose one local Open MCP action"
     );
 
@@ -257,15 +257,15 @@ fn policy_blocked_disables_incompatible_actions_and_requires_confirm() {
         "must say exactly Blocked by policy: {text}"
     );
     assert!(
-        text.contains("Review policy") || text.contains("[enter] Review"),
+        text.contains("Review policy") || text.contains("Review"),
         "primary is Review policy"
     );
     // Incompatible actions disabled: not offered as enter/primary targets.
     let lower = text.to_ascii_lowercase();
     assert!(
-        !lower.contains("[enter] retry")
-            && !lower.contains("[enter] sign in")
-            && !lower.contains("[enter] setup"),
+        !lower.contains("enter to retry")
+            && !lower.contains("enter to sign in")
+            && !lower.contains("enter to setup"),
         "Retry/Sign in/Setup must not be primary when policy-blocked"
     );
     let primaries = primary_labels(&audit);

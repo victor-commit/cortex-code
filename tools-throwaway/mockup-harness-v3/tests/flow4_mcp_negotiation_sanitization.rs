@@ -178,7 +178,7 @@ fn handshake_zero_usable_never_reports_ready() {
         "attention language required for zero-usable: {text}"
     );
     assert!(
-        text.contains("Review policy") || text.contains("[enter] Review"),
+        text.contains("Review policy") || text.contains("Review"),
         "one appropriate primary action required: {text}"
     );
     let primaries = primary_labels(&audit);
@@ -233,7 +233,7 @@ fn handshake_failed_never_reports_ready() {
             );
         }
     }
-    assert!(text.contains("Retry") || text.contains("[enter] Retry"));
+    assert!(text.contains("Retry") || text.contains("Retry"));
 
     let case = replay_case("mcp-handshake-failed", 1).expect("failed handshake scenario");
     assert_eq!(case.after.selection, "docs-bridge");

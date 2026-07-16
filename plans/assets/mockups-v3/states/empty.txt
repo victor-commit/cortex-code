@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Start · empty conversation                                                                                          
+    Empty conversation                                                                                                  
     Start a new conversation                                                                                            
                                                                                                                         
                                                                                                                         

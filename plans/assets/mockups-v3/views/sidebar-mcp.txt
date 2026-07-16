@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                │ MCP status                             
-    Daily work · current conversation                                          │ › MCP                                  
+    Current conversation                                                       │ › MCP                                  
     Find where the server applies the rate limit and explain the safe path.    │ Esc to return to conversation          
                                                                                │                                        
     You · Find where the server applies the rate limit and explain the safe pa │                                        
@@ -18,7 +18,7 @@
                                                                                │                                        
                                                                                │ Healthy details stay collapsed.        
                                                                                │                                        
-                                                                               │ › [enter] Open MCP                     
+                                                                               │ › Open MCP                             
                                                                                │   Manage remaining statuses            
                                                                                │                                        
                                                                                │                                        

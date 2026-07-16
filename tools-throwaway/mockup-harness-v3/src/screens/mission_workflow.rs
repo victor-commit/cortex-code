@@ -2764,7 +2764,7 @@ fn render_progress_disclosure(
         canvas.write(
             row,
             4,
-            &format!("  … {working_omitted} more · [x] Expand Working"),
+            &format!("  … {working_omitted} more · x for Expand Working"),
             TextStyle::muted(),
         )?;
         row += 2;
@@ -2781,7 +2781,7 @@ fn render_progress_disclosure(
         canvas.write(
             row,
             4,
-            &format!("  … {completed_omitted} more · [c] Expand Recently completed"),
+            &format!("  … {completed_omitted} more · c for Expand Recently completed"),
             TextStyle::muted(),
         )?;
         row += 2;
@@ -3536,7 +3536,7 @@ fn render_workflow_monitor_failure(
         )?;
     }
 
-    // Secondary evidence uses exactly one action on the painted [d] row.
+    // Secondary evidence uses exactly one action on the painted d for row.
     // Resume conversation is a real cancel return (VAL-V3-F6-051), never dual-bound.
     let resume_return = semantic(
         screen_id,
@@ -3756,7 +3756,7 @@ fn render_workflow_monitor_failure(
                     false,
                 )),
             ),
-            // Single painted [d] Open evidence: open validation stages only.
+            // Single painted d for Open evidence: open validation stages only.
             // Do not dual-bind a second open-evidence action to the same label.
             semantic(
                 screen_id,

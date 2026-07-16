@@ -1,6 +1,6 @@
                                                                                                                         
                                                                                                                         
-    Daily work · current conversation                                                                                   
+    Current conversation                                                                                                
     Find where the server applies the rate limit and explain the safe path.                                             
                                                                                                                         
     Code review · temporary detail                                                                                      
@@ -20,8 +20,8 @@
     Read-only inspection · files, staging, approvals, tasks, and transcript stay unchanged                              
                                                                                                                         
                                                                                                                         
-    › [enter] Open selected evidence                                                                                    
-    [↑↓] Choose finding · [esc] Return to conversation                                                                  
+    › Open selected evidence                                                                                            
+    ↑↓ to choose finding · Esc to return to conversation                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         

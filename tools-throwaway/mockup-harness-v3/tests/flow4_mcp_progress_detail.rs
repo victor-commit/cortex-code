@@ -547,7 +547,7 @@ fn mcp_diagnostics_preserve_direct_recovery_action() {
 
     assert!(text.contains("Issue tracker") || text.contains("Failed"));
     assert!(
-        text.contains("Retry") || text.contains("[enter] Retry"),
+        text.contains("Retry") || text.contains("Retry"),
         "recovery Retry remains immediately reachable"
     );
     assert!(
