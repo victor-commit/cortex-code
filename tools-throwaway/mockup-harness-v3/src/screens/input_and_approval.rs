@@ -4784,6 +4784,7 @@ fn paint_fuzzy_title_accent(
 
 fn paint_you_line(canvas: &mut Canvas, row: u16, text: &str) -> Result<(), String> {
     let line = user_turn_surface_strip(text)?;
+    // TextStyle Surface background is rasterized by render_audit_png (VAL-V3-DS-034).
     canvas.write(row, outer_content_x() + 2, &line.text, line.style)
 }
 

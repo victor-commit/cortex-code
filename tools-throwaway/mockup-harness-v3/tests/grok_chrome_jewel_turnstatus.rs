@@ -206,6 +206,91 @@ fn user_turn_surface_strip_uses_closed_prefix_and_surface_wash() {
     assert!(user_turn_surface_strip("Daily work · current conversation").is_err());
 }
 
+/// VAL-V3-DS-034: user-turn rows must rasterize a SURFACE tonal wash that is
+/// pixel-distinguishable from pure CANVAS. Before the render_audit_png fix,
+/// style.background was ignored and probes returned RGB(16,16,17) everywhere.
+#[cfg(feature = "png")]
+#[test]
+fn published_user_turn_rows_paint_surface_wash_not_canvas() {
+    use image::load_from_memory;
+    use mockup_harness_v3::audit::audit_screen;
+    use mockup_harness_v3::chrome::tokens::{
+        palette, ColorToken, Theme, CELL_HEIGHT, CELL_WIDTH,
+    };
+    use mockup_harness_v3::scenario::render_audit_png;
+
+    let surface = palette(Theme::Dark).color(ColorToken::Surface);
+    let canvas_tok = palette(Theme::Dark).color(ColorToken::Canvas);
+    assert_ne!(
+        (surface.red, surface.green, surface.blue),
+        (canvas_tok.red, canvas_tok.green, canvas_tok.blue),
+        "Surface and Canvas must remain distinct tokens"
+    );
+
+    // Conversation shells that use paint_user_turn / user_turn_surface_strip.
+    let fixtures = [
+        ("chat-turn", "conversation-completed"),
+        ("chat-long-scroll", "session.history.earlier"),
+        ("streaming", "conversation-streaming"),
+    ];
+    for (screen_id, fixture_id) in fixtures {
+        let audit = audit_screen(screen_id, fixture_id).expect("audit must exist");
+        let user_cells: Vec<_> = audit
+            .styled_cells
+            .iter()
+            .filter(|c| {
+                c.style.background == Some(ColorToken::Surface)
+                    && c.row >= 3
+                    && c.row <= 12
+            })
+            .collect();
+        assert!(
+            !user_cells.is_empty(),
+            "{screen_id}: expected SURFACE-bg cells on the user-turn strip"
+        );
+        // Absolute RGB is forbidden off theme-swatch paths; Surface comes from style.background.
+        for cell in &user_cells {
+            assert_eq!(
+                cell.style.background,
+                Some(ColorToken::Surface),
+                "{screen_id}: glyph {:?} at ({},{}) must use SURFACE style.background",
+                cell.glyph,
+                cell.row,
+                cell.column
+            );
+        }
+
+        let bytes = render_audit_png(&audit).expect("png");
+        let image = load_from_memory(&bytes).expect("valid png").to_rgb8();
+        // Prefer a space cell so glyph raster does not tint the mid-cell sample.
+        let sample = user_cells
+            .iter()
+            .find(|c| c.glyph == ' ')
+            .or_else(|| user_cells.iter().find(|c| c.glyph == '›'))
+            .unwrap_or(&user_cells[0]);
+        let px = image.get_pixel(
+            sample.column as u32 * CELL_WIDTH + CELL_WIDTH / 2,
+            sample.row as u32 * CELL_HEIGHT + CELL_HEIGHT / 2,
+        );
+        assert_eq!(
+            (px[0], px[1], px[2]),
+            (surface.red, surface.green, surface.blue),
+            "{screen_id}: user-row PNG pixel must be SURFACE #1A1A1C not CANVAS #101011"
+        );
+        let canvas_px = image.get_pixel(0, 0);
+        assert_eq!(
+            (canvas_px[0], canvas_px[1], canvas_px[2]),
+            (canvas_tok.red, canvas_tok.green, canvas_tok.blue),
+            "{screen_id}: empty canvas corner must stay CANVAS"
+        );
+        assert_ne!(
+            (px[0], px[1], px[2]),
+            (canvas_px[0], canvas_px[1], canvas_px[2]),
+            "{screen_id}: DS-034 requires wash ≠ canvas"
+        );
+    }
+}
+
 #[test]
 fn helpers_reject_global_putty_footer_patterns() {
     assert!(contains_global_putty_footer(

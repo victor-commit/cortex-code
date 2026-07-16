@@ -25018,17 +25018,32 @@ pub fn render_audit_png(audit: &AuditDocument) -> Result<Vec<u8>, String> {
         crate::chrome::tokens::PNG_HEIGHT,
         Pixel([canvas_color.red, canvas_color.green, canvas_color.blue]),
     );
-    // Paint per-cell absolute backgrounds first so light galleries and swatches
-    // never inherit residual dark canvas pixels.
+    // Paint per-cell backgrounds first so user-turn SURFACE wash, light
+    // galleries, and swatches never inherit residual canvas pixels.
+    // absolute_bg wins when present; otherwise honor TextStyle.background
+    // (ColorToken::Surface for VAL-V3-DS-034 user-turn strips, add/delete bands, etc.).
     let cell_w = crate::chrome::tokens::CELL_WIDTH;
     let cell_h = crate::chrome::tokens::CELL_HEIGHT;
     for cell in canvas {
-        if let Some((r, g, b)) = cell.absolute_bg {
+        let fill = if let Some((r, g, b)) = cell.absolute_bg {
+            Some(Pixel([r, g, b]))
+        } else if let Some(token) = cell.style.background {
+            // Canvas is already the image ground; only non-canvas token bgs need fill.
+            if token == crate::chrome::tokens::ColorToken::Canvas {
+                None
+            } else {
+                let rgb = palette.color(token);
+                Some(Pixel([rgb.red, rgb.green, rgb.blue]))
+            }
+        } else {
+            None
+        };
+        if let Some(pixel) = fill {
             let cell_x = cell.column as u32 * cell_w;
             let cell_y = cell.row as u32 * cell_h;
             for y in 0..cell_h {
                 for x in 0..cell_w {
-                    image.put_pixel(cell_x + x, cell_y + y, Pixel([r, g, b]));
+                    image.put_pixel(cell_x + x, cell_y + y, pixel);
                 }
             }
         }

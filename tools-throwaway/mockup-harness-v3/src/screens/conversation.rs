@@ -5416,6 +5416,9 @@ fn composer_with_draft(
 }
 
 /// Write a user-turn strip with SURFACE wash + closed `›` (VAL-V3-DS-034).
+///
+/// Strip helper sets `TextStyle.background = Surface`; PNG raster honors that
+/// token (no absolute RGB — reserved for theme preview swatches only).
 fn paint_user_turn(canvas: &mut Canvas, row: u16, column: u16, text: &str) -> Result<(), String> {
     let line = user_turn_surface_strip(text)?;
     canvas.write(row, column, &line.text, line.style)
