@@ -260,18 +260,33 @@ fn policy_blocked_disables_incompatible_actions_and_requires_confirm() {
         text.contains("Review policy") || text.contains("Review"),
         "primary is Review policy"
     );
-    // Incompatible actions disabled: not offered as enter/primary targets.
-    let lower = text.to_ascii_lowercase();
+    // Selected policy-blocked row + dock primary must be Review policy only.
+    // Sibling unselected attention rows still may advertise their own
+    // "Enter to sign in/setup/retry" prose affordances (Phase-B language).
     assert!(
-        !lower.contains("enter to retry")
-            && !lower.contains("enter to sign in")
-            && !lower.contains("enter to setup"),
-        "Retry/Sign in/Setup must not be primary when policy-blocked"
+        text.contains("› ✗ Deploy hooks · Blocked by policy")
+            || text.contains("Deploy hooks · Blocked by policy"),
+        "selected policy-blocked row must stay in focus: {text}"
+    );
+    assert!(
+        text.contains("Workspace policy blocks remote deploy actions. · Review policy")
+            || text.lines().any(|line| {
+                let l = line.to_ascii_lowercase();
+                l.contains("deploy") && l.contains("review policy") && !l.contains("enter to")
+            }),
+        "selected policy-blocked row must not promote Retry/Sign in/Setup: {text}"
     );
     let primaries = primary_labels(&audit);
     assert!(
         primaries.iter().any(|p| p.contains("Review policy")),
         "primary Review policy: {primaries:?}"
+    );
+    assert!(
+        primaries.iter().all(|p| {
+            let l = p.to_ascii_lowercase();
+            !(l == "retry" || l == "sign in" || l == "setup" || l.starts_with("enter to "))
+        }),
+        "Retry/Sign in/Setup must not be typed primary when policy-blocked: {primaries:?}"
     );
 
     let open = replay_case("mcp-policy-review-open", 1).expect("open policy review");
