@@ -47,6 +47,10 @@ const NETWORK_CAUSE_GENERIC: &str = "Cortex could not reach the provider";
 const NETWORK_CAUSE_ENDED: &str = "The connection ended before the reply finished";
 const NETWORK_CAUSE_OFFLINE: &str = "Network access is off";
 const NETWORK_SAVED: &str = "Your work and partial output are saved.";
+/// Shared Claude prose byline for collapsed Evidence disclosure (N-11).
+/// Both error-network and error-context must use the mid-dot form yet keep
+/// the same label and key affordance.
+const EVIDENCE_EXPAND_BYLINE: &str = "› Evidence · Enter to Expand technical details";
 const TIMER_OWNER: &str = "timer.network.backoff";
 const RATE_TIMER_OWNER: &str = "timer.rate-limit.wait";
 const PENDING_NETWORK: &str = "pending.network.release-notes";
@@ -270,12 +274,7 @@ fn render_error_context(
     match variant {
         ContextVariant::Collapsed => {
             // Claude prose byline (N-11): no jammed "Evidence Enter to" atom.
-            canvas.write(
-                20,
-                4,
-                "› Evidence · Enter to Expand technical details",
-                TextStyle::muted(),
-            )?;
+            canvas.write(20, 4, EVIDENCE_EXPAND_BYLINE, TextStyle::muted())?;
         }
         ContextVariant::Evidence => {
             canvas.write(20, 4, "▾ Evidence", TextStyle::text())?;
@@ -1958,12 +1957,8 @@ fn render_error_network(
 
     match variant {
         NetworkVariant::Collapsed => {
-            canvas.write(
-                19,
-                4,
-                "› Evidence Enter to Expand technical details",
-                TextStyle::muted(),
-            )?;
+            // Share mid-dot Evidence byline with error-context (N-11).
+            canvas.write(19, 4, EVIDENCE_EXPAND_BYLINE, TextStyle::muted())?;
         }
         NetworkVariant::Details => {
             canvas.write(

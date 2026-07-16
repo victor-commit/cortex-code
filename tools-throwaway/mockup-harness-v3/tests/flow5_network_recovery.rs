@@ -191,9 +191,12 @@ fn error_network_attempts_live_only_in_evidence() {
     assert!(!collapsed_text.contains("req_"));
     assert!(!collapsed_text.contains("backoff 2s"));
     assert!(
-        collapsed_text.contains("Evidence")
-            || collapsed_text.contains("[d] Show evidence")
-            || collapsed_text.contains("Show evidence")
+        collapsed_text.contains("› Evidence · Enter to Expand technical details"),
+        "collapsed network must use the shared mid-dot Evidence byline"
+    );
+    assert!(
+        !collapsed_text.contains("› Evidence Enter to Expand technical details"),
+        "collapsed network must not jam Evidence and Enter without a mid-dot"
     );
 
     let evidence = audit_screen("error-network", "error-network.evidence")

@@ -150,10 +150,12 @@ fn error_context_token_diagnostics_are_progressive() {
     let collapsed_text = collapsed.render_txt();
     assert_no_token_diagnostics(&collapsed_text);
     assert!(
-        collapsed_text.contains("Evidence")
-            || collapsed_text.contains("Expand technical")
-            || collapsed_text.contains("[d]"),
-        "collapsed state exposes an Evidence disclosure"
+        collapsed_text.contains("› Evidence · Enter to Expand technical details"),
+        "collapsed context must use the shared mid-dot Evidence byline"
+    );
+    assert!(
+        !collapsed_text.contains("› Evidence Enter to Expand technical details"),
+        "collapsed context must not jam Evidence and Enter without a mid-dot"
     );
     assert!(
         collapsed_text.contains(CAUSE),

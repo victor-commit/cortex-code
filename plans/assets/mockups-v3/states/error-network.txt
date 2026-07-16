@@ -17,7 +17,7 @@
     Your work and partial output are saved.                                                                             
     Transcript, draft, and completed work stay readable.                                                                
                                                                                                                         
-    › Evidence Enter to Expand technical details                                                                        
+    › Evidence · Enter to Expand technical details                                                                      
                                                                                                                         
                                                                                                                         
                                                                                                                         
