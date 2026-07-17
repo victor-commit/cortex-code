@@ -1,35 +1,35 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-                                                                                                                        
-    Tasks                                                                                                               
-    Prepare the release safely and review the result.                                                                   
+  Tasks                                                                                                                 
+  Prep linked background work for this session                                                                          
                                                                                                                         
   ❯ Turn the release work into tracked tasks and walk me through it.                                                    
                                                                                                                         
+  I can open three linked items under Tasks:                                                                            
+                                                                                                                        
+  ○ Ready · 3 proposed                                                                                                  
+                                                                                                                        
+  ▾ Subagents 1                                                                                                         
+    ○ Review · release notes open risks                                                                                 
+                                                                                                                        
+  ▾ Tasks 1                                                                                                             
+    ○ Task Verify staging and rollback notes                                                                            
+                                                                                                                        
+  ▾ Watchers 1                                                                                                          
+    ○ Monitor next-step note after fixes                                                                                
+                                                                                                                        
+  ✓ Workspace trusted · auth ready · tools available                                                                    
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    I can run that as three linked tasks under one goal.                                                                
-                                                                                                                        
-    ○ Ready · Goal launch  0/3                                                                                          
-                                                                                                                        
-    Preflight                                                                                                           
-    ✓ Workspace trusted · auth ready · tools available                                                                  
-    No missing inputs. Start opens Tasks monitoring.                                                                    
-                                                                                                                        
-    Tasks proposed                                                                                                      
-      1. Review release notes for open risks                                                                            
-      2. Check the safe publish path                                                                                    
-      3. Update the next-step note after fixes                                                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Start this goal?                                                                                                 │  
+  │ Start these items?                                                                                               │  
   │  › Start tasks                                                                                                   │  
-  │    Cancel · keep the proposal ready                                                                              │  
+  │    Cancel · keep this plan ready                                                                                 │  
   │                                                                                                                  │  
   │                                                                                                                  │  
   │                                                                                                                  │  

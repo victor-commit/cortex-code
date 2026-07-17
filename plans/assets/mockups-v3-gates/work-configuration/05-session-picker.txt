@@ -1,23 +1,7 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ❯ Resume an earlier conversation in this workspace.                                                                   
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-    Sessions                                                                                                            
-    Local resume list · drafts restore with the transcript                                                              
-                                                                                                                        
-    › Retry policy review                                                                                               
-      17 turns · master · open draft kept                                                                               
-      Cache invalidation sketch                                                                                         
-      9 turns · feature/cache · idle                                                                                    
-      MCP docs research                                                                                                 
-      4 turns · connect work still open                                                                                 
+  ❯ Resume a previous conversation.                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +11,30 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ Retry policy review        17 turns · master                                                                      
+      Cache invalidation sketch  9 turns · feature/cache                                                                
+      MCP docs research          4 turns · idle                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Retry policy review                                                                                   │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to resume · Esc to cancel · ↑↓ to choose                                                                   │  
+  │ ❯ /resume                                                                      Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

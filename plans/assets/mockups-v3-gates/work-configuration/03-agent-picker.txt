@@ -9,15 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Agents                                                                                                              
-    Personas and agents · not a Cortex work-style matrix                                                                
-                                                                                                                        
-    › Coding                                                                                                            
-      Default · edit, test, and explain in one loop                                                                     
-      Plan                                                                                                              
-      Read-only planning before any write                                                                               
-      Review                                                                                                            
-      Critique diffs and suggest repairs only                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +18,23 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ Coding  Default · edit, test, and explain                                                                         
+      Plan    Read-only planning before any write                                                                       
+      Review  Critique diffs and suggest repairs                                                                        
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Coding                                                                                                │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to apply · Esc to cancel · ↑↓ to choose                                                                    │  
+  │ ❯ /agents                                                                      Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

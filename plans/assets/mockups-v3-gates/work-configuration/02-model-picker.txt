@@ -1,23 +1,7 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ❯ Choose the model for the next reply.                                                                                
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-    Models                                                                                                              
-    Each row says what changes before you apply it.                                                                     
-                                                                                                                        
-    › Cortex                                                                                                          
-      Current · balanced depth for everyday coding                                                                      
-      Cortex (high)                                                                                                   
-      More reasoning budget · slower, deeper plans                                                                      
-      xAI model Fast                                                                                                       
-      Quick edits and triage · lighter reasoning                                                                        
+  ❯ Switch model for the next reply only when needed.                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +11,30 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ Cortex (current)  Balanced default · reasoning supported                                                        
+      Cortex Fast       Lower latency · lighter reasoning                                                             
+      code model           Code-focused next-turn completions                                                            
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Cortex                                                                                              │  
-  │  Applies to the next reply only · statusline stays Cortex-labeled                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to apply · Esc to cancel · f for Filter models                                                             │  
+  │ ❯ /model                                                                       Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
