@@ -1,40 +1,40 @@
                                                                                                                         
-                                                                               │ Inspector                              
-    Current conversation                                                       │   Context                              
-    Find where the server applies the rate limit and explain the safe path.    │   Files                                
-                                                                               │   LSP                                  
-    You · Find where the server applies the rate limit and explain the safe pa │ › Todo                                 
-                                                                               │   Subs                                 
-                                                                               │ Esc to return to conversation          
-    Code                                                                       │                                        
-                                                                               │ Plan · 3 of 5 done                     
-    The shared request guard applies the limit before route work begins.       │ 1 in progress · 1 pending              
-    → src/auth/middleware.rs owns the rate-limit decision.                     │                                        
-    → The login and API routes reuse the same safety rule.                     │ ✓ Read auth middleware · done          
-                                                                               │ ✓ Add token-bucket limiter · done      
-    ● Reading src/auth/middleware.rs · checked the login path                  │ ✓ Wire POST /login route · done        
-                                                                               │ ● Add tests/login_ratelimit.rs         
-                                                                               │   cover the fifth attempt · in progress
-                                                                               │ ○ Run cargo test and cargo fmt         
-                                                                               │   verify the full change · pending     
-                                                                               │                                        
-                                                                               │ 3 of 5 done · 1 in progress · 1 pending
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
+   master /projects/demo                                                                                               
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Also list the tests that should cover the search.                                                              │  
-  │   Claude Opus 4.8 · Careful edits                                                                                │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+  ❯ You                                                       │ Todos                                                   
+    Keep the chat visible while inspecting context.           │                                                         
+                                                              │ Plan                                                    
+                                                              │ ✓ guard floor at 250ms                                  
+  ◆ Cortex                                                      │ › add floor integration                                 
+    Retry path is guarded. Sidebar stays task-local.          │   document jitter order                                 
+                                                              │   note rate-limit ceiling                               
+                                                              │                                                         
+                                                              │ 1 remaining open                                        
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
                                                                                                                         
+    Esc closes inspector · transcript origin unchanged                                                                  
                                                                                                                         
-                                                                                                                        
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

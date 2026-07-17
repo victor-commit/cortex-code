@@ -1,26 +1,21 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
+    Shortcuts                                                                                                           
+    Ctrl+. cheatsheet · context-sensitive hints match the putty                                                         
                                                                                                                         
-    Help · shortcuts for this conversation                                                                              
-    From composer · paused conversation                                                                                 
-    Filter › type to filter actions                                                                                     
                                                                                                                         
-    Write                                                                                                               
-      Send message · Enter · Submit the draft when ready                                                                
-      Open file mention · @ · Insert a project file reference                                                           
-      Open slash commands · / · Choose export, help, queue, or actions                                                  
-    Navigate                                                                                                            
-      Open action palette · ctrl+k · Search every action from one dock                                                  
-      Jump to latest turn · End · Return the transcript to the newest reply                                             
-    Manage                                                                                                              
-      Open queued prompts · /queue · Reorder, remove, or run the next prompt                                            
-      Export conversation · /export · Save a read-only copy of this chat                                                
-    Inspect                                                                                                             
-      Open this reference · /help · Browse task-grouped shortcuts                                                       
-      Open review findings · ctrl+r · Inspect the current review scope                                                  
-      Search transcript · ctrl+f · Find matching turns without leaving the chat                                         
+    Shift+Tab     cycle mode / permission chip                                                                          
+    Ctrl+c        cancel stream or clear draft step                                                                     
+    Ctrl+.        open this shortcuts help                                                                              
+    /             slash command menu                                                                                    
+    @             file mention dropdown                                                                                 
+    [stop]        halt the busy turn · keeps draft                                                                      
+    Enter         send · or apply focused dock action                                                                   
+    Esc           back / cancel · return to origin                                                                      
+                                                                                                                        
+                                                                                                                        
+    Local dock bylines stay next to the action they control.                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +27,14 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    › Esc to return · restores origin, draft, cursor, selection, and scroll                                             
-    This temporary reference is the only place for grouped shortcuts                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · putty footer remains outside this view                                                              
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

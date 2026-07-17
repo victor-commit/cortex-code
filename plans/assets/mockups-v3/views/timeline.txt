@@ -1,31 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Work configuration                                                                                                  
-                                                                                                                        
-    Retry policy review · Session history · Oldest first                                                                
-                                                                                                                        
-    Resume a conversation or inspect its history.                                                                       
-                                                                                                                        
-    Today, 09:14                                                                                                        
-        Opened the retry review                                                                                         
-        Started from the failing network test.                                                                          
-                                                                                                                        
-    Today, 09:37                                                                                                        
-        Updated the retry policy                                                                                        
-        Checkpoint · Fork available from this point.                                                                    
-                                                                                                                        
-    Today, 10:06                                                                                                        
-        Tests passed                                                                                                    
-        All focused retry checks completed.                                                                             
-                                                                                                                        
-    Today, 10:42                                                                                                        
-        Current · Review ready                                                                                          
-        Latest stable state · saved draft is recoverable.                                                               
+    Timeline                                                                                                            
+    Turn ticks for this session · jump restores scroll target                                                           
                                                                                                                         
                                                                                                                         
-    Selected point · Today, 09:37 · Updated the retry policy                                                            
+    › 17  You · Ship it. Summarize what landed                                                                          
+      16  Cortex · Retry path is guarded                                                                                  
+      15  Tool · Shell cargo test retry                                                                                 
+      14  You · Tight-loop the HTTP client                                                                              
+      13  Cortex · Added jittered backoff                                                                                 
+      12  Tool · Edit crates/agent/src/retry.rs                                                                         
                                                                                                                         
-    Historical points fork into a copy. Only the latest state can resume directly.                                      
+                                                                                                                        
+                                                                                                                        
+    Hover previews the turn body · Enter jumps                                                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -33,8 +22,19 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    › Resume latest                                                                                                     
-    f to fork · Esc to back to session preview · ↑↓ to choose point                                                     
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Enter to jump · Esc to return · origin stays this chat                                                              
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

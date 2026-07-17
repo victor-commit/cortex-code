@@ -1,32 +1,21 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Current conversation                                                                                                
-    Diff · temporary detail · from the selected review finding                                                          
-    Selected finding · high · middleware.rs:42 · unbounded wait when cap is zero                                        
-                                                                                                                        
-    File 1 of 2 · src/auth/middleware.rs · line 42                                                                      
-    Same review origin · return restores the selected finding                                                           
-                                                                                                                        
-    @@ -42,2 +42,3 @@ apply_limit                                                                                       
-                                                                                                                        
-       42   42  -    return wait_forever()                                                                              
-              - removed line                                                                                            
-            42  +    return wait_capped(cap)                                                                            
-               +    log_limit_hit(cap)                                                                                  
-              + added line                                                                                              
-        43  45      continue                                                                                            
+    Diff · crates/agent/src/retry.rs                                                                                    
+    Full file evidence · Esc returns without applying                                                                   
                                                                                                                         
                                                                                                                         
-    Summary · +2 -1 · 1 hunk · next: src/net/retry_policy.rs (file 2 of 2)                                              
+    @@ -40,6 +40,14 @@ fn schedule(floor_ms: u64)                                                                       
                                                                                                                         
-    Read-only inspection · no write, staging, or approval action here                                                   
-    Any approve or apply would open the Flow 2 decision dock first                                                      
+      let floor = floor_ms.max(1);                                                                                      
+    - // trust caller floor                                                                                             
+    + if floor_ms < 250 {                                                                                               
+    +     return Err(RetryError::Floor);                                                                                
+    + }                                                                                                                 
+      rng.retry_after_ms = floor;                                                                                       
                                                                                                                         
                                                                                                                         
-    n to open next file · next: src/net/retry_policy.rs (file 2 of 2)                                                   
-    p to open previous file · previous stays on file 1 of 2                                                             
-                                                                                                                        
-    › Esc to return to selected finding                                                                                 
+    +12 / -4 · green add · red delete                                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +26,15 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · a apply when owned by permission dock                                                               
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

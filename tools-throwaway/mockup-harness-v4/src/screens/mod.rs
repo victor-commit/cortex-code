@@ -1,11 +1,14 @@
-//! Pure Cortex F1–F3 screens (auth + conversation + tools).
+//! Pure Cortex F1–F6 screens (auth + conversation + tools + pickers + permissions + views).
 //! Copper brand helpers are forbidden in new paints.
 
 pub mod auth;
 pub mod chat_turn;
 pub mod conversation;
 pub mod login;
+pub mod permissions;
+pub mod pickers;
 pub mod tools;
+pub mod views;
 
 use crate::chrome::canvas::Canvas;
 
@@ -15,8 +18,8 @@ pub struct PilotSpec {
     pub category: &'static str,
 }
 
-/// Ordered F1–F3 pure Cortex dump inventory for this batch.
-pub const PILOT_SCREENS: [PilotSpec; 27] = [
+/// Ordered pure Cortex dump inventory for F1–F6 (27 + 17 + 11 + 16 = 71).
+pub const PILOT_SCREENS: [PilotSpec; 71] = [
     // F1 auth (7)
     PilotSpec {
         id: "login",
@@ -128,11 +131,190 @@ pub const PILOT_SCREENS: [PilotSpec; 27] = [
         id: "diff-edit",
         category: "session",
     },
+    // F4 pickers (17)
+    PilotSpec {
+        id: "slash-menu",
+        category: "input",
+    },
+    PilotSpec {
+        id: "command-palette",
+        category: "input",
+    },
+    PilotSpec {
+        id: "command-palette-submenu",
+        category: "input",
+    },
+    PilotSpec {
+        id: "model-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "model-picker-filtered",
+        category: "input",
+    },
+    PilotSpec {
+        id: "agent-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "skills-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "session-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "variant-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "fork-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "theme-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "export-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "attachment-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "subagent-picker",
+        category: "input",
+    },
+    PilotSpec {
+        id: "file-mention",
+        category: "input",
+    },
+    PilotSpec {
+        id: "queue-manager",
+        category: "input",
+    },
+    PilotSpec {
+        id: "composer-multiline",
+        category: "input",
+    },
+    // F5 permissions & recovery (11)
+    PilotSpec {
+        id: "permission-shell",
+        category: "input",
+    },
+    PilotSpec {
+        id: "permission-file-edit",
+        category: "input",
+    },
+    PilotSpec {
+        id: "permission-deny-reason",
+        category: "input",
+    },
+    PilotSpec {
+        id: "blocked-command",
+        category: "session",
+    },
+    PilotSpec {
+        id: "turn-error",
+        category: "session",
+    },
+    PilotSpec {
+        id: "error-network",
+        category: "states",
+    },
+    PilotSpec {
+        id: "error-context",
+        category: "states",
+    },
+    PilotSpec {
+        id: "rate-limit",
+        category: "states",
+    },
+    PilotSpec {
+        id: "interrupt",
+        category: "states",
+    },
+    PilotSpec {
+        id: "checkpoint-undo",
+        category: "states",
+    },
+    PilotSpec {
+        id: "share",
+        category: "states",
+    },
+    // F6 views (16)
+    PilotSpec {
+        id: "status",
+        category: "views",
+    },
+    PilotSpec {
+        id: "timeline",
+        category: "views",
+    },
+    PilotSpec {
+        id: "mcp",
+        category: "views",
+    },
+    PilotSpec {
+        id: "diff-viewer",
+        category: "views",
+    },
+    PilotSpec {
+        id: "diff-viewer-staging",
+        category: "views",
+    },
+    PilotSpec {
+        id: "help",
+        category: "views",
+    },
+    PilotSpec {
+        id: "review",
+        category: "views",
+    },
+    PilotSpec {
+        id: "theme-gallery-dark",
+        category: "views",
+    },
+    PilotSpec {
+        id: "theme-gallery-light",
+        category: "views",
+    },
+    PilotSpec {
+        id: "sidebar-context",
+        category: "views",
+    },
+    PilotSpec {
+        id: "sidebar-files",
+        category: "views",
+    },
+    PilotSpec {
+        id: "sidebar-lsp",
+        category: "views",
+    },
+    PilotSpec {
+        id: "sidebar-todo",
+        category: "views",
+    },
+    PilotSpec {
+        id: "sidebar-subagents",
+        category: "views",
+    },
+    PilotSpec {
+        id: "sidebar-mcp",
+        category: "views",
+    },
+    PilotSpec {
+        id: "sidebar-queue",
+        category: "views",
+    },
 ];
 
 pub fn render_pilot(id: &str) -> Result<Canvas, String> {
     match id {
-        // Auth — includes login via auth::render
+        // Auth
         "login"
         | "connect-provider"
         | "connect-method"
@@ -162,6 +344,53 @@ pub fn render_pilot(id: &str) -> Result<Canvas, String> {
         | "todo-list"
         | "compact"
         | "diff-edit" => tools::render(id),
+        // Pickers
+        "slash-menu"
+        | "command-palette"
+        | "command-palette-submenu"
+        | "model-picker"
+        | "model-picker-filtered"
+        | "agent-picker"
+        | "skills-picker"
+        | "session-picker"
+        | "variant-picker"
+        | "fork-picker"
+        | "theme-picker"
+        | "export-picker"
+        | "attachment-picker"
+        | "subagent-picker"
+        | "file-mention"
+        | "queue-manager"
+        | "composer-multiline" => pickers::render(id),
+        // Permissions & recovery
+        "permission-shell"
+        | "permission-file-edit"
+        | "permission-deny-reason"
+        | "blocked-command"
+        | "turn-error"
+        | "error-network"
+        | "error-context"
+        | "rate-limit"
+        | "interrupt"
+        | "checkpoint-undo"
+        | "share" => permissions::render(id),
+        // Views
+        "status"
+        | "timeline"
+        | "mcp"
+        | "diff-viewer"
+        | "diff-viewer-staging"
+        | "help"
+        | "review"
+        | "theme-gallery-dark"
+        | "theme-gallery-light"
+        | "sidebar-context"
+        | "sidebar-files"
+        | "sidebar-lsp"
+        | "sidebar-todo"
+        | "sidebar-subagents"
+        | "sidebar-mcp"
+        | "sidebar-queue" => views::render(id),
         other => Err(format!("unknown pure-Cortex pilot id: {other}")),
     }
 }
@@ -176,8 +405,8 @@ mod tests {
     use crate::chrome::components::reject_copper_residual;
 
     #[test]
-    fn f1_f3_inventory_count_and_render() {
-        assert_eq!(list_pilots().len(), 27);
+    fn f1_f6_inventory_count_and_render() {
+        assert_eq!(list_pilots().len(), 71);
         for spec in list_pilots() {
             let canvas =
                 render_pilot(spec.id).unwrap_or_else(|e| panic!("{}: {e}", spec.id));

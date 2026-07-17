@@ -1,23 +1,22 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Pick effort for this reply only.                                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Continue the paused conversation.                                                                             
                                                                                                                         
                                                                                                                         
-    Choose a response variant                                                                                           
                                                                                                                         
-    Base model · Claude Opus 4.8 · the variant only changes deliberation for the next replies.                          
+    Effort · /effort                                                                                                    
+    Reasoning budget for the next assistant turn                                                                        
+                                                                                                                        
+      Low · fast answers · light plan                                                                                   
+    › Medium · default balanced budget                                                                                  
+      High · deep plans · slower stream                                                                                 
                                                                                                                         
                                                                                                                         
-      Fast                                                                                                              
-      Least deliberation · quickest replies for narrow edits.                                                           
-                                                                                                                        
-      Current · Balanced                                                                                                
-      Current · Moderate wait with careful everyday reasoning.                                                          
-                                                                                                                        
-    › Pending · Thorough                                                                                                
-      More careful, slower replies for risky or multi-step changes.                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Thorough · keeps Claude Opus 4.8                                                                      │  
-  │ Apply changes only the response variant; the base model stays the same.                                          │  
-  │ › Apply variant · Esc to Cancel                                                                                  │  
-  │ ↑↓ to Choose · each row explains the practical tradeoff                                                          │  
-  │ No filter · three response variants fit on one screen                                                            │  
+  │ Selected · Medium                                                                                                │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to apply · Esc keeps previous effort                                                                       │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

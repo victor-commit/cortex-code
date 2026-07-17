@@ -1,22 +1,19 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-     › You · Check the retry path before we merge.                                                                      
+  ❯ You                                                                                                                 
+    Request a safer rewrite of the plan step.                                                                           
                                                                                                                         
                                                                                                                         
-    Code paused · Shell command needs your approval                                                                     
                                                                                                                         
-    Why Code needs it: to confirm the retry changes before continuing this turn.                                        
                                                                                                                         
-    What running it will do: inspect the retry diff and keep the result in this turn.                                   
                                                                                                                         
-    Denied · command was not run                                                                                        
+  ◆ Cortex                                                                                                                
                                                                                                                         
-    Denied command: printf '%s\n' "retry check"                                                                         
+    Plan approval · changes requested                                                                                   
+    The write step still touches production config.                                                                     
                                                                                                                         
-    Optional reason · this will be sent to Code with the denied activity                                                
-    › Type one short reason here                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ The original Allow and Deny choices are closed                                                                   │  
-  │ › Send reason · add it to the denied activity                                                                    │  
-  │   Skip · return without adding a reason                                                                          │  
-                                                                                                                        
-  │ Enter to send reason · Esc to cancel · keep the denied activity unchanged                                        │  
+  │ Why deny or request changes?                                                                                     │  
+  │  › Request changes                                                                                               │  
+  │    Keep production config read-only in plan                                                                      │  
+  │                                                                                                                  │  
+  │    Deny without comment                                                                                          │  
+  │    Allow with caution                                                                                            │  
+  │ Enter sends comment · Esc keeps plan blocked                                                                     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

@@ -1,22 +1,21 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-    You · Check the retry path before we merge.                                                                         
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    The conversation stays visible while you choose an action.                                                          
-                                                                                                                        
-                                                                                                                        
-    Preserved draft · unchanged while the palette is open                                                               
-    › Check the retry path in @retry                                                                                    
-      Then explain the failure path that still needs coverage before the merge;                                         
-      Keep the summary short before we merge.                                                                           
+  ❯ You                                                                                                                 
+    Manage queued prompts for this turn.                                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Queued prompts · submenu                                                                                            
+    Scoped under the palette · Esc returns to Actions                                                                   
+                                                                                                                        
+    › Send next now · interrupt current stream safely                                                                   
+      Move up · raise priority one slot                                                                                 
+      Move down · lower priority one slot                                                                               
+      Remove from queue · keeps draft unsent                                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Palette › Queued prompts · scoped list · Esc to root                                                             │  
-  │ › Add buffer cap tests · run this prompt next                                                                    │  
-  │   Trace the retry backoff · drop this queued prompt                                                              │  
-  │   Document the rate-limit path · run after the current turn                                                      │  
-  │ › Root · Enter to run scoped action · Esc to cancel                                                              │  
+  │ Esc exits submenu only · parent stays open                                                                       │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to apply · Esc to back · ↑↓ to choose                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

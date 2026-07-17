@@ -1,21 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Attach a project file to the next send.                                                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Check the retry path before we merge.                                                                         
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
                                                                                                                         
-    I can add a project file without changing the rest of your draft.                                                   
+    Attach file                                                                                                         
+    Workspace files only · images use [Image #N] chips                                                                  
                                                                                                                         
-                                                                                                                        
-    Paused draft · 3 authored lines                                                                                     
-    › Check the retry path in @retry                                                                                    
-      Then explain the failure path that still needs coverage before the merge;                                         
-        wrap: include a concise test plan with the visible recovery behavior.                                           
-      Keep the summary short before we merge.                                                                           
-                                                                                                                        
+    › crates/agent/src/retry.rs · 14 KB · rust                                                                          
+      docs/retry.md · 4 KB · markdown                                                                                   
+      fixtures/rate_limit.json · 1 KB · json                                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Attach file · project-relative paths · query:  · 5 matching · Enter to attach · Esc to cancel                    │  
-  │ Attaches one project file to this draft · png, jpg, pdf, svg                                                     │  
-  │ › assets/retry-diagram.png · png · 48.2k · eligible                                                              │  
-  │   docs/retry-overview.pdf · pdf · 120.4k · eligible                                                              │  
-  │   README.md · md · 11.4k · unsupported                                                                           │  
+  │ Selected · crates/agent/src/retry.rs                                                                             │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to attach · Esc to cancel · type to filter                                                                 │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

@@ -1,40 +1,40 @@
                                                                                                                         
-                                                                               │ Inspector                              
-    Current conversation                                                       │ › Context                              
-    Find where the server applies the rate limit and explain the safe path.    │   Files                                
-                                                                               │   LSP                                  
-    You · Find where the server applies the rate limit and explain the safe pa │   Todo                                 
-                                                                               │   Subs                                 
-                                                                               │ Esc to return to conversation          
-    Code                                                                       │                                        
-                                                                               │ Relevant context                       
-    The shared request guard applies the limit before route work begins.       │ 4 files help this turn                 
-    → src/auth/middleware.rs owns the rate-limit decision.                     │                                        
-    → The login and API routes reuse the same safety rule.                     │ middleware.rs · rate-limit rule        
-                                                                               │ login.rs · route entry                 
-    ● Reading src/auth/middleware.rs · checked the login path                  │ retry_policy.rs · shared guard         
-                                                                               │ tests/login_ratelimit.rs               
-                                                                               │                                        
-                                                                               │ Capacity · about one third used        
-                                                                               │ space left for more files              
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
-                                                                               │                                        
+   master /projects/demo                                                                                               
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Also list the tests that should cover the search.                                                              │  
-  │   Claude Opus 4.8 · Careful edits                                                                                │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+  ❯ You                                                       │ Context                                                 
+    Keep the chat visible while inspecting context.           │                                                         
+                                                              │ Usage                                                   
+                                                              │ 8.5K / 1.0M                                             
+  ◆ Cortex                                                      │ ████░░░░░░  1%                                          
+    Retry path is guarded. Sidebar stays task-local.          │                                                         
+                                                              │ Memory                                                  
+                                                              │ · retry floors policy                                   
+                                                              │ · workspace master                                      
+                                                              │                                                         
+                                                              │ Project                                                 
+                                                              │ /projects/demo                                          
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
+                                                              │                                                         
                                                                                                                         
+    Esc closes inspector · transcript origin unchanged                                                                  
                                                                                                                         
-                                                                                                                        
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

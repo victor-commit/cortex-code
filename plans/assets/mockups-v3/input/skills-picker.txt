@@ -1,22 +1,21 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Enable skills for this session.                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Continue the paused conversation.                                                                             
                                                                                                                         
                                                                                                                         
-    Choose session skills                                                                                               
                                                                                                                         
-    Each skill names the result it helps achieve. Changes stay pending until Apply.                                     
+    Skills                                                                                                              
+    Session-scoped plugins and extensions                                                                               
                                                                                                                         
-      Commit cleanly                                                                                                    
-      On · Keep commits under the linked identity                                                                       
-      Design reviews                                                                                                    
-      On · Keep screens simple and readable                                                                             
-    › Review images                                                                                                     
-      Pending on · Check rendered interfaces for clarity                                                                
-      Research the web                                                                                                  
-      Off · Search and summarize public web content                                                                     
+    › ✓ retry-audit · inspect retry helpers                                                                             
+        docs-search · index docs for lookups                                                                            
+      ✓ shell-safe · sandboxed command preflight                                                                        
+        image-caption · describe pasted screenshots                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Review images · session-local                                                                         │  
-  │ Pending set · Commit cleanly, Design reviews, Review images · apply once.                                        │  
-  │ › Apply skills · Esc to Cancel                                                                                   │  
-  │ Space to toggle · ↑↓ to move · enabled state is labeled on each row                                              │  
-  │ No filter · four session skills fit on one screen                                                                │  
+  │ Space toggles · only checked skills load                                                                         │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to save · Esc to cancel · ↑↓ to move                                                                       │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

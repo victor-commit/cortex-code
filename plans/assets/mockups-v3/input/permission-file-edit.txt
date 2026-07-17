@@ -1,27 +1,24 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-     › You · Check the retry path before we merge.                                                                      
+  ❯ You                                                                                                                 
+    Apply the retry guard before we merge.                                                                              
                                                                                                                         
                                                                                                                         
-    Code paused · File edit needs your approval                                                                         
                                                                                                                         
-    Why Code needs it: to keep retry timing from repeating the same failed window.                                      
                                                                                                                         
-    What applying it will do: write the disclosed patch into the project file once.                                     
-    File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
-    Patch summary +4 -3 · 2 hunks                                                                                       
-    Hunk @@ -42,2 +42,3                                                                                                 
-       42   42 │ -    return retry_after                                                                                
-       43   43 │ -    backoff = backoff + 1                                                                             
-            42 │ +    return retry_after + jitter                                                                       
-            43 │ +    backoff = backoff + jitter                                                                        
-            44 │ +    log_retry_window(jitter)                                                                          
-    Second hunk · hunk.retry-test · @@ -88,2 +89,2 · e to review full patch                                             
-    Scope: this edit only · project root ~/project · work style Careful edits                                           
-    Saved for this session · exact path src/net/retry_policy.rs · Careful edits                                         
-    Children inherit only read-only checks · child cap: no write elevation                                              
+                                                                                                                        
+  ◆ Cortex                                                                                                                
+                                                                                                                        
+  Edit  crates/agent/src/retry.rs  +12 / -4                                                                             
+                                                                                                                        
+      rng.retry_after_ms = floor.max(250);                                                                              
+    + if floor_ms < 250 { return Err(floor); }                                                                          
+    - // trust caller floor                                                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Permission choices                                                                                               │  
-  │ › Allow once · apply only the disclosed patch                                                                    │  
-  │   Allow for this project · save the exact scope shown above                                                      │  
-  │   Deny · do not write the file                                                                                   │  
-  │ e to review full patch · Enter to allow once · Esc to cancel                                                     │  
+  │ Apply this edit?                                                                                                 │  
+  │  crates/agent/src/retry.rs · hunk 1 of 1                                                                         │  
+  │                                                                                                                  │  
+  │  › Apply edit                                                                                                    │  
+  │    Reject edit                                                                                                   │  
+  │    Open full diff                                                                                                │  
+  │ Enter to apply · Esc to reject · d open full diff                                                                │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

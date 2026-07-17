@@ -1,23 +1,22 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-    You · Check the retry path before we merge.                                                                         
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    I can add a project file without changing the rest of your draft.                                                   
+  ❯ You                                                                                                                 
+    Tighten the retry helper before we merge.                                                                           
                                                                                                                         
                                                                                                                         
-    Paused draft · 3 authored lines                                                                                     
-    › / · active command span                                                                                           
-      Check the retry path before we merge.                                                                             
-      Then explain the failure path that still needs coverage before the merge.                                         
-      Keep the summary short before we merge.                                                                           
+  ◆ Cortex                                                                                                                
+    Applying the retry guard and covering the failure path…                                                             
                                                                                                                         
                                                                                                                         
+    Commands                                                                                                            
+    Type more to filter · Esc restores the draft                                                                        
                                                                                                                         
+    › /model · switch Cortex catalog model                                                                                
+      /theme · preview CortexNight or CortexDay                                                                             
+      /mcp · manage MCP connections                                                                                     
+      /export · share this conversation                                                                                 
+      /session · resume an earlier turn                                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ / commands · query: / · 4 matching · Enter to confirm · Esc to cancel                                            │  
-  │ › /export · Export this conversation as a file                                                                   │  
-  │   /help · Open the command reference                                                                             │  
-  │   /queue · Manage queued prompts                                                                                 │  
-  │   /actions · Open the full action palette                                                                        │  
+  │ Filter · /                                                                                                       │  
+  │  ❯ /m                                                                                                            │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to run · Esc to cancel · ↑↓ to choose                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

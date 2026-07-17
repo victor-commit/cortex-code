@@ -1,24 +1,26 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Recovery                                                                                                            
-    Finish the release notes without losing the current work.                                                           
+  ❯ You                                                                                                                 
+    Keep summarizing while context is near the ceiling.                                                                 
                                                                                                                         
-    You · Summarize the remaining release notes and the still-open risks.                                               
                                                                                                                         
-    Code                                                                                                                
                                                                                                                         
-    The release notes cover the auth race fix, the retry window change, and one open risk…                              
                                                                                                                         
-    Completed edits · notes/release.md · notes/risks.md                                                                 
-    Pending · finish the short risk note before publish                                                                 
-    ────────────────────────────────────────────────────────                                                            
+    Context  ████████████████████░░  948K / 1.0M                                                                        
                                                                                                                         
-    ✗ This conversation is too large to continue as-is                                                                  
-    Your transcript, draft, and completed edits are saved.                                                              
-    Transcript, draft, pending task, and completed edits stay readable.                                                 
-    Draft kept · Keep the risk note short before we publish.                                                            
+    Context is nearly full · compact before the next send                                                               
+    Older tool bodies can fold without losing your draft.                                                               
                                                                                                                         
-    › Evidence · Enter to Expand technical details                                                                      
+                                                                                                                        
+    › Compact now                                                                                                       
+      Send anyway (may truncate)                                                                                        
+      Open context sidebar                                                                                              
+                                                                                                                        
+    Enter compacts · Esc returns with context bar visible                                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Recover from full context                                                                                        │  
-  │ A summary replaces older visible context. Full history stays preserved.                                          │  
-  │ › Compact and continue                                                                                           │  
-  │  n for Start new session                                                                                         │  
-  │  Esc to Cancel · keep this conversation paused                                                                   │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

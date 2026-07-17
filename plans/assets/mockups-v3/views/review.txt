@@ -1,27 +1,22 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
-                                                                                                                        
-    Code review · temporary detail                                                                                      
-    From the rate-limit path conversation · return restores that turn                                                   
-                                                                                                                        
-    Scope · working tree vs main · 2 files · 3 findings                                                                 
-    Verdict · Changes requested · 1 high · 1 medium · 1 low                                                             
+    Plan review                                                                                                         
+    Findings before continue · approve returns to the same origin                                                       
                                                                                                                         
                                                                                                                         
-    › ● high · middleware.rs:42 · unbounded wait when cap is zero                                                       
-        Selected · open to see the exact file and line evidence                                                         
-      ● medium · retry_policy.rs:88 · test still asserts the old wait value                                             
+    Findings                                                                                                            
                                                                                                                         
-      ● low · login.rs:12 · message could name the shared guard                                                         
+    ● Floor still accepts zero-ms callers                                                                               
+      Request: reject floor_ms under 250                                                                                
+                                                                                                                        
+    ○ Docs mention matches the new guard                                                                                
+      No change required                                                                                                
                                                                                                                         
                                                                                                                         
-    Read-only inspection · files, staging, approvals, tasks, and transcript stay unchanged                              
-                                                                                                                        
-                                                                                                                        
-    › Open selected evidence                                                                                            
-    ↑↓ to choose finding · Esc to return to conversation                                                                
+    › Request changes                                                                                                   
+      Approve plan                                                                                                      
+      Continue without plan edits                                                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +32,9 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Enter selects · Esc returns with findings visible                                                                   
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

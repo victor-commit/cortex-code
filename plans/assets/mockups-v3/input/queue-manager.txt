@@ -1,21 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Three prompts are waiting behind the live stream.                                                                   
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-    You · Check the retry path before we merge.                                                                         
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    Manage queued prompts. Your composer draft stays exactly as you left it.                                            
+  ◆ Cortex                                                                                                                
+    Still writing the retry summary…                                                                                    
                                                                                                                         
                                                                                                                         
-    Paused draft · 3 authored lines                                                                                     
-    › Check the retry path in @retry                                                                                    
-      Then explain the failure path that still needs coverage before the merge;                                         
-        wrap: include a concise test plan with the visible recovery behavior.                                           
-      Keep the summary short before we merge.                                                                           
+    Queue                                                                                                               
+    Reorder · remove · Enter to send now                                                                                
                                                                                                                         
+    › 1  Add floor integration case · next                                                                              
+      2  Document jitter order · waiting                                                                                
+      3  Note rate-limit ceiling · waiting                                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Queued prompts · run after the current turn · Enter to apply · Esc to cancel                                     │  
-  │ Apply shown reorders and removals against opened revisions · payloads move as one                                │  
-  │ › 1 · queue-item-1 rev=1 · Also list unit tests. [attachment: queue-notes-a.md] · [next]                         │  
-  │   2 · queue-item-2 rev=2 · Then summarize risks. [attachment: queue-notes-b.md]                                  │  
-  │ r to reorder · x to remove · n to run next · selected payload moves as one unit                                  │  
+  │ Selected · 1 of 3 · send interrupts safely                                                                       │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to send now · d remove · j/k reorder · Esc dismiss                                                         │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

@@ -1,9 +1,10 @@
-//! Public pure-Cortex dump CLI (F1–F3 auth + conversation + tools).
+//! Public pure-Cortex dump CLI (F1–F6 auth + conversation + tools + pickers + permissions + views).
 //!
 //! Commands:
 //!   --list                 list implemented IDs
-//!   --publish-pilots       render + publish all F1–F3 IDs into mockups-v3
+//!   --publish-pilots       render + publish all F1–F6 IDs into mockups-v3
 //!   --publish <id>         publish one id
+//!   --publish-batch <name> publish one batch (auth|conversation|tools|pickers|permissions|views|f4-f6)
 
 use std::process::ExitCode;
 
@@ -16,7 +17,7 @@ fn main() -> ExitCode {
     if args == ["--list"] {
         for pilot in mockup_harness_v4::list_pilots() {
             println!(
-                "{}\t{}\timplemented\tf1-f3\tpure-cortex-shell",
+                "{}\t{}\timplemented\tf1-f6\tpure-cortex-shell",
                 pilot.category, pilot.id
             );
         }
@@ -69,7 +70,6 @@ fn main() -> ExitCode {
         };
     }
 
-    // Optional filter publish: --publish-batch auth|conversation|tools
     if args.len() == 2 && args[0] == "--publish-batch" {
         let batch = args[1].as_str();
         let filter: Box<dyn Fn(&str) -> bool> = match batch {
@@ -115,8 +115,118 @@ fn main() -> ExitCode {
                         | "diff-edit"
                 )
             }),
+            "pickers" | "f4" => Box::new(|id| {
+                matches!(
+                    id,
+                    "slash-menu"
+                        | "command-palette"
+                        | "command-palette-submenu"
+                        | "model-picker"
+                        | "model-picker-filtered"
+                        | "agent-picker"
+                        | "skills-picker"
+                        | "session-picker"
+                        | "variant-picker"
+                        | "fork-picker"
+                        | "theme-picker"
+                        | "export-picker"
+                        | "attachment-picker"
+                        | "subagent-picker"
+                        | "file-mention"
+                        | "queue-manager"
+                        | "composer-multiline"
+                )
+            }),
+            "permissions" | "f5" => Box::new(|id| {
+                matches!(
+                    id,
+                    "permission-shell"
+                        | "permission-file-edit"
+                        | "permission-deny-reason"
+                        | "blocked-command"
+                        | "turn-error"
+                        | "error-network"
+                        | "error-context"
+                        | "rate-limit"
+                        | "interrupt"
+                        | "checkpoint-undo"
+                        | "share"
+                )
+            }),
+            "views" | "f6" => Box::new(|id| {
+                matches!(
+                    id,
+                    "status"
+                        | "timeline"
+                        | "mcp"
+                        | "diff-viewer"
+                        | "diff-viewer-staging"
+                        | "help"
+                        | "review"
+                        | "theme-gallery-dark"
+                        | "theme-gallery-light"
+                        | "sidebar-context"
+                        | "sidebar-files"
+                        | "sidebar-lsp"
+                        | "sidebar-todo"
+                        | "sidebar-subagents"
+                        | "sidebar-mcp"
+                        | "sidebar-queue"
+                )
+            }),
+            "f4-f6" => Box::new(|id| {
+                matches!(
+                    id,
+                    "slash-menu"
+                        | "command-palette"
+                        | "command-palette-submenu"
+                        | "model-picker"
+                        | "model-picker-filtered"
+                        | "agent-picker"
+                        | "skills-picker"
+                        | "session-picker"
+                        | "variant-picker"
+                        | "fork-picker"
+                        | "theme-picker"
+                        | "export-picker"
+                        | "attachment-picker"
+                        | "subagent-picker"
+                        | "file-mention"
+                        | "queue-manager"
+                        | "composer-multiline"
+                        | "permission-shell"
+                        | "permission-file-edit"
+                        | "permission-deny-reason"
+                        | "blocked-command"
+                        | "turn-error"
+                        | "error-network"
+                        | "error-context"
+                        | "rate-limit"
+                        | "interrupt"
+                        | "checkpoint-undo"
+                        | "share"
+                        | "status"
+                        | "timeline"
+                        | "mcp"
+                        | "diff-viewer"
+                        | "diff-viewer-staging"
+                        | "help"
+                        | "review"
+                        | "theme-gallery-dark"
+                        | "theme-gallery-light"
+                        | "sidebar-context"
+                        | "sidebar-files"
+                        | "sidebar-lsp"
+                        | "sidebar-todo"
+                        | "sidebar-subagents"
+                        | "sidebar-mcp"
+                        | "sidebar-queue"
+                )
+            }),
             other => {
-                eprintln!("unknown batch: {other} (auth|conversation|tools)");
+                eprintln!(
+                    "unknown batch: {other} (auth|conversation|tools|pickers|permissions|views|f4-f6)"
+                );
                 return ExitCode::from(2);
             }
         };
@@ -153,10 +263,10 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "mockup-harness-v4 (pure Cortex dump F1-F3)\n\
+        "mockup-harness-v4 (pure Cortex dump F1-F6)\n\
          --list\n\
          --publish-pilots\n\
          --publish <id>\n\
-         --publish-batch <auth|conversation|tools>\n"
+         --publish-batch <auth|conversation|tools|pickers|permissions|views|f4-f6>\n"
     );
 }

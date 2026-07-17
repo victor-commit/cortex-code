@@ -1,28 +1,27 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Fork from this turn into a new branch of the chat.                                                                  
                                                                                                                         
                                                                                                                         
-    You · Continue after inspecting session history.                                                                    
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
     Fork conversation                                                                                                   
+    Branches keep history up to the selected turn                                                                       
                                                                                                                         
-    Start a new session from a selected point while the source stays unchanged.                                         
+    › Fork at pause                                                                                                     
+      New session · original stays untouched                                                                            
+      Fork + open draft                                                                                                 
+      Copies the current draft into the fork                                                                            
+      Cancel                                                                                                            
+      Return without branching                                                                                          
                                                                                                                         
                                                                                                                         
-    Source                                                                                                              
-    Retry policy review · Current session remains intact                                                                
-    Later turns after the checkpoint stay only in the source.                                                           
                                                                                                                         
-    Checkpoint                                                                                                          
-    Today, 09:37 · Updated the retry policy                                                                             
-    Shared history includes only work through this point.                                                               
                                                                                                                         
-    Destination                                                                                                         
-    New conversation · begins at the selected checkpoint                                                                
-    Creates a distinct resumable session copy; the source stays unchanged.                                              
-                                                                                                                        
-    Fork never overwrites the original timeline or replaces its latest state.                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Fork · new session from Today, 09:37                                                                             │  
-  │ Source history stays unchanged after confirmation.                                                               │  
-  │ › Fork · Esc to cancel                                                                                           │  
-  │ Cancel returns to the exact timeline selection and source preview.                                               │  
-  │ No filter · source, checkpoint, and destination are one decision                                                 │  
+  │ Confirm fork destination                                                                                         │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to fork · Esc to cancel                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

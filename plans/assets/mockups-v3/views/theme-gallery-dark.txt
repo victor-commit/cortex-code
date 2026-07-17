@@ -1,27 +1,25 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Theme choice                                                                                                        
-    Preview the theme swatches before applying.                                                                         
-                                                                                                                        
-    Theme gallery                                                                                                       
-    From theme picker · pending selection and origin stay intact on return                                              
-    Five brand themes · swatches only use multi-hue samples                                                             
-                                                                                                                        
-    › Dark           cortex default   warm          [███ ███ ███ ███ ███]  active                                       
-        Selected · labels stay readable; colors are sample only                                                         
-    ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-      Light          daytime          cool          [███ ███ ███ ███ ███]                                               
-                                                                                                                        
-    ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-      VS Code dark   familiar         neutral       [███ ███ ███ ███ ███]                                               
-                                                                                                                        
-    ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-      Monokai        vivid            high-contrast [███ ███ ███ ███ ███]                                               
-                                                                                                                        
-    ────────────────────────────────────────────────────────────────────────────────────────────────────────────────    
-      Ocean          cool blues       calm          [███ ███ ███ ███ ███]                                               
+    Theme gallery · dark                                                                                                
+    CortexNight canvas #141414 · magenta accent #bb9af7                                                                   
                                                                                                                         
                                                                                                                         
+    Swatches                                                                                                            
+                                                                                                                        
+    Text            #e1e1e1 primary                                                                                     
+    Accent          #bb9af7 assistant                                                                                   
+    Running         #7dcfff live tools                                                                                  
+    Success         #9ece6a additions                                                                                   
+    Error           #f7768e failures                                                                                    
+    Warning         #e0af68 commands                                                                                    
+                                                                                                                        
+                                                                                                                        
+    Preview jewel                                                                                                       
+    ╭──────────────────────────────────────────────╮                                                                    
+    │ ❯ sample draft on CortexNight                  │                                                                    
+    │ Cortex · always-approve                 │                                                                       
+    ╰──────────────────────────────────────────────╯                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +28,13 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Selected · Dark · preview samples stay temporary until Apply                                                        
-                                                                                                                        
-    › Esc to return to theme picker · keeps pending selection and origin                                                
-    ↑↓ to choose theme · apply stays on the picker, not this gallery                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · Apply lives on the theme picker dock                                                                
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

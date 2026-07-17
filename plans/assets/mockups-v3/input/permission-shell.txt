@@ -1,22 +1,19 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-     › You · Check the retry path before we merge.                                                                      
+  ❯ You                                                                                                                 
+    Tighten the shell path before the next suite run.                                                                   
                                                                                                                         
                                                                                                                         
-    Code paused · Shell command needs your approval                                                                     
                                                                                                                         
-    Why Code needs it: to confirm the retry changes before continuing this turn.                                        
                                                                                                                         
-    What running it will do: inspect the retry diff and keep the result in this turn.                                   
                                                                                                                         
-    Command (case-sensitive)                                                                                            
-      printf '%s\n' "retry check"                                                                                       
-    Working directory: ~/project · Scope: this command only                                                             
-    Command detail collapsed · e to expand                                                                              
+  ◆ Cortex                                                                                                                
                                                                                                                         
-    Saved for this session · git diffs under src/net · Careful edits                                                    
+  Shell  cargo test retry -- --nocapture                                                                                
+    ⎿ needs permission before running on this host                                                                      
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Permission choices                                                                                               │  
-  │ › Allow once · run once, then open the pending edit                                                              │  
-  │   Allow for this project · save the exact scope shown above                                                      │  
-  │   Deny · do not run it                                                                                           │  
-  │ Enter to allow once · Esc to cancel · keep request pending                                                       │  
+  │ Allow this command?                                                                                              │  
+  │  cargo test retry -- --nocapture                                                                                 │  
+  │  Working directory · /projects/demo                                                                              │  
+  │  › Allow once                                                                                                    │  
+  │    Allow for session                                                                                             │  
+  │    Deny                                                                                                          │  
+  │ Enter allows once · a always · Esc denies                                                                        │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

@@ -1,6 +1,6 @@
 //! Pure Cortex dump harness (mockup-harness-v4).
 //!
-//! Publishes F1–F3 TXT/PNG into existing product roots:
+//! Publishes F1–F6 TXT/PNG into existing product roots:
 //! - plans/assets/mockups-v3/
 //! - plans/assets/mockups-v3-gates/
 //!

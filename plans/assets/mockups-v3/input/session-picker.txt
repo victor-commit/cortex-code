@@ -1,27 +1,26 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Resume an earlier conversation in this workspace.                                                                   
                                                                                                                         
                                                                                                                         
-    Work configuration                                                                                                  
-    Resume a conversation or inspect its history.                                                                       
                                                                                                                         
-    Resume a conversation                                                                                               
                                                                                                                         
-    Filter · all saved conversations · 3 matches                                                                        
                                                                                                                         
+                                                                                                                        
+    Sessions                                                                                                            
+    Local resume list · drafts restore with the transcript                                                              
                                                                                                                         
     › Retry policy review                                                                                               
-      ~/project · Today, 10:42 · Current                                                                                
-      Tests pass; review is ready                                                                                       
+      17 turns · master · open draft kept                                                                               
+      Cache invalidation sketch                                                                                         
+      9 turns · feature/cache · idle                                                                                    
+      MCP docs research                                                                                                 
+      4 turns · connect work still open                                                                                 
                                                                                                                         
                                                                                                                         
-      Document release steps                                                                                            
-      ~/project · Yesterday, 16:08                                                                                      
-      Drafted the release checklist                                                                                     
                                                                                                                         
-                                                                                                                        
-      Fix search pagination                                                                                             
-      ~/storefront · Monday, 14:21                                                                                      
-      Found the boundary condition                                                                                      
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Resume · Retry policy review                                                                                     │  
-  │ Latest stable work · saved draft ready                                                                           │  
-  │ › Resume latest · t to view timeline                                                                             │  
-  │ f to fork · Esc to back · ↑↓ to choose                                                                           │  
+  │ Selected · Retry policy review                                                                                   │  
   │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to resume · Esc to cancel · ↑↓ to choose                                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

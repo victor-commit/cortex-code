@@ -1,40 +1,40 @@
                                                                                                                         
-                                                                                                                        
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
+   master /projects/demo                                                                                               
                                                                                                                         
     Session status                                                                                                      
-    Active configuration and what needs attention · return keeps draft and turn                                         
+    Active configuration · return keeps draft and turn                                                                  
+                                                                                                                        
                                                                                                                         
     Active now                                                                                                          
-    Model · Claude Opus 4.8                                                                                             
-    Everyday coding · balanced speed for daily work                                                                     
-    How Code should work · Careful edits                                                                                
-    asks before editing project files                                                                                   
-    Project · ~/project · main · branch is clean                                                                        
-    Session · Retry policy review · 17 turns today                                                                      
+    Model · Cortex                                                                                                    
+    Mode · always-approve · Shift+Tab cycles                                                                            
+    Project · /projects/demo · master · clean                                                                           
+    Session · Retry policy review · 17 turns                                                                            
                                                                                                                         
     Needs attention                                                                                                     
-    ● Docs research · Needs sign-in before the next lookup                                                              
-      Open connection to continue that capability                                                                       
-    ○ Local tools · Ready · no blockers                                                                                 
-                                                                                                                        
-    Advanced raw metadata stays hidden until you open Details                                                           
+    ● Docs research · needs sign-in before next lookup                                                                  
+    ○ Local tools · ready · no blockers                                                                                 
                                                                                                                         
                                                                                                                         
+    Context  ████████░░░░░░░░░░░░  8.5K / 1.0M                                                                          
                                                                                                                         
-                                                                                                                        
+    Advanced raw metadata stays folded until Details                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    › d for Details · Esc to return · keeps draft, selection, and origin                                                
-    This view answers configuration questions without duplicating the statusline                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · keeps draft, selection, and origin                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

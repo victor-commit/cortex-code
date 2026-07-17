@@ -1,24 +1,23 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Spawn a task-local helper for this turn.                                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Continue the paused conversation.                                                                             
                                                                                                                         
                                                                                                                         
-    Delegate this task                                                                                                  
                                                                                                                         
-    Pick a helper for the current task only. Global work style stays unchanged.                                         
+    Subagents                                                                                                           
+    Short-lived helpers · results fold back into chat                                                                   
                                                                                                                         
-                                                                                                                        
-    › Explore auth boundaries                                                                                           
-      Find existing auth middleware and the shared guard path.                                                          
-                                                                                                                        
-      Summarize findings                                                                                                
-      Turn the open notes into a short review for this turn.                                                            
-                                                                                                                        
-      Plan the next edit                                                                                                
-      Outline a narrow change without applying it.                                                                      
-                                                                                                                        
+    › audit-subagent                                                                                                    
+      Scan retry helpers for races                                                                                      
+      coverage-subagent                                                                                                 
+      Find untested floor cases                                                                                         
+      docs-subagent                                                                                                     
+      Gather related notes without edits                                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Explore auth boundaries · this task only                                                              │  
-  │ Delegation stays task-local; your session work style is unchanged.                                               │  
-  │ › Use this helper · Esc to Cancel                                                                                │  
-  │ ↑↓ to Choose · outcome describes fit for the current task                                                        │  
-  │ No filter · three task helpers fit on one screen                                                                 │  
+  │ Selected · audit-subagent                                                                                        │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to spawn · Esc to cancel                                                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

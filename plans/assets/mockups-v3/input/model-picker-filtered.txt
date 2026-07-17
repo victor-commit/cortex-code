@@ -1,22 +1,21 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Filter the catalog for a faster match.                                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Continue the paused conversation.                                                                             
                                                                                                                         
                                                                                                                         
-    Choose a model                                                                                                      
                                                                                                                         
-    Filter · claude · 2 of 3 matching                                                                                   
-    Only models that match this query stay visible. Original order is kept.                                             
+    Models · filter "fast"                                                                                              
+    2 matches · filter text stays until Esc                                                                             
                                                                                                                         
-      Claude Sonnet 4.5                                                                                                 
-      Current · Balanced speed and depth                                                                                
-                                                                                                                        
-    › Claude Opus 4.8                                                                                                   
-      More depth for complex changes · slower                                                                           
-                                                                                                                        
-                                                                                                                        
+    › xAI model Fast                                                                                                       
+      Quick edits and triage · lighter reasoning                                                                        
+      Cortex (high)                                                                                                   
+      Still listed when the filter touches effort tags                                                                  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Claude Opus 4.8 · 2 of 3 matching                                                                     │  
-  │ Switching applies this choice: deeper reasoning for the next reply only.                                         │  
-  │ › Apply model · c for Clear filter · Esc to Cancel                                                               │  
-  │ ↑↓ to Choose · query stays visible · current choice stays until Apply                                            │  
-  │ Nonmatching models stay hidden; relative order of matches is unchanged.                                          │  
+  │ Filter · fast                                                                                                    │  
+  │  ❯ fast                                                                                                          │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to apply · Esc clears filter then cancels                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

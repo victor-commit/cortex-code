@@ -1,26 +1,25 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-    You · Check the retry path before we merge.                                                                         
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    The conversation stays visible while you choose an action.                                                          
-                                                                                                                        
-                                                                                                                        
-    Preserved draft · unchanged while the palette is open                                                               
-    › Check the retry path in @retry                                                                                    
-      Then explain the failure path that still needs coverage before the merge;                                         
-      Keep the summary short before we merge.                                                                           
+  ❯ You                                                                                                                 
+    Open a command without leaving this chat.                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
+    Actions                                                                                                             
+    Shortcuts that stay bound to this origin                                                                            
                                                                                                                         
+    › Switch model                                                                                                      
+      Open the Cortex catalog for this turn                                                                               
+      Queued prompts                                                                                                    
+      Reorder, drop, or send the next prompt now                                                                        
+      All shortcuts                                                                                                     
+      Ctrl+. cheatsheet with context-sensitive hints                                                                    
+      Export conversation                                                                                               
+      Markdown or plain text snapshot                                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Filter actions · query: (all) · 4 matching · Enter to run · Esc to cancel                                        │  
-  │ › Recall an older prompt · put an earlier prompt in the draft                                                    │  
-  │   Stash this draft · save it without sending                                                                     │  
-  │   Restore stashed draft · put the saved draft back in the composer                                               │  
-  │   Queued prompts · manage the queued prompt backlog ▸                                                            │  
+  │ Filter · empty shows recent actions                                                                              │  
+  │  ❯                                                                                                               │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to open · Esc to cancel · ↑↓ to choose                                                                     │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

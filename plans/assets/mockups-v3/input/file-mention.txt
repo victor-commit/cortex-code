@@ -1,26 +1,25 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-    You · Check the retry path before we merge.                                                                         
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    I can add a project file without changing the rest of your draft.                                                   
-                                                                                                                        
-                                                                                                                        
-    Paused draft · 3 authored lines                                                                                     
-    › Check the retry path in @retry                                                                                    
-      Then explain the failure path that still needs coverage before the merge;                                         
-        wrap: include a concise test plan with the visible recovery behavior.                                           
-      Keep the summary short before we merge.                                                                           
+  ❯ You                                                                                                                 
+    Mention a path with @ before sending.                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
+    Files · @                                                                                                           
+    Fuzzy path match · soft highlight on hits                                                                           
+                                                                                                                        
+    › crates/agent/src/ retry.rs                                                                                        
+      14 KB · last touched this branch                                                                                  
+                                                                                                                        
+      crates/agent/src/rate_limit.rs                                                                                    
+      9 KB · related helper                                                                                             
+                                                                                                                        
+      tests/retry_floors.rs                                                                                             
+      3 KB · suite entry                                                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ @ files · project-relative paths · query: @retry · 3 matching project files                                      │  
-  │ › src/net/retry_policy.rs · project file · best match                                                            │  
-  │   src/net/retry_queue.rs · project file                                                                          │  
-  │   tests/net/retry_policy_test.rs · project file · test                                                           │  
-  │ › Submit prepared prompt · Tab to insert file · Esc to dismiss · ↑↓ to choose                                    │  
+  │ Filter · @ret                                                                                                    │  
+  │  ❯ Check @ret                                                                                                    │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to insert · Esc to cancel · ↑↓ to choose                                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

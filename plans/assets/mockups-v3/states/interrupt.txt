@@ -1,25 +1,17 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Recovery                                                                                                            
-    Finish the release notes without losing the current work.                                                           
+  ❯ You                                                                                                                 
+    Explain the race in the flush root briefly.                                                                         
                                                                                                                         
-    You · Summarize the remaining release notes and the still-open risks.                                               
                                                                                                                         
-    Code                                                                                                                
+  ◆ Cortex                                                                                                                
+    Two writers can skip the watched counter when the                                                                   
+    snapshot freezes…                                                                                                   
                                                                                                                         
-    The release notes cover the auth race fix, the retry window change, and one open risk…                              
-    █                                                                                                                   
-    Completed earlier · retry window copy accepted for the release branch.                                              
                                                                                                                         
-    ────────────────────────────────────────────────────────                                                            
-                                                                                                                        
-    ● You stopped this reply · 12s in                                                                                   
-    Partial answer kept · saved in this conversation                                                                    
-    Queued follow-ups and attachments stay queued in their original order.                                              
-    Draft kept · Keep the risk note short before we publish.                                                            
-    Attachment · notes/risk-follow-up.md · stays queued second                                                          
-    Continue runs first, then queued follow-ups keep their order.                                                       
-    Rephrase restores the original prompt in the composer for editing.                                                  
+    Interrupted · stream stopped with [stop]                                                                            
+    Draft stays in the jewel · partial answer kept above                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -28,13 +20,21 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ○ idle after cancel · Ctrl+c or [stop] both preserve draft                                                          
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Resume the stopped reply                                                                                         │  
-  │ Continue keeps the partial answer and runs before queued work.                                                   │  
-  │ › Continue reply                                                                                                 │  
-  │  r for Rephrase request                                                                                          │  
-  │  Esc to Cancel · keep the partial answer                                                                         │  
+  │ ❯ Continue from the partial note…                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

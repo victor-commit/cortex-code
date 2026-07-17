@@ -1,4 +1,4 @@
-//! Pure product chrome + F1-F3 paint unit gates.
+//! Pure product chrome + F1-F6 paint unit gates.
 
 use mockup_harness_v4::chrome::canvas::Canvas;
 use mockup_harness_v4::chrome::components::{
@@ -82,8 +82,8 @@ fn logo_login_smoke_cells() {
 }
 
 #[test]
-fn f1_f3_inventory_is_twenty_seven() {
-    assert_eq!(list_pilots().len(), 27);
+fn f1_f6_inventory_is_seventy_one() {
+    assert_eq!(list_pilots().len(), 71);
     let ids: Vec<&str> = list_pilots().iter().map(|p| p.id).collect();
     for expected in [
         "login",
@@ -97,13 +97,36 @@ fn f1_f3_inventory_is_twenty_seven() {
         "shell",
         "todo-list",
         "compact",
+        // F4
+        "slash-menu",
+        "model-picker",
+        "queue-manager",
+        "composer-multiline",
+        "file-mention",
+        // F5
+        "permission-shell",
+        "permission-file-edit",
+        "blocked-command",
+        "turn-error",
+        "error-network",
+        "rate-limit",
+        "interrupt",
+        "share",
+        // F6
+        "status",
+        "mcp",
+        "diff-viewer",
+        "help",
+        "theme-gallery-dark",
+        "theme-gallery-light",
+        "sidebar-queue",
     ] {
         assert!(ids.contains(&expected), "missing id {expected}");
     }
 }
 
 #[test]
-fn all_f1_f3_screens_reject_copper_brand() {
+fn all_f1_f6_screens_reject_copper_brand() {
     for spec in list_pilots() {
         let canvas = render_pilot(spec.id).unwrap_or_else(|e| panic!("{}: {e}", spec.id));
         let text = canvas.to_text();
@@ -122,11 +145,33 @@ fn all_f1_f3_screens_reject_copper_brand() {
         );
         assert!(!text.contains("Ask Code"), "ask code residual: {}", spec.id);
         assert!(!text.contains("Work mode"), "work mode residual: {}", spec.id);
+        assert!(
+            !text.contains("How Code should work"),
+            "how-code residual: {}",
+            spec.id
+        );
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 40, "row count for {}", spec.id);
         let bad_width = lines.iter().any(|l| l.chars().count() != 120);
         assert!(!bad_width, "row width for {}", spec.id);
     }
+}
+
+#[test]
+fn f4_f6_markers_putty_and_stop() {
+    let model = render_pilot("model-picker").unwrap().to_text();
+    assert!(model.contains(MODEL_LABEL));
+    assert!(model.contains("Shift+Tab:mode"));
+    assert!(!model.contains("Claude"));
+    let interrupt = render_pilot("interrupt").unwrap().to_text();
+    assert!(interrupt.contains("[stop]"));
+    assert!(interrupt.contains(MODEL_LABEL));
+    let help = render_pilot("help").unwrap().to_text();
+    assert!(help.contains("[stop]"));
+    assert!(help.contains("Shift+Tab"));
+    let status = render_pilot("status").unwrap().to_text();
+    assert!(status.contains(MODEL_LABEL));
+    assert!(!status.contains("Claude Opus"));
 }
 
 #[test]
@@ -234,6 +279,12 @@ fn png_glyph_coverage_sample_batch() {
         "diff-edit",
         "empty",
         "connect-oauth",
+        "model-picker",
+        "permission-shell",
+        "interrupt",
+        "status",
+        "sidebar-mcp",
+        "theme-gallery-light",
     ] {
         let canvas = render_pilot(id).expect(id);
         let bytes = render_png(&canvas).expect("png");
