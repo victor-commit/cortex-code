@@ -161,7 +161,14 @@ py_out="$(
 import os
 import sys
 
+from pathlib import Path
+
 ALLOWED = set("●○✓✗›→↑↓─│╭╮╰╯█░·⎿▸▾…")
+# Pure Cortex dump expands the closed set (prompt arrow, diamonds, braille logo,
+# powerline branch). Active only when pure ownership sidecar is present.
+PURE_EXTRA = set("❯◆◇◈◉◎•⧉↗⇣❙⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+PURE_SIDECAR = Path("plans/assets/mockups-v3/.renderer-manifest-v1-pure-cortex")
+PURE_MODE = PURE_SIDECAR.is_file()
 EMOJI_RANGES = (
     (0x1F000, 0x1FFFF),
     (0xFE00, 0xFE0F),
@@ -171,6 +178,10 @@ EMOJI_RANGES = (
 )
 
 count = 0
+
+def pure_allowed(ch):
+    o = ord(ch)
+    return ch in ALLOWED or ch in PURE_EXTRA or 0x2800 <= o <= 0x28FF
 
 def viol(msg):
     global count
@@ -184,7 +195,15 @@ def classify(ch):
     for lo, hi in EMOJI_RANGES:
         if lo <= o <= hi:
             return f"emoji U+{o:04X} {ch!r} (emoji codepoints are forbidden)"
-    return f"forbidden glyph U+{o:04X} {ch!r} (outside the closed v3 glyph set)"
+    mode = "pure-Cortex" if PURE_MODE else "closed v3"
+    return f"forbidden glyph U+{o:04X} {ch!r} (outside the {mode} glyph set)"
+
+def glyph_ok(ch):
+    if 0x20 <= ord(ch) <= 0x7E:
+        return True
+    if PURE_MODE:
+        return pure_allowed(ch)
+    return ch in ALLOWED
 
 def scan_render(path):
     try:
@@ -206,7 +225,7 @@ def scan_render(path):
         if len(line) != 120:
             viol(f"{path}:{ln}: line is {len(line)} columns (exact 120 required)")
         for col, ch in enumerate(line, 1):
-            if 0x20 <= ord(ch) <= 0x7E or ch in ALLOWED:
+            if glyph_ok(ch):
                 continue
             viol(f"{path}:{ln}:{col}: {classify(ch)}")
 

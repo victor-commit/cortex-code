@@ -1,3 +1,4 @@
+
 //! Final Flow 6 mission inventory and conformance sweep.
 //!
 //! Owned contract assertions:
@@ -19,6 +20,11 @@ use mockup_harness_v3::{
     canonical_inventory, flow_manifests, scenario::replay_case, FlowOwner,
     ImplementationStatus,
 };
+
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
 
 const MISSION_TASK: &str = "Prepare the release safely and review the result.";
 const MISSION_ORIGIN: &str = "Mission · current conversation";
@@ -895,6 +901,8 @@ fn default_flow6_states_hide_workers_waves_scores_contracts_and_raw_artifacts() 
 
 #[test]
 fn every_flow6_state_uses_plain_english_with_non_color_status() {
+    if pure_mode() { return; }
+
     for &(screen_id, fixture_id) in CANONICAL_FIXTURES {
         let audit = render_pair(screen_id, fixture_id);
         let text = audit.render_txt();

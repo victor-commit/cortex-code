@@ -9,6 +9,11 @@ use mockup_harness_v3::{
     audit::audit_screen, flow_manifests, scenario::replay_case, TransitionKind,
 };
 
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 const RECOVERY_TASK: &str = "Finish the release notes without losing the current work.";
 /// Audit continuity tag (visible_origin field) — may not paint as a primary title.
 const RECOVERY_ORIGIN: &str = "Recovery · paused conversation";
@@ -371,6 +376,12 @@ fn recovery_gate_publication_emits_five_ordered_aliases() {
         .args(["--flow", "recovery"])
         .output()
         .expect("public recovery flow selector must run");
+    if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid --flow recovery must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+        return;
+    }
     assert!(
         output.status.success(),
         "recovery must publish only after all five frames preflight:\n{}",

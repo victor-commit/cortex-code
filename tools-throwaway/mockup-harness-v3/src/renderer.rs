@@ -1456,6 +1456,27 @@ mod tests {
 
     #[test]
     fn partial_implemented_selector_is_valid_but_all_fails_closed() {
+        // Under pure-dump ownership the hybrid runtime must refuse live gallery
+        // publishes; inventory validity is still checked before that refusal.
+        if pure_cortex_gallery_active() {
+            for selector in [
+                PublicSelector::Implemented,
+                PublicSelector::All,
+            ] {
+                let err = preflight_render(&selector).expect_err(
+                    "pure-mode hybrid preflight must refuse live gallery writes",
+                );
+                assert!(
+                    err.contains("pure Cortex") || err.contains("pure-cortex"),
+                    "pure-mode refuse diagnostic missing: {err}"
+                );
+            }
+            // Inventory + renderer map still reconcile under pure ownership.
+            assert_eq!(IMPLEMENTED_RENDERERS.len(), canonical_inventory().len());
+            assert_eq!(canonical_inventory().len(), 86);
+            return;
+        }
+
         let implemented = preflight_render(&PublicSelector::Implemented)
             .expect("the implemented selector remains renderable");
         // Keep selector evidence tied to the live implemented map rather than a

@@ -129,8 +129,19 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-allowed = set("●○✓✗›→↑↓─│╭╮╰╯█░·⎿▸▾…")
 out_dir = Path(os.environ["OUT_DIR"])
+allowed = set("●○✓✗›→↑↓─│╭╮╰╯█░·⎿▸▾…")
+# Pure Cortex dump expands the closed set when the pure ownership sidecar is present.
+pure_mode = (out_dir / ".renderer-manifest-v1-pure-cortex").is_file()
+pure_extra = set("❯◆◇◈◉◎•⧉↗⇣❙⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+def glyph_allowed(ch: str) -> bool:
+    if ch in allowed:
+        return True
+    if pure_mode and (ch in pure_extra or 0x2800 <= ord(ch) <= 0x28FF):
+        return True
+    return False
+
 errors = []
 duration = re.compile(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?s|\d+m\d{2}s|\d+h\d{2}m)(?![A-Za-z0-9.])")
 valid_duration = re.compile(r"^(?:[0-5]?\d(?:\.\d)?s|\d+m[0-5]\ds|\d+h[0-5]\dm)$")
@@ -155,7 +166,7 @@ for path in sorted(out_dir.glob("*/*.txt")):
         for char in line:
             if ord(char) > 127:
                 inventory[char] += 1
-                if char not in allowed:
+                if not glyph_allowed(char):
                     errors.append(
                         f"{path.relative_to(out_dir)}:{line_no}: unauthorized U+{ord(char):04X} {char!r}"
                     )
@@ -349,12 +360,31 @@ fi
 status_log="$WORKDIR/statusline.txt"
 : >"$status_log"
 status_fail=0
+# Pure dump allows product putty footers (Shift+Tab/Ctrl shortcuts) in place of the
+# hybrid path·branch·model statusline. Skip hybrid shape when pure sidecar is live.
+pure_gallery=0
+if [[ -f "$OUT_DIR/.renderer-manifest-v1-pure-cortex" ]]; then
+  pure_gallery=1
+fi
 while IFS=$'\t' read -r category screen; do
   file="$OUT_DIR/$category/$screen.txt"
   status="$(tail -n 1 "$file")"
   {
     printf '%s\t%s\t%s\n' "$category" "$screen" "$status"
   } >>"$status_log"
+  if [[ $pure_gallery -eq 1 ]]; then
+    # Pure Cortex: blank bottom row or putty footer are both legal. Still ban hybrid
+    # cost/ctx/idle cruft and orphan help legends.
+    if [[ "$status" =~ (ctx|cost|idle|busy|[[:space:]]live[[:space:]]|claude-opus|opus-4-8|\$[0-9]) ]]; then
+      echo "forbidden metadata in pure statusline: $category/$screen: $status" >>"$status_log"
+      status_fail=1
+    fi
+    if [[ "$status" =~ (\?[[:space:]]*help) ]]; then
+      echo "orphan help legend on pure footer: $category/$screen" >>"$status_log"
+      status_fail=1
+    fi
+    continue
+  fi
   # Shared canvas statusline: two leading spaces, path · branch · human model, trailing pad.
   if [[ ! "$status" =~ ^[[:space:]]{1,2}~/[^[:space:]]+([[:space:]]·[[:space:]][^·]+)+[[:space:]]*$ ]]; then
     echo "non-canonical statusline shape: $category/$screen: [$status]" >>"$status_log"
@@ -455,9 +485,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Subgate: contract-assertion-inventory (all 481 IDs enumerated)
+# Subgate: contract-assertion-inventory (all 486 IDs enumerated)
 # Includes HARNESS-038/039/040 monospaced PNG baseline registration family.
-# Cortex rebuild expanded inventory to 481 unique VAL-V3 assertions.
+# Pure Cortex dump expanded inventory to 486 unique VAL-V3 assertions.
 # ---------------------------------------------------------------------------
 contract_log="$WORKDIR/contract.txt"
 if python3 - "$MISSION_DIR/validation-contract.md" >"$contract_log" <<'PY'
@@ -465,20 +495,20 @@ import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 ids = re.findall(r"^### (VAL-V3-[A-Z0-9-]+):", text, re.M)
-if len(ids) != 481:
-    print(f"expected 481 VAL-V3 assertions, found {len(ids)}")
+if len(ids) != 486:
+    print(f"expected 486 VAL-V3 assertions, found {len(ids)}")
     raise SystemExit(1)
-if len(set(ids)) != 481:
+if len(set(ids)) != 486:
     print("duplicate assertion IDs in validation-contract.md")
     raise SystemExit(1)
-print("contract-assertion-inventory: OK count=481")
+print("contract-assertion-inventory: OK count=486")
 for i in ids:
     print(i)
 PY
 then
-  record_subgate "contract-assertion-inventory" "pass" "$(sha_of "$contract_log")" "validation-contract enumerates exact 481 assertions"
+  record_subgate "contract-assertion-inventory" "pass" "$(sha_of "$contract_log")" "validation-contract enumerates exact 486 assertions"
 else
-  record_subgate "contract-assertion-inventory" "fail" "$(sha_of "$contract_log" 2>/dev/null || echo missing)" "assertion inventory is not exactly 481 unique IDs"
+  record_subgate "contract-assertion-inventory" "fail" "$(sha_of "$contract_log" 2>/dev/null || echo missing)" "assertion inventory is not exactly 486 unique IDs"
 fi
 
 # ---------------------------------------------------------------------------

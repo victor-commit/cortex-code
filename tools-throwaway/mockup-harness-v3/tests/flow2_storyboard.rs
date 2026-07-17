@@ -8,6 +8,11 @@ use mockup_harness_v3::{
     TransitionKind,
 };
 
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
+
 const SUBMITTED_PROMPT: &str = "Check the retry path in @src/net/retry_policy.rs\n\
 Then explain the failure path that still needs coverage before the merge; include a concise test plan with the visible recovery behavior.\n\
 Keep the summary short before we merge.";
@@ -335,11 +340,30 @@ fn public_flow_publishes_six_byte_identical_canonical_aliases() {
         .args(["--flow", "daily-work"])
         .output()
         .expect("the previously published daily flow must run");
-    assert!(prior.status.success());
+    if pure_mode() {
+        assert!(
+            !prior.status.success(),
+            "pure-mode hybrid --flow daily-work must refuse"
+        );
+    } else {
+        assert!(prior.status.success());
+    }
     let output = harness()
         .args(["--flow", "input-and-approval"])
         .output()
         .expect("the public input-and-approval selector must run");
+    if pure_mode() {
+        assert!(
+            !output.status.success(),
+            "pure-mode hybrid --flow input-and-approval must refuse"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("pure Cortex") || stderr.contains("pure-cortex"),
+            "{stderr}"
+        );
+        return;
+    }
     assert!(
         output.status.success(),
         "input and approval must publish after preflight:\n{}",

@@ -10,6 +10,11 @@ use mockup_harness_v3::{
     audit::audit_screen, flow_manifests, scenario::replay_case, TransitionKind,
 };
 
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 const MISSION_TASK: &str = "Prepare the release safely and review the result.";
 const MISSION_ORIGIN: &str = "Mission · current conversation";
 const MISSION_GOAL: &str = "Prepare the release safely and review the result.";
@@ -628,6 +633,12 @@ fn mission_gate_publication_emits_six_ordered_aliases() {
         .args(["--flow", "mission"])
         .output()
         .expect("public mission flow selector must run");
+    if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid --flow mission must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+        return;
+    }
     assert!(
         output.status.success(),
         "mission must publish only after all six frames preflight:\n{}",

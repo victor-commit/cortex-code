@@ -4,6 +4,11 @@ use mockup_harness_v3::{
     audit::audit_screen, flow_manifests, scenario::replay_case, TransitionKind,
 };
 
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
 }
@@ -136,15 +141,27 @@ fn daily_work_storyboard_reconciles_all_six_manifest_transitions() {
         .args(["--flow", "daily-work"])
         .output()
         .expect("the public daily-work selector must run");
-    assert!(
-        output.status.success(),
-        "daily work must publish only after all six canonical screens preflight:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let manifest = String::from_utf8(output.stdout).expect("flow metadata must be UTF-8");
-    assert!(manifest.contains("\"flow\":\"daily-work\""));
-    assert!(manifest.contains("\"screen_id\":\"rich-response\""));
-    assert!(manifest.contains("\"transition_kind\":\"automatic\""));
+    if pure_mode() {
+        assert!(
+            !output.status.success(),
+            "pure-mode hybrid --flow daily-work must refuse over pure roots"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("pure Cortex") || stderr.contains("pure-cortex"),
+            "pure refuse diagnostic missing: {stderr}"
+        );
+    } else {
+        assert!(
+            output.status.success(),
+            "daily work must publish only after all six canonical screens preflight:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let manifest = String::from_utf8(output.stdout).expect("flow metadata must be UTF-8");
+        assert!(manifest.contains("\"flow\":\"daily-work\""));
+        assert!(manifest.contains("\"screen_id\":\"rich-response\""));
+        assert!(manifest.contains("\"transition_kind\":\"automatic\""));
+    }
 
     for (index, (screen, _, _)) in expected.iter().enumerate() {
         let number = index + 1;

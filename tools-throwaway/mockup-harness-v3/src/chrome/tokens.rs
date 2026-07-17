@@ -22,12 +22,39 @@ pub const PNG_HEIGHT: u32 = CANVAS_ROWS as u32 * CELL_HEIGHT;
 /// Accent is reserved for focus/current work, never decoration.
 pub const ACCENT_USE_BUDGET: usize = 3;
 
-/// Every non-ASCII character allowed in a canonical v3 text artifact.
+/// Every non-ASCII character allowed in a canonical hybrid v3 text artifact.
 pub const ALLOWED_GLYPHS: &str = "● ○ ✓ ✗ › → ↑ ↓ ─ │ ╭ ╮ ╰ ╯ █ ░ · ⎿ ▸ ▾ …";
 
-/// Returns the closed functional glyph policy as one stable, audit-friendly string.
+/// Expanded pure-Cortex dump chrome glyphs (mirrors mockup-harness-v4 tokens).
+/// Active only when the pure-ownership sidecar exists on the live gallery root.
+pub const PURE_CORTEX_ALLOWED_GLYPHS: &str = concat!(
+    "● ○ ✓ ✗ › → ↑ ↓ ─ │ ╭ ╮ ╰ ╯ █ ░ · ⎿ ▸ ▾ … ",
+    "❯ ◆ ◇ ◈ ◉ ◎ • ⧉ ↗ ⇣ ❙ ",
+    "⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ ",
+    " "
+);
+
+/// Returns the hybrid closed functional glyph policy as one stable string.
 pub const fn allowed_glyphs() -> &'static str {
     ALLOWED_GLYPHS
+}
+
+const PURE_CORTEX_SIDECAR: &str =
+    "/projects/cortex-code/plans/assets/mockups-v3/.renderer-manifest-v1-pure-cortex";
+
+/// True when pure-Cortex dump owns the live gallery roots.
+pub fn pure_cortex_glyph_mode() -> bool {
+    std::path::Path::new(PURE_CORTEX_SIDECAR).is_file()
+}
+
+/// True when a full braille block codepoint is used for pure-Cortex logos/spinners.
+pub fn is_braille_glyph(c: char) -> bool {
+    (0x2800..=0x28FF).contains(&(c as u32))
+}
+
+/// Returns whether a non-ASCII character is allowed for pure Cortex dump gallery text.
+pub fn pure_cortex_glyph_allowed(c: char) -> bool {
+    c.is_ascii() || PURE_CORTEX_ALLOWED_GLYPHS.contains(c) || is_braille_glyph(c)
 }
 
 /// The result elbow is approved for semantic transcript nesting, but the
@@ -51,10 +78,25 @@ pub fn glyph_rendering(glyph: char) -> Option<GlyphRendering> {
     }
 }
 
-/// Rejects non-ASCII text that has not been explicitly approved for the v3 TUI.
+/// Rejects non-ASCII text that has not been explicitly approved for the active
+/// gallery mode. Hybrid stays on the closed Cortex set; pure dump accepts the
+/// expanded Cortex product chrome (prompt arrow, diamonds, braille, branch).
 pub fn validate_glyphs(text: &str) -> Result<(), String> {
+    let pure = pure_cortex_glyph_mode();
     for character in text.chars() {
-        if !character.is_ascii() && !ALLOWED_GLYPHS.contains(character) {
+        if character.is_ascii() {
+            continue;
+        }
+        if pure {
+            if !pure_cortex_glyph_allowed(character) {
+                // Keep the canonical "unsupported glyph" phrase so negative
+                // fixtures remain stable under pure-mode expansion.
+                return Err(format!(
+                    "unsupported glyph: {character} (pure-Cortex U+{:04X})",
+                    character as u32
+                ));
+            }
+        } else if !ALLOWED_GLYPHS.contains(character) {
             return Err(format!("unsupported glyph: {character}"));
         }
     }

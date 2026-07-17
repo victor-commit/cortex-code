@@ -61,6 +61,28 @@ const ALLOWED_TOKEN_NAMES: &[&str] = &[
 
 const DECORATIVE_GLYPHS: &[char] = &['✦', '✧', '★', '☆', '❖', '◆', '✱'];
 
+// Pure Cortex dump intentionally uses prompt arrow, diamonds, braille, and the
+// powerline branch marker. Keep only true decoration bans (stars / ornate).
+const PURE_DECORATIVE_GLYPH_BANS: &[char] = &['✦', '✧', '★', '☆', '❖', '✱'];
+
+/// Pure-Cortex expanded chrome glyphs (mirrors mockup-harness-v4 tokens).
+const PURE_ALLOWED_GLYPHS: &str = concat!(
+    "● ○ ✓ ✗ › → ↑ ↓ ─ │ ╭ ╮ ╰ ╯ █ ░ · ⎿ ▸ ▾ … ",
+    "❯ ◆ ◇ ◈ ◉ ◎ • ⧉ ↗ ⇣ ❙ ",
+    "⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ ",
+    " "
+);
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
+fn pure_glyph_allowed(c: char) -> bool {
+    c.is_ascii()
+        || PURE_ALLOWED_GLYPHS.contains(c)
+        || (0x2800..=0x28FF).contains(&(c as u32))
+}
+
 const FORBIDDEN_CHROME: &[&str] = &[
     "enter send · / commands",
     "enter send ·",
@@ -295,7 +317,12 @@ fn assert_no_forbidden_chrome(text: &str, label: &str) {
             "{label}: forbidden chrome `{banned}`"
         );
     }
-    for ban in DECORATIVE_GLYPHS {
+    let decorative = if pure_mode() {
+        PURE_DECORATIVE_GLYPH_BANS
+    } else {
+        DECORATIVE_GLYPHS
+    };
+    for ban in decorative {
         assert!(!text.contains(*ban), "{label}: decorative glyph {ban}");
     }
     let lower = text.to_ascii_lowercase();
@@ -306,6 +333,17 @@ fn assert_no_forbidden_chrome(text: &str, label: &str) {
 }
 
 fn assert_closed_glyphs(text: &str, label: &str) {
+    if pure_mode() {
+        for character in text.chars() {
+            if !pure_glyph_allowed(character) {
+                panic!(
+                    "{label}: unsupported pure-Cortex glyph: {character} (U+{:04X})",
+                    character as u32
+                );
+            }
+        }
+        return;
+    }
     validate_glyphs(text).unwrap_or_else(|e| panic!("{label}: glyph policy: {e}"));
     let allowed: HashSet<char> = allowed_glyphs().chars().filter(|c| !c.is_whitespace()).collect();
     for ch in text.chars() {
@@ -454,12 +492,23 @@ fn every_canonical_gallery_pair_has_fixed_canvas_and_closed_glyphs() {
     }
     assert_eq!(txt_count, 86, "exact 86 canonical TXT files");
     assert_eq!(png_count, 86, "exact 86 canonical PNG files");
-    let allowed: HashSet<char> = allowed_glyphs().chars().filter(|c| !c.is_whitespace()).collect();
-    for ch in &used_glyphs {
-        assert!(
-            allowed.contains(ch),
-            "gallery used unauthorized glyph {ch}"
-        );
+    if pure_mode() {
+        for ch in &used_glyphs {
+            assert!(
+                pure_glyph_allowed(*ch),
+                "gallery used unauthorized pure-Cortex glyph {ch} (U+{:04X})",
+                *ch as u32
+            );
+        }
+    } else {
+        let allowed: HashSet<char> =
+            allowed_glyphs().chars().filter(|c| !c.is_whitespace()).collect();
+        for ch in &used_glyphs {
+            assert!(
+                allowed.contains(ch),
+                "gallery used unauthorized glyph {ch}"
+            );
+        }
     }
 }
 
