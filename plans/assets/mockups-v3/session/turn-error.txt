@@ -5,20 +5,20 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Two writers can skip the watched counter when the                                                                   
-    snapshot freezes mid-batch…                                                                                         
+                                                                                                                        
+  Two writers can skip the watched counter when the                                                                     
+  snapshot freezes mid-batch…                                                                                           
                                                                                                                         
                                                                                                                         
-    Turn failed · provider closed the stream early                                                                      
-    Partial answer kept above · draft stays in the jewel                                                                
+  Turn failed · provider closed the stream early                                                                        
+  Partial answer kept above · draft stays in the jewel                                                                  
                                                                                                                         
                                                                                                                         
-    › Retry turn                                                                                                        
-      Keep partial and continue                                                                                         
-      Inspect network evidence                                                                                          
+  1 (●) Retry turn                                                                                                      
+  2 (○) Keep partial and continue                                                                                       
+  3 (○) Inspect network evidence                                                                                        
                                                                                                                         
-    Enter retries · Esc leaves the partial answer visible                                                               
+  Enter retries · Esc leaves the partial answer visible                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         

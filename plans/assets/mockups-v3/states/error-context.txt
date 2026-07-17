@@ -7,17 +7,17 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Context  ████████████████████░░  948K / 1.0M                                                                        
+  Context  ████████████████████░░  948K / 1.0M                                                                          
                                                                                                                         
-    Context is nearly full · compact before the next send                                                               
-    Older tool bodies can fold without losing your draft.                                                               
+  Context is nearly full · compact before the next send                                                                 
+  Older tool bodies can fold without losing your draft.                                                                 
                                                                                                                         
                                                                                                                         
-    › Compact now                                                                                                       
-      Send anyway (may truncate)                                                                                        
-      Open context sidebar                                                                                              
+  1 (●) Compact now                                                                                                     
+  2 (○) Send anyway (may truncate)                                                                                      
+  3 (○) Open context sidebar                                                                                            
                                                                                                                         
-    Enter compacts · Esc returns with context bar visible                                                               
+  Enter compacts · Esc returns with context bar visible                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         

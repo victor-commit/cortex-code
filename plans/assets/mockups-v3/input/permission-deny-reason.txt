@@ -1,17 +1,13 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ❯ Request a safer rewrite of the plan step.                                                                           
+  ❯ Tighten the shell path before the next suite run.                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
+  $ cargo test retry -- --nocapture                                                                                     
+    denied · tell Cortex what to do differently                                                                           
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-    Plan approval · changes requested                                                                                   
-    The write step still touches production config.                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,13 +23,17 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Why deny or request changes?                                                                                     │  
-  │  › Request changes                                                                                               │  
-  │    Keep production config read-only in plan                                                                      │  
+  │  Allow `cargo`?                                                                                                  │  
   │                                                                                                                  │  
-  │    Deny without comment                                                                                          │  
-  │    Allow with caution                                                                                            │  
-  │ Enter sends comment · Esc keeps plan blocked                                                                     │  
+  │  cargo test retry -- --nocapture                                                                                 │  
+  │                                                                                                                  │  
+  │  1 (○) Yes, proceed                                                                                              │  
+  │  2 (○) Always allow: cargo test                                                                                  │  
+  │  3 [x] ❯ Keep production config read-only; rewrite the plan step                                                 │  
+  │                                                                                                                  │  
+  │  Enter sends follow-up · Esc cancels without running                                                             │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         

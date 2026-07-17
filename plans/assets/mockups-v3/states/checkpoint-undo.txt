@@ -9,17 +9,17 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Rewind available · choose how far to jump                                                                           
+  Rewind available · choose how far to jump                                                                             
                                                                                                                         
-    › Checkpoint · before edit                                                                                          
-      retry.rs hash a1b2… · 0m18s ago                                                                                   
-      Checkpoint · after tests green                                                                                    
-      suite pass · 1m02s ago                                                                                            
+  › Checkpoint · before edit                                                                                            
+    retry.rs hash a1b2… · 18s ago                                                                                       
+    Checkpoint · after tests green                                                                                      
+    suite pass · 1m2s ago                                                                                               
                                                                                                                         
-    › Restore selected checkpoint                                                                                       
-      Keep current workspace                                                                                            
+  1 (●) Restore selected checkpoint                                                                                     
+  2 (○) Keep current workspace                                                                                          
                                                                                                                         
-    Enter restores · Esc leaves files as-is                                                                             
+  Enter restores · Esc leaves files as-is                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         

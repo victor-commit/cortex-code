@@ -5,16 +5,13 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Two writers can skip the watched counter when the                                                                   
-    snapshot freezes…                                                                                                   
+                                                                                                                        
+  Two writers can skip the watched counter when the                                                                     
+  snapshot freezes…                                                                                                     
                                                                                                                         
                                                                                                                         
-    Interrupted · stream stopped with [stop]                                                                            
-    Draft stays in the jewel · partial answer kept above                                                                
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  Interrupted · stream stopped with [stop]                                                                              
+  Draft stays in the jewel · partial answer kept above                                                                  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,7 +26,10 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    ○ idle after cancel · Ctrl+c or [stop] both preserve draft                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ○ idle after cancel · Ctrl+c or [stop] both preserve draft                                                            
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ ❯ Continue from the partial note…                                              Cortex (high) · always-approve  │  

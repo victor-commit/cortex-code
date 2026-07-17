@@ -5,12 +5,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-  Edit  crates/agent/src/retry.rs  +12 / -4                                                                             
+  Edit crates/agent/src/retry.rs +12/-4                                                                                 
                                                                                                                         
       rng.retry_after_ms = floor.max(250);                                                                              
     + if floor_ms < 250 { return Err(floor); }                                                                          
@@ -26,14 +21,19 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Apply this edit?                                                                                                 │  
-  │  crates/agent/src/retry.rs · hunk 1 of 1                                                                         │  
+  │  Allow Edit to crates/agent/src/retry.rs?                                                                        │  
   │                                                                                                                  │  
-  │  › Apply edit                                                                                                    │  
-  │    Reject edit                                                                                                   │  
-  │    Open full diff                                                                                                │  
-  │ Enter to apply · Esc to reject · d open full diff                                                                │  
+  │  hunk 1 of 1 · +12 / -4                                                                                          │  
+  │                                                                                                                  │  
+  │  1 (●) Yes                                                                                                       │  
+  │  2 (○) Yes, allow all edits during this session                                                                  │  
+  │  3 (○) No, and tell Cortex what to do differently                                                                  │  
+  │                                                                                                                  │  
+  │  1-3 select · Enter confirms · Esc cancels · d open full diff                                                    │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         

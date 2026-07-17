@@ -5,20 +5,20 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-  ✗ Shell  ./scripts/redeploy.sh --prod                                                                                 
-    ⎿ blocked · protected path · sandbox refusal                                                                        
+  $ ./scripts/redeploy.sh --prod                                                                                        
+    blocked · protected path                                                                                            
                                                                                                                         
                                                                                                                         
-    Cortex cannot run production redeploy from this shell.                                                                
-    Switch to a reviewed plan or run it outside Cortex.                                                                   
+  Protected path · production redeploy is not allowed in always-approve.                                                
+  Request approval for this command, or switch mode and re-run safer steps.                                             
                                                                                                                         
                                                                                                                         
-    › Open safer command variants                                                                                       
-      Keep blocked and continue chatting                                                                                
+  1 (●) Request approval                                                                                                
+  2 (○) Keep blocked and continue                                                                                       
                                                                                                                         
-    Enter chooses recovery · Esc returns with block visible                                                             
+  Enter requests approval · Esc keeps the block visible                                                                 
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -31,8 +31,8 @@
   │  Format · Markdown snapshot                                                                                      │  
   │  Secrets · API keys and tokens redacted                                                                          │  
   │                                                                                                                  │  
-  │  › Create share link                                                                                             │  
-  │    Export file only                                                                                              │  
+  │  1 (●) Create share link                                                                                         │  
+  │  2 (○) Export file only                                                                                          │  
   │ Enter creates redacted link · Esc cancels                                                                        │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         

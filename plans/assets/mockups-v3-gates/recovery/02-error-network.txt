@@ -6,18 +6,18 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-    Network error · could not reach xAI                                                                                 
-    Check the link, then retry once the path is clear.                                                                  
-                                                                                                                        
-    Evidence · timeout after 12s · DNS ok · TLS handshake fail                                                          
                                                                                                                         
                                                                                                                         
-    › Retry connection                                                                                                  
-      Work offline with local tools                                                                                     
+  Network error · could not reach xAI                                                                                   
+  Check the link, then retry once the path is clear.                                                                    
                                                                                                                         
-    Enter retries · draft and origin stay unchanged                                                                     
+  Evidence · timeout after 12s · DNS ok · TLS handshake fail                                                            
+                                                                                                                        
+                                                                                                                        
+  1 (●) Retry connection                                                                                                
+  2 (○) Work offline with local tools                                                                                   
+                                                                                                                        
+  Enter retries · draft and origin stay unchanged                                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         

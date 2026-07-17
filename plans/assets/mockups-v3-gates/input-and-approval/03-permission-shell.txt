@@ -5,13 +5,9 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+  $ cargo test retry -- --nocapture                                                                                     
+    awaiting approval                                                                                                   
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-  Shell  cargo test retry -- --nocapture                                                                                
-    ⎿ needs permission before running on this host                                                                      
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,13 +23,17 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Allow this command?                                                                                              │  
+  │  Allow `cargo`?                                                                                                  │  
+  │                                                                                                                  │  
   │  cargo test retry -- --nocapture                                                                                 │  
-  │  Working directory · /projects/demo                                                                              │  
-  │  › Allow once                                                                                                    │  
-  │    Allow for session                                                                                             │  
-  │    Deny                                                                                                          │  
-  │ Enter allows once · a always · Esc denies                                                                        │  
+  │  < > to choose permission scope                                                                                  │  
+  │                                                                                                                  │  
+  │  1 (●) Yes, proceed                                                                                              │  
+  │  2 (○) Always allow: cargo test                                                                                  │  
+  │  3 (○) Yes, and don't ask again for anything (always-approve mode)                                               │  
+  │  4 (○) No, and tell Cortex what to do differently                                                                  │  
+  │                                                                                                                  │  
+  │  1-4 select · Enter confirms · Esc cancels                                                                       │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         

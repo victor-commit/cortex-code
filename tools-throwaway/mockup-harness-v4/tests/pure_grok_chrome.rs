@@ -582,3 +582,94 @@ fn published_tools_set_structure_language_bans() {
         );
     }
 }
+
+/// VAL-V3-STRUCT-008 / CROSS-026: permission docks product permission_view language.
+#[test]
+fn permission_family_product_view_language() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    for id in [
+        "permission-shell",
+        "permission-file-edit",
+        "permission-deny-reason",
+        "blocked-command",
+    ] {
+        let text = render_pilot(id)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+            .to_text();
+        reject_structure_residual(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert!(!text.contains("◆ Cortex"), "{id} nameplate");
+        assert!(!text.contains("Shell  "), "{id} Shell invent");
+        assert!(!text.contains("Allow this command?"), "{id}");
+        assert!(!text.contains("Apply this edit?"), "{id}");
+        assert!(!text.contains("Why deny or request changes?"), "{id}");
+        assert!(!text.contains("Allow once"), "{id}");
+        assert!(!text.contains("Allow for session"), "{id}");
+        assert!(!text.contains("Working directory ·"), "{id}");
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "{id} budget"
+        );
+        assert!(
+            text.contains("Shift+Tab:mode | Ctrl+c:cancel"),
+            "{id} putty"
+        );
+    }
+    let shell = render_pilot("permission-shell").unwrap().to_text();
+    assert!(shell.contains("Allow `cargo`?"));
+    assert!(shell.contains("$ cargo test retry -- --nocapture"));
+    assert!(shell.contains("1 (●) Yes, proceed"));
+    assert!(shell.contains("Always allow: cargo test"));
+    assert!(shell.contains("No, and tell Cortex what to do differently"));
+    assert!(shell.contains("< > to choose permission scope"));
+    let file = render_pilot("permission-file-edit").unwrap().to_text();
+    assert!(file.contains("Allow Edit to crates/agent/src/retry.rs?"));
+    assert!(file.contains("1 (●) Yes"));
+    assert!(file.contains("Yes, allow all edits during this session"));
+    let deny = render_pilot("permission-deny-reason").unwrap().to_text();
+    assert!(deny.contains("3 [x] ❯"));
+    assert!(deny.contains("Allow `cargo`?"));
+    let blocked = render_pilot("blocked-command").unwrap().to_text();
+    assert!(blocked.contains("$ ./scripts/redeploy.sh --prod"));
+    assert!(blocked.contains("Request approval"));
+    assert!(blocked.contains("Cortex (high)"));
+    assert!(!blocked.contains("✗ Shell"));
+}
+
+/// Published permission set bans hybrid essay when gallery exists.
+#[test]
+fn published_permission_set_structure_language_bans() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plans/assets/mockups-v3");
+    if !root.exists() {
+        return;
+    }
+    let pairs: &[(&str, &str)] = &[
+        ("input", "permission-shell"),
+        ("input", "permission-file-edit"),
+        ("input", "permission-deny-reason"),
+        ("session", "blocked-command"),
+    ];
+    for (cat, id) in pairs {
+        let path = root.join(cat).join(format!("{id}.txt"));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("published {cat}/{id}: {e}"));
+        assert!(!text.contains("◆ Cortex"), "published {id}");
+        assert!(!text.contains("Shell  "), "published {id}");
+        assert!(!text.contains("Allow this command?"), "published {id}");
+        assert!(!text.contains("Allow once"), "published {id}");
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "published {id} budget"
+        );
+        if *id == "permission-shell" {
+            assert!(text.contains("Allow `cargo`?") || text.contains("Yes, proceed"));
+        }
+    }
+}
