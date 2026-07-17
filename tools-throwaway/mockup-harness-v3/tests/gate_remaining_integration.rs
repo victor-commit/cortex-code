@@ -28,6 +28,10 @@ static PUBLISHED: Once = Once::new();
 
 fn ensure_published() {
     PUBLISHED.call_once(|| {
+        if pure_mode() {
+            // Pure dump: harness-v4 owns paint. Skip hybrid thrash publishes.
+            return;
+        }
         let harness = env!("CARGO_BIN_EXE_mockup-harness-v3");
         for arguments in [
             vec!["--implemented"],
@@ -100,10 +104,34 @@ fn remaining_declared_actions_and_illustrative_bridges_truthfully_reconcile() {
 fn remaining_gate_aliases_match_declared_fixture_renderings() {
     ensure_published();
     let mut seen = BTreeSet::new();
+    let pure = pure_mode();
     for artifact in remaining_gate_artifacts() {
         assert!(seen.insert(artifact.gate_relative.clone()));
         let gate = Path::new(GATE_ROOT).join(&artifact.gate_relative);
         assert!(gate.is_file(), "missing gate artifact: {gate:?}");
+        let gate_bytes = fs::read(&gate).expect("gate artifact must be readable");
+        if pure {
+            // Pure dump: gate aliases track pure after-screen paint under the
+            // same canonical relative path, not hybrid copper fixtures.
+            let screen = canonical_inventory()
+                .iter()
+                .find(|screen| screen.id == artifact.screen_id)
+                .unwrap_or_else(|| panic!("pure-mode missing inventory for {}", artifact.screen_id));
+            let pure_canonical = Path::new("/projects/cortex-code/plans/assets/mockups-v3")
+                .join(screen.category.as_str())
+                .join(format!("{}.{}", artifact.screen_id, artifact.extension));
+            let pure_bytes = fs::read(&pure_canonical).unwrap_or_else(|error| {
+                panic!(
+                    "pure-mode missing pure surface {}: {error}",
+                    pure_canonical.display()
+                )
+            });
+            assert_eq!(
+                pure_bytes, gate_bytes,
+                "pure-mode remaining gate alias must match pure surface: {gate:?}"
+            );
+            continue;
+        }
         let expected = audit_screen(artifact.screen_id, artifact.fixture_id)
             .expect("the declared canonical renderer and fixture must resolve");
         let expected_bytes = if artifact.extension == "txt" {
@@ -112,8 +140,7 @@ fn remaining_gate_aliases_match_declared_fixture_renderings() {
             render_audit_png(&expected).expect("the declared canonical fixture must rasterize")
         };
         assert_eq!(
-            expected_bytes,
-            fs::read(&gate).expect("gate artifact must be readable"),
+            expected_bytes, gate_bytes,
             "gate alias must be fixture-bound: {gate:?}"
         );
     }

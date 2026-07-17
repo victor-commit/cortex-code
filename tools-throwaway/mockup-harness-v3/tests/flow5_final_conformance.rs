@@ -31,6 +31,10 @@ const PARTIAL_REPLY: &str =
     "The release notes cover the auth race fix, the retry window change, and one open risk…";
 const DRAFT: &str = "Keep the risk note short before we publish.";
 
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 fn paints_recovery_origin(text: &str) -> bool {
     text.contains(RECOVERY_ORIGIN)
         || text.lines().any(|line| {
@@ -1194,6 +1198,38 @@ fn recovery_controls_preserve_deterministic_keyboard_focus() {
 
 #[test]
 fn published_recovery_gallery_matches_live_default_fixtures() {
+    if pure_mode() {
+        // Pure dump owns recovery paint. Hybrid copper default fixtures are not
+        // gallery anchors; only assert pure published geometry stays intact.
+        let mapping = [
+            "session/tool-failed.txt",
+            "session/blocked-command.txt",
+            "session/turn-error.txt",
+            "states/error-network.txt",
+            "states/error-context.txt",
+            "states/rate-limit.txt",
+            "states/interrupt.txt",
+            "states/toasts.txt",
+            "states/checkpoint-undo.txt",
+        ];
+        let root = gallery_root();
+        for rel in mapping {
+            let published = fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|e| panic!("read pure {rel}: {e}"));
+            assert_canvas_geometry(&published, rel);
+            assert!(
+                published.contains("Cortex")
+                    || published.contains("❯")
+                    || published.contains("Shift+Tab"),
+                "pure recovery surface {rel} must keep pure product chrome markers"
+            );
+            assert!(
+                !published.contains("~/project · main · Claude Opus"),
+                "pure recovery surface {rel} must not retain hybrid Claude statusline paint"
+            );
+        }
+        return;
+    }
     let mapping = [
         ("tool-failed", "canonical.tool-failed", "session/tool-failed.txt"),
         (

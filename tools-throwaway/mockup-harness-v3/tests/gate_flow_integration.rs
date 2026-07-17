@@ -30,6 +30,11 @@ static PUBLISHED: Once = Once::new();
 
 fn ensure_published() {
     PUBLISHED.call_once(|| {
+        if pure_mode() {
+            // Pure dump: harness-v4 owns paint. Do not thrash live pure
+            // gallery roots with hybrid --implemented/--flow publish.
+            return;
+        }
         let harness = env!("CARGO_BIN_EXE_mockup-harness-v3");
         for arguments in [
             vec!["--implemented"],
@@ -147,6 +152,7 @@ fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
     ensure_published();
     let expected = pilot_gate_artifacts();
     let mut seen = BTreeSet::new();
+    let pure = pure_mode();
 
     for artifact in expected {
         assert!(
@@ -160,6 +166,18 @@ fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
             "missing canonical artifact: {canonical:?}"
         );
         assert!(gate.is_file(), "missing gate artifact: {gate:?}");
+        let gate_bytes = fs::read(&gate).expect("gate artifact must be readable");
+        if pure {
+            // Pure dump identity: gate aliases track pure canonical surfaces,
+            // not hybrid copper fixtures that thrash the live pure roots.
+            let canonical_bytes =
+                fs::read(&canonical).expect("pure canonical artifact must be readable");
+            assert_eq!(
+                canonical_bytes, gate_bytes,
+                "pure-mode gate alias must match pure canonical paint: {gate:?}"
+            );
+            continue;
+        }
         let expected = audit_screen(artifact.screen_id, artifact.fixture_id)
             .expect("the declared canonical renderer and fixture must resolve");
         let expected_bytes = if artifact.extension == "txt" {
@@ -168,8 +186,7 @@ fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
             render_audit_png(&expected).expect("the declared canonical fixture must rasterize")
         };
         assert_eq!(
-            expected_bytes,
-            fs::read(&gate).expect("gate artifact must be readable"),
+            expected_bytes, gate_bytes,
             "gate alias must be canonical-equivalent for its declared fixture: {gate:?}"
         );
     }
@@ -178,9 +195,21 @@ fn gate_aliases_are_exactly_the_declared_canonical_fixture_renderings() {
 #[test]
 fn every_gate_alias_is_byte_identical_to_its_declared_canonical_artifact() {
     ensure_published();
+    let pure = pure_mode();
     for artifact in pilot_gate_artifacts() {
         let gate = fs::read(Path::new(GATE_ROOT).join(&artifact.gate_relative))
             .expect("declared gate alias must be readable");
+        if pure {
+            let canonical =
+                fs::read(Path::new(CANONICAL_ROOT).join(&artifact.canonical_relative))
+                    .expect("declared pure canonical artifact must be readable");
+            assert_eq!(
+                canonical, gate,
+                "pure-mode gate alias must be byte-identical to pure canonical: {}",
+                artifact.gate_relative
+            );
+            continue;
+        }
         let expected = audit_screen(artifact.screen_id, artifact.fixture_id)
             .expect("the declared step fixture must resolve");
         let expected_bytes = if artifact.extension == "txt" {

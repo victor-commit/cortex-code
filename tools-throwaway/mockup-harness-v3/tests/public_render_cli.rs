@@ -319,10 +319,6 @@ fn missing_renderer_map_still_fails_closed_before_publication() {
     // via the local renderer map validator used by --all.
     use mockup_harness_v3::renderer::run_renderer_negative_fixture;
 
-fn pure_mode() -> bool {
-    mockup_harness_v3::renderer::pure_cortex_gallery_active()
-}
-
     let fail = run_renderer_negative_fixture(
         "inventory-without-renderer",
         Path::new("/tmp/mockup-harness-v3-map-placeholder"),

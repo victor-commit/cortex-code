@@ -395,6 +395,7 @@ fn status_return_preserves_conversation_draft() {
 
 #[test]
 fn published_screens_render_through_public_cli() {
+    let pure = pure_mode();
     for screen in [
         "theme-gallery-dark",
         "theme-gallery-light",
@@ -402,11 +403,23 @@ fn published_screens_render_through_public_cli() {
         "empty",
     ] {
         let output = harness().args([screen]).output().expect("render");
-        assert!(
-            output.status.success(),
-            "{screen}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        if pure {
+            assert!(
+                !output.status.success(),
+                "{screen}: pure-mode hybrid public publish must refuse"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("pure Cortex") || stderr.contains("pure-cortex"),
+                "{screen}: pure refuse must name pure ownership\n{stderr}"
+            );
+        } else {
+            assert!(
+                output.status.success(),
+                "{screen}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         assert!(
             Path::new(&format!(
                 "/projects/cortex-code/plans/assets/mockups-v3/{}/{}.txt",
@@ -414,7 +427,7 @@ fn published_screens_render_through_public_cli() {
                 screen
             ))
             .is_file(),
-            "{screen} TXT must publish"
+            "{screen} TXT must already exist (pure or hybrid published)"
         );
     }
 }

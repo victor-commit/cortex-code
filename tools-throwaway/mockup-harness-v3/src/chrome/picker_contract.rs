@@ -64,6 +64,26 @@ const SESSION_FILTER_MATRIX: &[&str] = &[
     "session-picker-cancel",
 ];
 
+/// Pure Cortex dump surface titles for the nine Flow 3 pickers.
+///
+/// Hybrid copper titles stay in [`picker_contracts`]; pure gallery paint from
+/// harness-v4 uses these short origin/prompt-aligned labels (VAL residual
+/// `public_publication_covers_all_nine_picker_txt_artifacts`).
+pub fn pure_picker_title(screen_id: &str) -> Option<&'static str> {
+    Some(match screen_id {
+        "agent-picker" => "Pick how Cortex should approach this task.",
+        "model-picker" => "Choose the model for the next reply.",
+        "model-picker-filtered" => "Filter the catalog for a faster match.",
+        "fork-picker" => "Fork conversation",
+        "skills-picker" => "Enable skills for this session.",
+        "session-picker" => "Resume an earlier conversation in this workspace.",
+        "subagent-picker" => "Spawn a task-local helper for this turn.",
+        "variant-picker" => "Pick effort for this reply only.",
+        "theme-picker" => "Preview a theme without leaving this origin.",
+        _ => return None,
+    })
+}
+
 /// Authoritative shared catalog for the nine named pickers.
 pub fn picker_contracts() -> BTreeMap<&'static str, PickerContract> {
     let entries = [

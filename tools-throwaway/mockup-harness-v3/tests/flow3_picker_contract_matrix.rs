@@ -7,12 +7,15 @@ use std::process::Command;
 use mockup_harness_v3::{
     audit::audit_screen,
     chrome::picker_contract::{
-        contract_fixture, non_filter_declaration, picker_contracts, FilterCapability,
-        FORBIDDEN_RAW_ID_SNIPPETS, NINE_PICKERS,
+        contract_fixture, non_filter_declaration, picker_contracts, pure_picker_title,
+        FilterCapability, FORBIDDEN_RAW_ID_SNIPPETS, NINE_PICKERS,
     },
     scenario::replay_case,
 };
 
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
 
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
@@ -502,6 +505,7 @@ fn session_filtering_matrix_is_complete_and_small_lists_declare_non_filterabilit
 fn public_publication_covers_all_nine_picker_txt_artifacts() {
     let gallery = Path::new("/projects/cortex-code/plans/assets/mockups-v3/input");
     let catalog = picker_contracts();
+    let pure = pure_mode();
     for screen_id in NINE_PICKERS {
         let path = gallery.join(format!("{screen_id}.txt"));
         assert!(
@@ -511,11 +515,25 @@ fn public_publication_covers_all_nine_picker_txt_artifacts() {
         );
         let text = std::fs::read_to_string(&path).expect("read published txt");
         assert_eq!(text.lines().count(), 40);
-        let contract = catalog.get(screen_id).expect("catalog");
-        assert!(text.contains(contract.title));
+        if pure {
+            let pure_title = pure_picker_title(screen_id)
+                .unwrap_or_else(|| panic!("pure catalog must declare title for {screen_id}"));
+            assert!(
+                text.contains(pure_title),
+                "{screen_id} pure gallery must include pure title `{pure_title}`\n{text}"
+            );
+            // Keep hybrid copper language out of pure dump paints.
+            assert!(
+                !text.contains("How Code should work"),
+                "{screen_id} pure paint must not revive hybrid Code work-style title"
+            );
+        } else {
+            let contract = catalog.get(screen_id).expect("catalog");
+            assert!(text.contains(contract.title));
+        }
     }
 
-    // Renderer binary is available for on-demand re-publish.
+    // Renderer binary is available for on-demand re-publish / pure list inventory.
     let listed = harness().args(["--list"]).output().expect("list screens");
     assert!(listed.status.success());
 }
