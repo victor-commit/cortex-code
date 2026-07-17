@@ -1,13 +1,13 @@
-                                                                                                                        
-   master /projects/demo                                                                                               
-                                                                                                                        
-  ❯ You                                                                                                                 
-    Share a redacted snapshot of this final answer.                                                                     
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Applied the retry guard and covered the failure path.                                                               
-    Follow-up: floor integration case.                                                                                  
+  ❯ Share a redacted snapshot of this final answer.                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  Applied the retry guard and covered the failure path.                                                                 
+  Follow-up: floor integration case.                                                                                    
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +37,4 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

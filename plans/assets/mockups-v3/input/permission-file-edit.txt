@@ -1,8 +1,8 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                                                                                 
-    Apply the retry guard before we merge.                                                                              
+  ❯ Apply the retry guard before we merge.                                                                              
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +37,4 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

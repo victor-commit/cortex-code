@@ -1,8 +1,8 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                                                                                 
-    Spawn a task-local helper for this turn.                                                                            
+  ❯ Spawn a task-local helper for this turn.                                                                            
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +37,4 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

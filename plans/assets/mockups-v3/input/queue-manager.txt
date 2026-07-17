@@ -1,12 +1,12 @@
-                                                                                                                        
-   master /projects/demo                                                                                               
-                                                                                                                        
-  ❯ You                                                                                                                 
-    Three prompts are waiting behind the live stream.                                                                   
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Still writing the retry summary…                                                                                    
+  ❯ Three prompts are waiting behind the live stream.                                                                   
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  Still writing the retry summary…                                                                                      
+                                                                                                                        
                                                                                                                         
                                                                                                                         
     Queue                                                                                                               
@@ -37,4 +37,4 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

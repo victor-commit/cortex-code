@@ -1,5 +1,5 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
     Advanced · Tool evidence                                                                                            
     Focused tool payload with truncation and redaction marks                                                            
@@ -37,4 +37,4 @@
                                                                                                                         
     Left/Right pages · Esc returns · no raw secret dump                                                                 
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

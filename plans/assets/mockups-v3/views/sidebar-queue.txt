@@ -1,8 +1,8 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                       │ Queue                                                   
-    Keep the chat visible while inspecting context.           │                                                         
+  ❯ Keep the chat visible while inspecting context.           │ Queue                                                   
+                                                              │                                                         
                                                               │ 3 waiting                                               
                                                               │ › 1 floor integration                                   
   ◆ Cortex                                                      │   2 document jitter                                     
@@ -37,4 +37,4 @@
                                                                                                                         
     Esc closes inspector · transcript origin unchanged                                                                  
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

@@ -1,18 +1,18 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-                                                                                                                        
-  ❯ You                                                                                                                 
-    Check the retry path before we merge.                                                                               
+  ❯ Check the retry path before we merge.                                                                     8:19 AM   
     Keep the summary short and list one follow-up test.                                                                 
                                                                                                                         
+  ◆ Thought for 1.2s                                                                                                    
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Applied the retry guard and covered the failure path.                                                               
-    Follow-up: add an integration case for rate-limit floors.                                                           
+  Retry guard                                                                                                           
+  Applied the retry guard and covered the failure path in the flush root.                                               
+  The watcher now freezes the related sequence before the mid-batch skip.                                               
                                                                                                                         
-    Thought for 1s                                                                                                      
-    ◇ expanded thinking kept collapsed in this idle frame                                                               
+  Follow-up                                                                                                             
+  - add an integration case for rate-limit floors                                                                       
+  - keep the suite assertion on membership rebuild                                                                      
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯ Add a note about the remaining test hunk…                                                                      │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯ Add a note about the remaining test hunk…                                    Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

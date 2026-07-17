@@ -1,8 +1,8 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                                                                                 
-    Fork from this turn into a new branch of the chat.                                                                  
+  ❯ Fork from this turn into a new branch of the chat.                                                                  
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +37,4 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

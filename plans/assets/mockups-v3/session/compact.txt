@@ -1,5 +1,5 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
   Compact recap · auto-compact after long tool stream                                                                   
@@ -10,12 +10,12 @@
     Context  184k / 1.0M  after compact                                                                                 
                                                                                                                         
                                                                                                                         
-  ❯ You                                                                                                                 
-    Continue from the recap: finish the floor case.                                                                     
+  ❯ Continue from the recap: finish the floor case.                                                                     
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Picking up from the recap. Opening floors next.                                                                     
+                                                                                                                        
+  Picking up from the recap. Opening floors next.                                                                       
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯                                                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯                                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

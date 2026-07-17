@@ -1,12 +1,12 @@
-                                                                                                                        
-   master /projects/demo                                                                                               
-                                                                                                                        
-  ❯ You                                                                                                                 
-    Undo the last edit if the suite went red.                                                                           
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Last checkpoint restored the retry helper pre-edit.                                                                 
+  ❯ Undo the last edit if the suite went red.                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  Last checkpoint restored the retry helper pre-edit.                                                                   
+                                                                                                                        
                                                                                                                         
                                                                                                                         
     Rewind available · choose how far to jump                                                                           
@@ -32,9 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯                                                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯                                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

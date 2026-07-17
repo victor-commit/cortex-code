@@ -1,25 +1,25 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
+  ❯ Document the recovery procedure with steps and a sample.                                                            
                                                                                                                         
-  ❯ You                                                                                                                 
-    Document the recovery procedure with steps and a sample.                                                            
+  ◆ Thought for 3.1s                                                                                                    
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Recovery procedure                                                                                                  
+  Recovery procedure                                                                                                    
+  Use the ordered steps below. Stop live work first; only then clear stale keys.                                        
                                                                                                                         
-    1. Stop the worker with [stop] or Ctrl+c.                                                                           
-    2. Clear temp keys that hold stale membership.                                                                      
-    3. Re-run the suite and confirm the counter rebuilds.                                                               
+  Steps                                                                                                                 
+  1. Stop the worker with [stop] or Ctrl+c.                                                                             
+  2. Clear temp keys that hold stale membership.                                                                        
+  3. Re-run the suite and confirm the counter rebuilds.                                                                 
+  4. Record the restored budget before the next turn.                                                                   
                                                                                                                         
-      cargo test --test flush_root_retry                                                                                
-      # expect: membership rebuilt · 0 flaky                                                                            
-      cargo test --test rate_limit_floors                                                                               
+  ────────────────────────                                                                                              
+  Sample commands                                                                                                       
+    cargo test --test flush_root_retry                                                                                  
+    # expect: membership rebuilt · 0 flaky                                                                              
+    cargo test --test rate_limit_floors                                                                                 
                                                                                                                         
-    See also: docs/recovery.md for the long form.                                                                       
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  See also: docs/recovery.md for the long form.                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯                                                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯                                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

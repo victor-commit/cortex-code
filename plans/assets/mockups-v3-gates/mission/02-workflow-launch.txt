@@ -1,11 +1,11 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
     Tasks                                                                                                               
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
-  ❯ You                                                                                                                 
-    Turn the release work into tracked tasks and walk me through it.                                                    
+  ❯ Turn the release work into tracked tasks and walk me through it.                                                    
+                                                                                                                        
                                                                                                                         
                                                                                                                         
   ◆ Cortex                                                                                                                
@@ -37,4 +37,4 @@
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

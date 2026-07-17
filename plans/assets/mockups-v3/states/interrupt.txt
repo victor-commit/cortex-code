@@ -1,8 +1,8 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                                                                                 
-    Explain the race in the flush root briefly.                                                                         
+  ❯ Explain the race in the flush root briefly.                                                                         
+                                                                                                                        
                                                                                                                         
                                                                                                                         
   ◆ Cortex                                                                                                                
@@ -32,9 +32,9 @@
     ○ idle after cancel · Ctrl+c or [stop] both preserve draft                                                          
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯ Continue from the partial note…                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯ Continue from the partial note…                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

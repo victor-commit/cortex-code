@@ -1,5 +1,5 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
     Advanced · Verification summary                                                                                     
     Advisory outcome for goal fit · not a factory score ladder                                                          
@@ -37,4 +37,4 @@
                                                                                                                         
     Esc to return · advisory only under Advanced                                                                        
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

@@ -1,5 +1,5 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
     Timeline                                                                                                            
     Turn ticks for this session · jump restores scroll target                                                           
@@ -37,4 +37,4 @@
                                                                                                                         
     Enter to jump · Esc to return · origin stays this chat                                                              
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

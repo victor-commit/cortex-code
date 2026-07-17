@@ -1,5 +1,5 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
     Session status                                                                                                      
     Active configuration · return keeps draft and turn                                                                  
@@ -37,4 +37,4 @@
                                                                                                                         
     Esc to return · keeps draft, selection, and origin                                                                  
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

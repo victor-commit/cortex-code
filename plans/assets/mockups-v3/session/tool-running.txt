@@ -1,8 +1,8 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                                                                                 
-    Inspect the retry helper and tighten the shell path.                                                                
+  ❯ Inspect the retry helper and tighten the shell path.                                                                
+                                                                                                                        
                                                                                                                         
                                                                                                                         
   ◆ Cortex                                                                                                                
@@ -29,12 +29,12 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ⠧ Run command 0.2s · 0 queued                                                                     0m12s ⇣4.8k [stop]  
+  ⠧ Run command 0.2s · 0 queued                                                                       12s ⇣4.8k [stop]  
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯                                                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯                                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

@@ -1,8 +1,8 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                       │ Todos                                                   
-    Keep the chat visible while inspecting context.           │                                                         
+  ❯ Keep the chat visible while inspecting context.           │ Todos                                                   
+                                                              │                                                         
                                                               │ Plan                                                    
                                                               │ ✓ guard floor at 250ms                                  
   ◆ Cortex                                                      │ › add floor integration                                 
@@ -37,4 +37,4 @@
                                                                                                                         
     Esc closes inspector · transcript origin unchanged                                                                  
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

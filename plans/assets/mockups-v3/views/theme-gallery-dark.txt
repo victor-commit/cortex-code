@@ -1,5 +1,5 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
     Theme gallery · dark                                                                                                
     CortexNight canvas #141414 · magenta accent #bb9af7                                                                   
@@ -37,4 +37,4 @@
                                                                                                                         
     Esc to return · Apply lives on the theme picker dock                                                                
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
