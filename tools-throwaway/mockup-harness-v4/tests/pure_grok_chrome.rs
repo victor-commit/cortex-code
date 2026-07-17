@@ -146,10 +146,47 @@ fn device_auth_freeze_deterministic_codes() {
 fn busy_frames_expose_stop_and_putty() {
     let running = render_pilot("tool-running").unwrap().to_text();
     assert!(running.contains("[stop]"));
+    assert!(
+        !running.contains("[s[stop]"),
+        "turn-status stop column must be char-indexed, got: {}",
+        running
+            .lines()
+            .find(|l| l.contains("[stop]"))
+            .unwrap_or("")
+    );
     assert!(running.contains("Shift+Tab:mode"));
     let streaming = render_pilot("streaming").unwrap().to_text();
     assert!(streaming.contains("[stop]"));
+    assert!(!streaming.contains("[s[stop]"));
     assert!(streaming.contains(MODEL_LABEL));
+}
+
+#[test]
+fn turn_status_right_edge_is_clean_stop() {
+    let mut canvas = Canvas::new(Theme::CortexNight);
+    paint_turn_status_busy(&mut canvas, 30, "Run command 0.2s · 0 queued", "0m12s", "4.8k")
+        .unwrap();
+    let line = canvas
+        .to_text()
+        .lines()
+        .nth(30)
+        .expect("row 30")
+        .to_string();
+    assert!(
+        line.contains("0m12s ⇣4.8k [stop]"),
+        "expected clean timer + tokens + stop, got: {line:?}"
+    );
+    assert!(!line.contains("[s[stop]"));
+    // Column math is Unicode scalar count, not UTF-8 bytes (braille + ⇣ are multi-byte).
+    let stop_col = line
+        .char_indices()
+        .find(|(i, _)| line[*i..].starts_with("[stop]"))
+        .map(|(i, _)| line[..i].chars().count())
+        .expect("stop present");
+    assert!(
+        stop_col + "[stop]".chars().count() <= 118,
+        "stop must not overflow canvas: col {stop_col} in {line:?}"
+    );
 }
 
 #[test]

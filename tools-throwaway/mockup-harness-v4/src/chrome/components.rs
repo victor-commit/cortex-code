@@ -79,11 +79,15 @@ pub fn paint_turn_status_busy(
 ) -> Result<(), String> {
     let left = format!("  ⠧ {activity}");
     canvas.write(row, 0, &left, TextStyle::plain(ColorToken::Running))?;
-    let right = format!("{timer} ⇣{tokens} [stop]");
-    let col = CANVAS_RIGHT.saturating_sub(right.chars().count() as u16 + 2);
-    canvas.write(row, col, &right, TextStyle::plain(ColorToken::Muted))?;
-    let stop_col = col + right.find("[stop]").unwrap_or(0) as u16;
-    canvas.write(row, stop_col, "[stop]", TextStyle::plain(ColorToken::Bad))?;
+    // Suffix is a known ASCII segment; paint muted prefix then red stop so UTF-8
+    // multi-byte glyphs such as ⇣ never desync byte vs column indices.
+    let prefix = format!("{timer} ⇣{tokens} ");
+    let stop = "[stop]";
+    let right_width = prefix.chars().count() + stop.chars().count();
+    let col = CANVAS_RIGHT.saturating_sub(right_width as u16 + 2);
+    canvas.write(row, col, &prefix, TextStyle::plain(ColorToken::Muted))?;
+    let stop_col = col + prefix.chars().count() as u16;
+    canvas.write(row, stop_col, stop, TextStyle::plain(ColorToken::Bad))?;
     Ok(())
 }
 
