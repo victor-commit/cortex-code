@@ -5,13 +5,13 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
+  Task audit-subagent influences_retry                                                                                  
+    background · 4 findings                                                                                             
                                                                                                                         
-  Task  audit-subagent · influences_retry                                                                               
-    ⎿ background · 4 findings · Expand for details                                                                      
+  Task coverage-subagent floors                                                                                         
+    done · 1 open follow-up                                                                                             
                                                                                                                         
-  Task  coverage-subagent · floors                                                                                      
-    ⎿ done · 1 open follow-up                                                                                           
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

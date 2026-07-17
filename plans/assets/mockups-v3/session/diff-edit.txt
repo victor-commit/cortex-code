@@ -5,9 +5,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-  Edit  crates/agent/src/retry.rs  ·  pending approval                                                                  
+  Edit crates/agent/src/retry.rs +1/-1                                                                                  
                                                                                                                         
       @@ -40,6 +40,10 @@ fn ceiling_ms(...)                                                                             
     -    floor.max(50)                                                                                                  
@@ -19,6 +17,8 @@
       Reject                                                                                                            
                                                                                                                         
     Enter to apply · Esc to reject and keep draft                                                                       
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

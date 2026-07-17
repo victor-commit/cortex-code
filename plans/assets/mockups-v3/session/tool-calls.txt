@@ -5,14 +5,14 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
+  Read crates/agent/src/retry.rs                                                                                        
+  Search "rate.?limit" (3 matches)                                                                                      
+  $ cargo test retry -- --nocapture                                                                                     
+  Edit crates/agent/src/retry.rs +12/-4                                                                                 
                                                                                                                         
-  Read  crates/agent/src/retry.rs                                                                                       
-  Search  rate.?limit  ·  3 matches                                                                                     
-  Shell  cargo test retry -- --nocapture                                                                                
-  Edit  crates/agent/src/retry.rs +12/-4                                                                                
+    floor.max raised to 250ms · tests green                                                                             
                                                                                                                         
-    Mixed tool inventory · expand any row for details.                                                                  
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

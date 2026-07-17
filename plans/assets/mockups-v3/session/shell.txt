@@ -5,12 +5,12 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
+  Run (user) cargo test --package agent -- retry                                                                        
                                                                                                                         
-  bash  cargo test --package agent -- retry                                                                             
       $ cargo test --package agent -- retry                                                                             
       running 8 tests                                                                                                   
       test result: ok. 8 passed; 0 failed                                                                               
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

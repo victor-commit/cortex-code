@@ -5,9 +5,7 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-  Task  audit-subagent · influences_retry  ·  expanded                                                                  
+  Task audit-subagent influences_retry                                                                                  
                                                                                                                         
     Findings                                                                                                            
     • jitter helper loses order under concurrent floors                                                                 
@@ -15,7 +13,9 @@
     • path chip missed absolute /tmp fixtures                                                                           
     • subagent log redacts API-shaped substrings                                                                        
                                                                                                                         
-    Esc to collapse · Enter to open first finding                                                                       
+    Esc to collapse · Enter opens first finding                                                                         
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

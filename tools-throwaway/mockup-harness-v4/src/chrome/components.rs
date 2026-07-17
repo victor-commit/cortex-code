@@ -380,7 +380,10 @@ pub fn paint_assistant_with_thought(
     Ok(())
 }
 
-/// Compact tool activity row: header + optional elbow body lines.
+/// Compact tool activity row: product verb + detail with **single** space.
+///
+/// Prefer Cortex product forms via helpers below (`$ cmd`, `Run …`, `Read path`,
+/// `Search "pat" (N matches)`, `Edit path`). Do **not** invent `Shell  cmd`.
 pub fn paint_tool_header(
     canvas: &mut Canvas,
     row: u16,
@@ -391,18 +394,117 @@ pub fn paint_tool_header(
     let line = if detail.is_empty() {
         format!("  {verb}")
     } else {
-        format!("  {verb}  {detail}")
+        format!("  {verb} {detail}")
     };
     canvas.write(row, 0, &line, style)?;
     Ok(())
 }
 
+/// Preformatted product tool activity line (indent + exact header string).
+///
+/// Use for full product headers:
+/// - `$ cargo test …`
+/// - `Run cargo test …`
+/// - `Search "rate.?limit" (3 matches)`
+/// - `Read crates/agent/src/retry.rs`
+/// - `Edit crates/agent/src/retry.rs +12/-4`
+pub fn paint_tool_activity(
+    canvas: &mut Canvas,
+    row: u16,
+    header: &str,
+    style: TextStyle,
+) -> Result<(), String> {
+    canvas.write(row, 0, &format!("  {header}"), style)?;
+    Ok(())
+}
+
+/// Execute / shell-style primary header: `$ {command}`.
+pub fn paint_execute_shell_header(
+    canvas: &mut Canvas,
+    row: u16,
+    command: &str,
+    style: TextStyle,
+) -> Result<(), String> {
+    paint_tool_activity(canvas, row, &format!("$ {command}"), style)
+}
+
+/// Label-style execute header: `Run {description_or_command}`.
+pub fn paint_execute_run_header(
+    canvas: &mut Canvas,
+    row: u16,
+    title: &str,
+    style: TextStyle,
+) -> Result<(), String> {
+    paint_tool_activity(canvas, row, &format!("Run {title}"), style)
+}
+
+/// Search tool product form: `Search "{pattern}" (N matches[…])`.
+pub fn paint_search_header(
+    canvas: &mut Canvas,
+    row: u16,
+    pattern: &str,
+    summary: &str,
+    style: TextStyle,
+) -> Result<(), String> {
+    // Summary is parenthetical, e.g. `(3 matches)` / `(3 matches in 2 files)`.
+    let header = if summary.is_empty() {
+        format!("Search \"{pattern}\"")
+    } else {
+        format!("Search \"{pattern}\" {summary}")
+    };
+    paint_tool_activity(canvas, row, &header, style)
+}
+
+/// Read tool product form: `Read {path}` (+ optional range suffix).
+pub fn paint_read_header(
+    canvas: &mut Canvas,
+    row: u16,
+    path: &str,
+    range_suffix: Option<&str>,
+    style: TextStyle,
+) -> Result<(), String> {
+    let header = match range_suffix {
+        Some(r) if !r.is_empty() => format!("Read {path} {r}"),
+        _ => format!("Read {path}"),
+    };
+    paint_tool_activity(canvas, row, &header, style)
+}
+
+/// Edit tool product form: `Edit {path}` (+ optional diffstat / edits suffix).
+pub fn paint_edit_header(
+    canvas: &mut Canvas,
+    row: u16,
+    path: &str,
+    suffix: Option<&str>,
+    style: TextStyle,
+) -> Result<(), String> {
+    let header = match suffix {
+        Some(s) if !s.is_empty() => format!("Edit {path} {s}"),
+        _ => format!("Edit {path}"),
+    };
+    paint_tool_activity(canvas, row, &header, style)
+}
+
+/// Nested tool meta / body line under a header (dim cell hang, no Claude `⎿`).
+pub fn paint_tool_body(
+    canvas: &mut Canvas,
+    row: u16,
+    text: &str,
+    style: TextStyle,
+) -> Result<(), String> {
+    canvas.write(row, 4, text, style)?;
+    Ok(())
+}
+
+/// Legacy elbow detail under tool headers. Prefer [`paint_tool_body`] for pure product paint.
 pub fn paint_tool_elbow(
     canvas: &mut Canvas,
     row: u16,
     text: &str,
     style: TextStyle,
 ) -> Result<(), String> {
+    // Keep `⎿` available for residual Claude-family gates, but tools pure-structure
+    // frames should not invent elbows as the primary meta channel.
     canvas.write(row, 4, &format!("⎿ {text}"), style)?;
     Ok(())
 }

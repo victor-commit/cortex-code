@@ -5,10 +5,8 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-                                                                                                                        
-  ✗ Shell  cargo test rate_limit_floors                                                                                 
-    ⎿ exit 101 · assertion failed: floor_ms >= 250                                                                      
+  $ cargo test rate_limit_floors                                                                                        
+    exit 101 · assertion failed: floor_ms >= 250                                                                        
                                                                                                                         
                                                                                                                         
     › Retry command                                                                                                     
@@ -16,6 +14,8 @@
       Skip and continue                                                                                                 
                                                                                                                         
     Enter to retry · Esc keeps failure visible                                                                          
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

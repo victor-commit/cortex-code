@@ -5,15 +5,15 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
+  $ cargo test retry                                                                                                    
                                                                                                                         
-  ✓ Shell  cargo test retry  ·  1.8s                                                                                    
       running 24 tests                                                                                                  
       test retry_ceiling ... ok                                                                                         
       test retry_jitter ... ok                                                                                          
       test result: ok. 24 passed; 0 failed                                                                              
                                                                                                                         
-    Esc to collapse expanded tool output                                                                                
+    Esc collapses expanded tool output                                                                                  
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

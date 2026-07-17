@@ -5,16 +5,16 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
+  $ cargo test retry                                                                                                    
+    exit 0 · 24 tests passed · 1.8s                                                                                     
                                                                                                                         
-  ✓ Shell  cargo test retry  ·  1.8s                                                                                    
-    ⎿ exit 0 · 24 tests passed                                                                                          
-                                                                                                                        
-  ✓ Edit  crates/agent/src/retry.rs                                                                                     
-    ⎿ +12 / -4  ·  Enter to expand output                                                                               
+  Edit crates/agent/src/retry.rs +12/-4                                                                                 
                                                                                                                         
                                                                                                                         
   Retry helper is covered. Ready for the rate-limit floor case.                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

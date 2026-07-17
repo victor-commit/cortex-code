@@ -484,3 +484,101 @@ fn published_conversation_set_structure_bans() {
         }
     }
 }
+
+/// VAL-V3-STRUCT-007 / CROSS-026: tools family product verb headers + shell chrome.
+#[test]
+fn tools_family_product_verb_language() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    let ids = [
+        "tool-calls",
+        "tool-running",
+        "tool-success",
+        "tool-success-expanded",
+        "tool-failed",
+        "tool-task",
+        "tool-task-expanded",
+        "shell",
+        "todo-list",
+        "compact",
+        "diff-edit",
+    ];
+    for id in ids {
+        let text = render_pilot(id)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+            .to_text();
+        reject_structure_residual(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert!(!text.contains("◆ Cortex"), "{id} nameplate");
+        assert!(!text.contains("Shell  "), "{id} Shell invent primary");
+        assert!(!text.contains("✓ Shell"), "{id}");
+        assert!(!text.contains("✗ Shell"), "{id}");
+        assert!(!text.contains("bash  "), "{id}");
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "{id} authenticated budget"
+        );
+        assert!(
+            text.contains("Shift+Tab:mode | Ctrl+c:cancel"),
+            "{id} putty"
+        );
+        assert!(text.contains("Cortex (high)"), "{id} jewel chip");
+    }
+    let calls = render_pilot("tool-calls").unwrap().to_text();
+    assert!(calls.contains("Read crates/agent/src/retry.rs"));
+    assert!(calls.contains("Search \"rate.?limit\" (3 matches)"));
+    assert!(calls.contains("$ cargo test retry -- --nocapture"));
+    assert!(calls.contains("Edit crates/agent/src/retry.rs +12/-4"));
+    assert!(!calls.contains(" ·  3 matches"));
+    assert!(!calls.contains("Mixed tool inventory"));
+    let success = render_pilot("tool-success").unwrap().to_text();
+    assert!(success.contains("$ cargo test retry"));
+    assert!(success.contains("Edit crates/agent/src/retry.rs +12/-4"));
+    let shell = render_pilot("shell").unwrap().to_text();
+    assert!(shell.contains("Run (user)"));
+    assert!(shell.contains("$ cargo test --package agent -- retry"));
+    let running = render_pilot("tool-running").unwrap().to_text();
+    assert!(running.contains("$ cargo test retry"));
+    assert!(running.contains("[stop]"));
+}
+
+/// Published tools set bans Shell invent / nameplates when gallery exists.
+#[test]
+fn published_tools_set_structure_language_bans() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plans/assets/mockups-v3/session");
+    if !root.exists() {
+        return;
+    }
+    for id in [
+        "tool-calls",
+        "tool-running",
+        "tool-success",
+        "tool-success-expanded",
+        "tool-failed",
+        "tool-task",
+        "tool-task-expanded",
+        "shell",
+        "todo-list",
+        "compact",
+        "diff-edit",
+    ] {
+        let path = root.join(format!("{id}.txt"));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("published session/{id}: {e}"));
+        assert!(!text.contains("◆ Cortex"), "published {id}");
+        assert!(!text.contains("Shell  "), "published {id} Shell invent");
+        assert!(!text.contains("✓ Shell"), "published {id}");
+        assert!(!text.contains("✗ Shell"), "published {id}");
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "published {id} budget"
+        );
+    }
+}

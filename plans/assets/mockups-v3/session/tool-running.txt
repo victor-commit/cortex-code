@@ -5,10 +5,10 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
+  $ cargo test retry -- --nocapture                                                                                     
+    running 0.2s · waiting on subshell                                                                                  
                                                                                                                         
-  Shell  cargo test retry -- --nocapture                                                                                
-    ⎿ running · 0.2s · waiting on subshell                                                                              
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

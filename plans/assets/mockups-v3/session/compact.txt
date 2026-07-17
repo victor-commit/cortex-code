@@ -2,12 +2,12 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  Compact recap · auto-compact after long tool stream                                                                   
+  Compact · kept retry path + rate-limit plan                                                                           
                                                                                                                         
-    Kept: retry helper + rate-limit plan + failing floors.                                                              
+    Kept: retry helper, rate-limit plan, failing floors.                                                                
     Dropped: intermediate search spills and partial shells.                                                             
                                                                                                                         
-    Context  184k / 1.0M  after compact                                                                                 
+    Context 184k / 1.0M after compact                                                                                   
                                                                                                                         
                                                                                                                         
   ❯ Continue from the recap: finish the floor case.                                                                     
