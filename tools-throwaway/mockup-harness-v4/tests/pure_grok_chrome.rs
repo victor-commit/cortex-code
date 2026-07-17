@@ -1175,3 +1175,268 @@ fn published_help_status_structure_language_bans() {
         }
     }
 }
+
+/// VAL-V3-CROSS-028: inventory-wide pure-structure invent ban across all 86 pilots.
+///
+/// Covers nameplates, Tasks monitor / Goals board / intervene invent, Shell invent
+/// headers, 0mNNs timers, product putty `|` separators on authenticated shells, and
+/// authenticated context budget presence (login/device auth family may omit budget).
+#[test]
+fn inventory_wide_pure_structure_invent_bans() {
+    use mockup_harness_v4::chrome::components::{
+        has_context_budget_form, is_auth_family_screen, putty_product_separators_hold,
+        reject_structure_residual,
+    };
+
+    let invent_bans = [
+        "❯ You",
+        "> You",
+        "◆ Cortex",
+        "Tasks monitor",
+        "Goals board",
+        "i intervene",
+        "Progress log",
+        "Shell  ",
+        "Esc to tasks monitor",
+    ];
+
+    assert_eq!(list_pilots().len(), 86);
+    for spec in list_pilots() {
+        let text = render_pilot(spec.id)
+            .unwrap_or_else(|e| panic!("{}: {e}", spec.id))
+            .to_text();
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("inventory residual {}: {e}", spec.id));
+        for invent in invent_bans {
+            assert!(
+                !text.contains(invent),
+                "inventory {} invent {invent:?}",
+                spec.id
+            );
+        }
+        // 0mNNs <60s timer form.
+        assert!(
+            !text.split_whitespace().any(|tok| {
+                tok.len() >= 4
+                    && tok.starts_with("0m")
+                    && tok.ends_with('s')
+                    && tok[2..tok.len() - 1].chars().all(|c| c.is_ascii_digit())
+            }),
+            "inventory {} 0mNNs timer",
+            spec.id
+        );
+        // Auth family may omit budget; every other screen must carry it.
+        if !is_auth_family_screen(spec.id) {
+            assert!(
+                has_context_budget_form(&text),
+                "inventory {} missing authenticated context budget",
+                spec.id
+            );
+            assert!(
+                putty_product_separators_hold(&text),
+                "inventory {} exclusive middot putty dynasty",
+                spec.id
+            );
+        }
+    }
+}
+
+/// VAL-V3-CROSS-028 published gallery scan: all 86 canonical + 35 gate TXT.
+#[test]
+fn published_inventory_wide_structure_bans() {
+    use mockup_harness_v4::chrome::components::{
+        has_context_budget_form, is_auth_family_screen, putty_product_separators_hold,
+        reject_structure_residual,
+    };
+    use mockup_harness_v4::GATE_FRAMES;
+    use std::path::PathBuf;
+
+    let invent_bans = [
+        "❯ You",
+        "> You",
+        "◆ Cortex",
+        "Tasks monitor",
+        "Goals board",
+        "i intervene",
+        "Progress log",
+        "Shell  ",
+        "Esc to tasks monitor",
+    ];
+
+    let canonical = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plans/assets/mockups-v3");
+    let gates = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plans/assets/mockups-v3-gates");
+    if !canonical.exists() {
+        return;
+    }
+
+    let mut scanned = 0usize;
+    // Canonical 86.
+    for spec in list_pilots() {
+        let path = canonical
+            .join(spec.category)
+            .join(format!("{}.txt", spec.id));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("published {}/{}: {e}", spec.category, spec.id));
+        for invent in invent_bans {
+            assert!(
+                !text.contains(invent),
+                "published {}/{} invent {invent:?}",
+                spec.category,
+                spec.id
+            );
+        }
+        assert!(
+            !text.split_whitespace().any(|tok| {
+                tok.len() >= 4
+                    && tok.starts_with("0m")
+                    && tok.ends_with('s')
+                    && tok[2..tok.len() - 1].chars().all(|c| c.is_ascii_digit())
+            }),
+            "published {}/{} 0mNNs",
+            spec.category,
+            spec.id
+        );
+        if !is_auth_family_screen(spec.id) {
+            assert!(
+                has_context_budget_form(&text),
+                "published {}/{} missing budget",
+                spec.category,
+                spec.id
+            );
+            assert!(
+                putty_product_separators_hold(&text),
+                "published {}/{} middot putty",
+                spec.category,
+                spec.id
+            );
+        }
+        scanned += 1;
+    }
+
+    // Gate 35 aliases: ban invent strings on every gate frame; budget follows
+    // the painted pilot id (auth pilots may omit).
+    if gates.exists() {
+        for (folder, alias, pilot_id) in GATE_FRAMES {
+            let path = gates.join(folder).join(format!("{alias}.txt"));
+            if !path.exists() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            reject_structure_residual(&text)
+                .unwrap_or_else(|e| panic!("gate {folder}/{alias}: {e}"));
+            for invent in invent_bans {
+                assert!(
+                    !text.contains(invent),
+                    "gate {folder}/{alias} invent {invent:?}"
+                );
+            }
+            assert!(
+                !text.split_whitespace().any(|tok| {
+                    tok.len() >= 4
+                        && tok.starts_with("0m")
+                        && tok.ends_with('s')
+                        && tok[2..tok.len() - 1].chars().all(|c| c.is_ascii_digit())
+                }),
+                "gate {folder}/{alias} 0mNNs"
+            );
+            if !is_auth_family_screen(pilot_id) {
+                assert!(
+                    has_context_budget_form(&text),
+                    "gate {folder}/{alias} missing budget (pilot {pilot_id})"
+                );
+                assert!(
+                    putty_product_separators_hold(&text),
+                    "gate {folder}/{alias} middot putty"
+                );
+            }
+            scanned += 1;
+        }
+    }
+
+    // When full gallery is present, expect 86 + 35.
+    if scanned > 0 {
+        assert!(
+            scanned >= 86,
+            "expected at least the 86 canonical texts, scanned {scanned}"
+        );
+    }
+    if gates.exists() {
+        assert!(
+            scanned >= 86 + 35 || scanned >= 86,
+            "gate root present but scan low: {scanned}"
+        );
+        // Prefer full 121 when both roots are complete.
+        let gate_txts = GATE_FRAMES
+            .iter()
+            .filter(|(folder, alias, _)| gates.join(folder).join(format!("{alias}.txt")).exists())
+            .count();
+        let canon_txts = list_pilots()
+            .iter()
+            .filter(|s| {
+                canonical
+                    .join(s.category)
+                    .join(format!("{}.txt", s.id))
+                    .exists()
+            })
+            .count();
+        assert_eq!(
+            scanned,
+            canon_txts + gate_txts,
+            "scan count must equal existing 86+35 artifact set"
+        );
+        if canon_txts == 86 && gate_txts == 35 {
+            assert_eq!(scanned, 121, "full inventory 86+35");
+        }
+    }
+}
+
+/// Unit coverage for CROSS-028 helpers (auth omit, budget form, putty separators).
+#[test]
+fn cross_028_helper_unit_contracts() {
+    use mockup_harness_v4::chrome::components::{
+        has_context_budget_form, is_auth_family_screen, putty_product_separators_hold,
+        reject_structure_residual, DEFAULT_PUTTY,
+    };
+
+    assert!(is_auth_family_screen("login"));
+    assert!(is_auth_family_screen("connect-oauth"));
+    assert!(is_auth_family_screen("connect-method"));
+    assert!(!is_auth_family_screen("chat-turn"));
+    assert!(!is_auth_family_screen("workflow-monitor"));
+
+    assert!(has_context_budget_form("  ~/projects/demo          9.5K / 500K  "));
+    assert!(has_context_budget_form("8.5K / 1.0M"));
+    assert!(!has_context_budget_form("   master /projects/demo  "));
+
+    assert!(putty_product_separators_hold(DEFAULT_PUTTY));
+    assert!(putty_product_separators_hold(
+        "Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts"
+    ));
+    assert!(!putty_product_separators_hold(
+        "Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts"
+    ));
+    // Non-putty auth tips line is not judged as product putty law.
+    assert!(putty_product_separators_hold(
+        "Tips: /model  /theme  /mcp  Shift+Tab for mode"
+    ));
+
+    reject_structure_residual("clean shell without bans").unwrap();
+    assert!(reject_structure_residual("❯ You").is_err());
+    assert!(reject_structure_residual("◆ Cortex").is_err());
+    assert!(reject_structure_residual("Tasks monitor open").is_err());
+    assert!(reject_structure_residual("Goals board writer").is_err());
+    assert!(reject_structure_residual("press i intervene now").is_err());
+    assert!(reject_structure_residual("Shell  cargo test").is_err());
+    assert!(reject_structure_residual("elapsed 0m04s").is_err());
+    assert!(reject_structure_residual("elapsed 0m12s").is_err());
+    // ≥60s product form is allowed.
+    reject_structure_residual("elapsed 1m20s").unwrap();
+}

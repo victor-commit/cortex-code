@@ -874,6 +874,10 @@ pub fn reject_copper_residual(text: &str) -> Result<(), String> {
 }
 
 /// Pure-structure residual scan for shared shell anti-patterns (nameplates, etc.).
+///
+/// Covers VAL-V3-STRUCT-001..004 nameplate/timer inventory bans plus Mission
+/// Control invent strings from pure-structure-law hard ban #8 so inventory-wide
+/// CROSS-028 scans fail closed on residual frames.
 pub fn reject_structure_residual(text: &str) -> Result<(), String> {
     if text.contains("❯ You") || text.contains("> You") {
         return Err("pure-structure residual refused: You nameplate".to_owned());
@@ -898,6 +902,24 @@ pub fn reject_structure_residual(text: &str) -> Result<(), String> {
             ));
         }
     }
+    // Mission Control invent under Cortex labels (pure-structure-law hard ban #8).
+    for invent in [
+        "Tasks monitor",
+        "Goals board",
+        "i intervene",
+        "Progress log",
+        "Esc to tasks monitor",
+    ] {
+        if text.contains(invent) {
+            return Err(format!(
+                "pure-structure residual refused: mission invent {invent:?}"
+            ));
+        }
+    }
+    // Bare double-space Shell execute header invent (product uses `$ cmd` / `Run …`).
+    if text.contains("Shell  ") {
+        return Err("pure-structure residual refused: Shell invent header".to_owned());
+    }
     // Zero-padded minute form for sub-minute timers (e.g. 0m04s).
     if text.split_whitespace().any(|tok| {
         tok.len() >= 4
@@ -908,6 +930,61 @@ pub fn reject_structure_residual(text: &str) -> Result<(), String> {
         return Err("pure-structure residual refused: 0mNNs timer form".to_owned());
     }
     Ok(())
+}
+
+/// IDs that may omit authenticated context budget (login / device / provider auth family).
+/// CROSS-028: authenticated shells must carry budget form; auth surfaces may omit it.
+pub fn is_auth_family_screen(id: &str) -> bool {
+    matches!(
+        id,
+        "login"
+            | "connect-provider"
+            | "connect-method"
+            | "connect-oauth"
+            | "connect-apikey"
+            | "connect-connected"
+            | "connect-disconnect"
+    ) || id.starts_with("connect-")
+        || id.contains("login")
+}
+
+/// True when text carries product context budget form (`9.5K / 500K`, `8.5K / 1.0M`, …).
+pub fn has_context_budget_form(text: &str) -> bool {
+    // Preferred compact product digests.
+    if text.contains("K / ") || text.contains("M / ") {
+        return true;
+    }
+    // Fallback line scan: used/total with KM units around a slash.
+    text.lines().any(|line| {
+        line.contains('/')
+            && (line.contains('K') || line.contains('M'))
+            && line.chars().any(|c| c.is_ascii_digit())
+    })
+}
+
+/// Product putty footer separators for authenticated shells must not be
+/// exclusive middot-only dynasty (`Shift+Tab:mode · Ctrl+c…` without `|`).
+///
+/// True when every product putty law line uses `|` / `│` separators, or when no
+/// product putty law line is claimed at all (pre-auth / modal-only may omit it).
+pub fn putty_product_separators_hold(text: &str) -> bool {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        // Product putty law lines always name both mode cycle and cancel.
+        let is_product_putty = trimmed.contains("Shift+Tab:mode")
+            && (trimmed.contains("Ctrl+c") || trimmed.contains("Ctrl+c:cancel"));
+        if !is_product_putty {
+            continue;
+        }
+        if trimmed.contains('|') || trimmed.contains('│') {
+            continue;
+        }
+        // Exclusive middot dynasty on a product putty law line fails CROSS-028.
+        if trimmed.contains('·') {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

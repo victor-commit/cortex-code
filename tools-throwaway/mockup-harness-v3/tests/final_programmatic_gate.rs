@@ -14,7 +14,7 @@ use mockup_harness_v3::final_programmatic_gate::{
 };
 
 mod gate_helpers {
-    pub const EXPECTED_ASSERTIONS: usize = 500;
+    pub const EXPECTED_ASSERTIONS: usize = 502;
 }
 
 const REPOSITORY: &str = "/projects/cortex-code";
@@ -45,7 +45,7 @@ fn contract_enumerates_exactly_471_unique_assertions() {
     assert_eq!(ids.len(), gate_helpers::EXPECTED_ASSERTIONS);
     let unique = ids.iter().collect::<std::collections::BTreeSet<_>>().len();
     assert_eq!(unique, gate_helpers::EXPECTED_ASSERTIONS);
-    assert_eq!(count_assertions(MISSION_DIRECTORY), 500);
+    assert_eq!(count_assertions(MISSION_DIRECTORY), 502);
     let _ = default_mission_directory();
 }
 
@@ -119,7 +119,7 @@ fn final_programmatic_gate_passes_with_complete_subgates() {
     assert_eq!(report.final_status, "pass");
     assert_eq!(report.subgates.len(), REQUIRED_SUBGATES.len());
     assert!(report.subgates.iter().all(|row| row.status == "pass"));
-    assert_eq!(report.assertion_count, 500);
+    assert_eq!(report.assertion_count, 502);
     assert_eq!(report.canonical_artifact_count, 172);
     assert_eq!(report.gate_artifact_count, 70);
     assert!(
