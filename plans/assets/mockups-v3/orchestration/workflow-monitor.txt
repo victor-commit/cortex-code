@@ -1,29 +1,29 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
+  Tasks                                                                                                                 
+  Background work for this session · running first                                                                      
                                                                                                                         
-    Tasks                                                                                                               
-    Prepare the release safely and review the result.                                                                   
+  ● 1 running · 1 complete · 1 queued                                                                                   
                                                                                                                         
-    ● Running · Tasks monitor  1/3                                                                                      
-    Running · 1 complete · 2 remaining · no blocker                                                                     
+  ▾ Subagents 1                                                                                                         
+    › ● Review · release notes open risks                                                                               
+      Running · scanning CHANGELOG risk callouts                                                                        
                                                                                                                         
-    Active work · 1/3                                                                                                   
-    › ● Check the safe publish path                                                                                     
-      Verifying staging and rollback notes                                                                              
+  ▾ Tasks 1                                                                                                             
+      ✓ Task Verify staging and rollback notes                                                                          
+      Finished · 14s · (82 lines)                                                                                       
                                                                                                                         
-    Recently completed · 1                                                                                              
-      ✓ Review the release notes for open risks                                                                         
-                                                                                                                        
-    Queued · 1                                                                                                          
-      ○ Update the next-step note after fixes                                                                           
-                                                                                                                        
-    Progress log · 1-3 of 12                                                                                            
-      Started safe publish path checks · 2m ago                                                                         
-      Finished release notes review · 8m ago                                                                            
-      Preflight passed · three planned tasks                                                                            
+  ▾ Watchers 1                                                                                                          
+      ○ Monitor next-step note after fixes                                                                              
+      Queued · starts when publish path clears                                                                          
                                                                                                                         
                                                                                                                         
-    Enter to open task · i intervene · Esc resume chat                                                                  
+  Enter view output · k kill · Esc resume chat                                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

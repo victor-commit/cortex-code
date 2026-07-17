@@ -2,7 +2,7 @@
                                                                                                                         
                                                                                                                         
     Advanced · Verification summary                                                                                     
-    Advisory outcome for goal fit · not a factory score ladder                                                          
+    Advisory outcome for goal fit                                                                                       
                                                                                                                         
                                                                                                                         
     ✓ Goal fit looks strong                                                                                             

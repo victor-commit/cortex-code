@@ -2,7 +2,7 @@
                                                                                                                         
                                                                                                                         
     Advanced · Verification stages                                                                                      
-    Self-check progress for the active goal · counts stay compact                                                       
+    Self-check progress · secondary to Tasks / Dashboard                                                                
                                                                                                                         
                                                                                                                         
     Origin · failure on the safe publish path                                                                           
@@ -21,7 +21,7 @@
     ○ Process check · pending                                                                                           
                                                                                                                         
                                                                                                                         
-    Enter opens detailed evidence · Esc returns to failure                                                              
+    Enter opens detailed evidence · Esc returns                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -35,6 +35,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Esc to return · verification stays secondary to the tasks board                                                     
+    Esc to return · verification stays secondary to Tasks                                                               
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

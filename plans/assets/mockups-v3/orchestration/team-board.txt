@@ -1,26 +1,16 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
+  Cortex · Dashboard - 3 agents · 1 awaiting                                                                        
+  State-sorted sessions · subagents stay under parent                                                                   
                                                                                                                         
-    Tasks                                                                                                               
-    Prepare the release safely and review the result.                                                                   
+  › ◆ reviewer · safe publish path     Awaiting your input            2m                                                
+    Pending: approve rollback wording · branch master worktree                                                          
                                                                                                                         
-    ✗ Needs attention · Goals board  1/3                                                                                
-    Ownership and assignments for the current goal                                                                      
+    ◆ implementer · next-step note      Running: cargo test          12m                                                
+    Last tool · $ cargo test note -- --nocapture                                                                        
                                                                                                                         
-    Needs attention · 1                                                                                                 
-    › ✗ Check the safe publish path · Review · blocked                                                                  
-      Depends on · next-step note and review                                                                            
-                                                                                                                        
-    Working · 1                                                                                                         
-      ● Update the next-step note after fixes                                                                           
-      Owner · Notes agent · working                                                                                     
-                                                                                                                        
-    Completed · 1                                                                                                       
-      ✓ Review the release notes for open risks                                                                         
-      Owner · Docs agent · complete                                                                                     
-                                                                                                                        
-                                                                                                                        
-    Esc to tasks monitor · Enter opens selection                                                                        
+    ◇ notes · release open risks        idle · completed             48m                                                
+    ✓ notes reviewed · no open blockers                                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,6 +21,16 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ ❯ Dispatch a new agent                                                                                           │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+  ↑/↓ select · Enter open · Esc back · Ctrl+\ toggle                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         

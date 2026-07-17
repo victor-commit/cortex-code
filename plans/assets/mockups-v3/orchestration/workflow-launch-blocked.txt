@@ -1,24 +1,24 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-                                                                                                                        
-    Tasks                                                                                                               
-    Prepare the release safely and review the result.                                                                   
+  Tasks                                                                                                                 
+  Prep linked background work for this session                                                                          
                                                                                                                         
   ❯ Turn the release work into tracked tasks and walk me through it.                                                    
                                                                                                                         
+  Preflight found one missing step before tasks can run.                                                                
+                                                                                                                        
+  ✗ Blocked · folder trust pending                                                                                      
+                                                                                                                        
+  › Folder trust is still pending for /projects/demo                                                                    
+    Auth is ready · tools are available                                                                                 
+                                                                                                                        
+  ▸ Subagents 0                                                                                                         
+  ▸ Tasks 0                                                                                                             
+  ▸ Watchers 0                                                                                                          
+                                                                                                                        
+  Add folder trust, then start the proposed items again.                                                                
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Preflight found one missing step before tasks can run.                                                              
-                                                                                                                        
-    ✗ Blocked · Goal launch  0/3                                                                                        
-                                                                                                                        
-    Needs attention · 1                                                                                                 
-    › Folder trust is still pending for /projects/demo                                                                  
-      Auth is ready · tools are available                                                                               
-                                                                                                                        
-    Checklist                                                                                                           
-      Add folder trust, then Start tasks again.                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         

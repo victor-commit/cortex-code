@@ -1,14 +1,22 @@
-//! Pure orchestration screens (F7).
+//! Pure orchestration screens (F7) — pure-structure M3 analogues.
 //!
-//! The inventory keeps the 14 historical IDs for continuity, but paint is
-//! Cortex Tasks / Dashboard / Goals / plan-approval chrome — never Factory
-//! Mission Control copper residual.
+//! Gallery IDs stay fixed. Paint is closest real Cortex surfaces from
+//! `tasks_pane` (Subagents / Tasks / Watchers) and Dashboard (agent rows,
+//! diamonds, dispatch ❯) — never Mission Control invent:
+//! - no primary "Tasks monitor" product chrome
+//! - no `i intervene` binding
+//! - no Owner kanban "Goals board"
+//! - no "Progress log" mission ticker as product chrome
+//! - no residual `Shell  cmd` / hybrid Shell tool header
+//!
+//! Source: `/tmp/grok-build-ref` views/tasks_pane.rs + dashboard docs,
+//! mission `library/pure-structure-law.md` + fidelity-audit-views-orchestration.md.
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
-    paint_default_prompt, paint_default_putty, paint_demo_top_bar, paint_detail_footer,
-    paint_detail_header, paint_dock_frame, paint_quiet_origin, paint_user_turn,
-    reject_copper_residual, MODEL_LABEL,
+    paint_assistant, paint_default_prompt, paint_default_putty, paint_demo_top_bar,
+    paint_detail_footer, paint_detail_header, paint_dock_frame, paint_quiet_origin,
+    paint_user_turn, reject_copper_residual, reject_structure_residual, MODEL_LABEL, PROMPT_ARROW,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme};
 
@@ -32,10 +40,13 @@ pub fn render(id: &str) -> Result<Canvas, String> {
     }
 }
 
-fn shell_goal_header(canvas: &mut Canvas, goal: &str) -> Result<(), String> {
+/// Product pane title stack: authenticated top bar + short surface label.
+fn pane_title(canvas: &mut Canvas, title: &str, subtitle: &str) -> Result<(), String> {
     paint_demo_top_bar(canvas)?;
-    canvas.write(3, 4, "Tasks", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(4, 4, goal, TextStyle::plain(ColorToken::Secondary))?;
+    canvas.write(2, 2, title, TextStyle::bold(ColorToken::Bright))?;
+    if !subtitle.is_empty() {
+        canvas.write(3, 2, subtitle, TextStyle::plain(ColorToken::Muted))?;
+    }
     Ok(())
 }
 
@@ -129,77 +140,62 @@ fn mode_switch_refused() -> Result<Canvas, String> {
     finish(canvas)
 }
 
+/// Closest Cortex: launch linked subagents/tasks from a short plan (not Mission Control worksheet).
 fn workflow_launch() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    shell_goal_header(
+    pane_title(
         &mut canvas,
-        "Prepare the release safely and review the result.",
+        "Tasks",
+        "Prep linked background work for this session",
     )?;
     paint_user_turn(
         &mut canvas,
-        6,
+        5,
         &["Turn the release work into tracked tasks and walk me through it."],
     )?;
-    canvas.write(10, 2, "◆ Cortex", TextStyle::accent())?;
-    canvas.write(
-        11,
-        4,
-        "I can run that as three linked tasks under one goal.",
-        TextStyle::plain(ColorToken::Text),
+    paint_assistant(
+        &mut canvas,
+        7,
+        &["I can open three linked items under Tasks:"],
     )?;
     canvas.write(
-        13,
-        4,
-        "○ Ready · Goal launch  0/3",
+        9,
+        2,
+        "○ Ready · 3 proposed",
         TextStyle::plain(ColorToken::Muted),
     )?;
+    canvas.write(11, 2, "▾ Subagents 1", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        12,
+        4,
+        "○ Review · release notes open risks",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(14, 2, "▾ Tasks 1", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         15,
         4,
-        "Preflight",
-        TextStyle::bold(ColorToken::Bright),
+        "○ Task Verify staging and rollback notes",
+        TextStyle::plain(ColorToken::Text),
     )?;
+    canvas.write(17, 2, "▾ Watchers 1", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
-        16,
+        18,
         4,
-        "✓ Workspace trusted · auth ready · tools available",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "No missing inputs. Start opens Tasks monitoring.",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-    canvas.write(
-        19,
-        4,
-        "Tasks proposed",
-        TextStyle::bold(ColorToken::Bright),
+        "○ Monitor next-step note after fixes",
+        TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         20,
-        4,
-        "  1. Review release notes for open risks",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        21,
-        4,
-        "  2. Check the safe publish path",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        22,
-        4,
-        "  3. Update the next-step note after fixes",
-        TextStyle::plain(ColorToken::Text),
+        2,
+        "✓ Workspace trusted · auth ready · tools available",
+        TextStyle::plain(ColorToken::Ok),
     )?;
     paint_dock_frame(
         &mut canvas,
         28,
         9,
-        "Start this goal?",
+        "Start these items?",
         "Enter starts · Esc returns to chat",
     )?;
     canvas.write(
@@ -211,7 +207,7 @@ fn workflow_launch() -> Result<Canvas, String> {
     canvas.write(
         31,
         5,
-        "  Cancel · keep the proposal ready",
+        "  Cancel · keep this plan ready",
         TextStyle::plain(ColorToken::Text),
     )?;
     paint_default_putty(&mut canvas)?;
@@ -220,56 +216,46 @@ fn workflow_launch() -> Result<Canvas, String> {
 
 fn workflow_launch_blocked() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    shell_goal_header(
+    pane_title(
         &mut canvas,
-        "Prepare the release safely and review the result.",
+        "Tasks",
+        "Prep linked background work for this session",
     )?;
     paint_user_turn(
         &mut canvas,
-        6,
+        5,
         &["Turn the release work into tracked tasks and walk me through it."],
     )?;
-    canvas.write(10, 2, "◆ Cortex", TextStyle::accent())?;
-    canvas.write(
-        11,
-        4,
-        "Preflight found one missing step before tasks can run.",
-        TextStyle::plain(ColorToken::Text),
+    paint_assistant(
+        &mut canvas,
+        7,
+        &["Preflight found one missing step before tasks can run."],
     )?;
     canvas.write(
-        13,
-        4,
-        "✗ Blocked · Goal launch  0/3",
+        9,
+        2,
+        "✗ Blocked · folder trust pending",
         TextStyle::plain(ColorToken::Bad),
     )?;
     canvas.write(
-        15,
-        4,
-        "Needs attention · 1",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        16,
-        4,
+        11,
+        2,
         "› Folder trust is still pending for /projects/demo",
         TextStyle::bold(ColorToken::Warn),
     )?;
     canvas.write(
-        17,
+        12,
         4,
-        "  Auth is ready · tools are available",
+        "Auth is ready · tools are available",
         TextStyle::plain(ColorToken::Muted),
     )?;
+    canvas.write(14, 2, "▸ Subagents 0", TextStyle::plain(ColorToken::Dim))?;
+    canvas.write(15, 2, "▸ Tasks 0", TextStyle::plain(ColorToken::Dim))?;
+    canvas.write(16, 2, "▸ Watchers 0", TextStyle::plain(ColorToken::Dim))?;
     canvas.write(
-        19,
-        4,
-        "Checklist",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        20,
-        4,
-        "  Add folder trust, then Start tasks again.",
+        18,
+        2,
+        "Add folder trust, then start the proposed items again.",
         TextStyle::plain(ColorToken::Secondary),
     )?;
     paint_dock_frame(
@@ -295,94 +281,70 @@ fn workflow_launch_blocked() -> Result<Canvas, String> {
     finish(canvas)
 }
 
+/// Cortex `tasks_pane`: collapsible Subagents / Tasks / Watchers (not Tasks monitor invent).
 fn workflow_monitor() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    shell_goal_header(
+    pane_title(
         &mut canvas,
-        "Prepare the release safely and review the result.",
+        "Tasks",
+        "Background work for this session · running first",
     )?;
     canvas.write(
-        6,
-        4,
-        "● Running · Tasks monitor  1/3",
+        5,
+        2,
+        "● 1 running · 1 complete · 1 queued",
         TextStyle::plain(ColorToken::Running),
     )?;
+
+    // Subagents group
+    canvas.write(7, 2, "▾ Subagents 1", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
-        7,
+        8,
         4,
-        "Running · 1 complete · 2 remaining · no blocker",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-    canvas.write(
-        9,
-        4,
-        "Active work · 1/3",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        10,
-        4,
-        "› ● Check the safe publish path",
+        "› ● Review · release notes open risks",
         TextStyle::bold(ColorToken::Accent),
     )?;
     canvas.write(
-        11,
-        4,
-        "  Verifying staging and rollback notes",
+        9,
+        6,
+        "Running · scanning CHANGELOG risk callouts",
         TextStyle::plain(ColorToken::Muted),
     )?;
+
+    // Tasks group
+    canvas.write(11, 2, "▾ Tasks 1", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
-        13,
+        12,
         4,
-        "Recently completed · 1",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        14,
-        4,
-        "  ✓ Review the release notes for open risks",
+        "  ✓ Task Verify staging and rollback notes",
         TextStyle::plain(ColorToken::Ok),
     )?;
     canvas.write(
+        13,
+        6,
+        "Finished · 14s · (82 lines)",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+
+    // Watchers group
+    canvas.write(15, 2, "▾ Watchers 1", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
         16,
         4,
-        "Queued · 1",
-        TextStyle::bold(ColorToken::Bright),
+        "  ○ Monitor next-step note after fixes",
+        TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
         17,
-        4,
-        "  ○ Update the next-step note after fixes",
-        TextStyle::plain(ColorToken::Muted),
+        6,
+        "Queued · starts when publish path clears",
+        TextStyle::plain(ColorToken::Dim),
     )?;
-    canvas.write(
-        19,
-        4,
-        "Progress log · 1-3 of 12",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
+
     canvas.write(
         20,
-        4,
-        "  Started safe publish path checks · 2m ago",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        21,
-        4,
-        "  Finished release notes review · 8m ago",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        22,
-        4,
-        "  Preflight passed · three planned tasks",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        25,
-        4,
-        "Enter to open task · i intervene · Esc resume chat",
+        2,
+        "Enter view output · k kill · Esc resume chat",
         TextStyle::plain(ColorToken::Dim),
     )?;
     paint_default_prompt(&mut canvas, 33, "Ask about the active task…")?;
@@ -390,77 +352,74 @@ fn workflow_monitor() -> Result<Canvas, String> {
     finish(canvas)
 }
 
+/// Failed / needs-attention rows still use tasks_pane groups (not Mission invent).
 fn workflow_monitor_failure() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    shell_goal_header(
+    pane_title(
         &mut canvas,
-        "Prepare the release safely and review the result.",
+        "Tasks",
+        "Background work for this session · failures first",
     )?;
     canvas.write(
-        6,
-        4,
-        "✗ Needs attention · Tasks monitor  1/3",
+        5,
+        2,
+        "✗ 1 failed · 1 complete · 1 queued",
         TextStyle::plain(ColorToken::Bad),
     )?;
+
+    canvas.write(7, 2, "▾ Subagents 1", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
-        7,
+        8,
         4,
-        "1 failed · 1 complete · 1 remaining",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-    canvas.write(
-        9,
-        4,
-        "Needs attention · 1",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        10,
-        4,
-        "› ✗ Check the safe publish path",
+        "› ✗ Review · safe publish path",
         TextStyle::bold(ColorToken::Bad),
     )?;
     canvas.write(
-        11,
-        4,
-        "  Staging checklist still missing the rollback step",
+        9,
+        6,
+        "Failed · staging checklist missing the rollback step",
         TextStyle::plain(ColorToken::Text),
     )?;
+
+    canvas.write(11, 2, "▾ Tasks 1", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
-        13,
+        12,
         4,
-        "Completed · 1",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        14,
-        4,
-        "  ✓ Review the release notes for open risks",
+        "  ✓ Task Review release notes for open risks",
         TextStyle::plain(ColorToken::Ok),
     )?;
     canvas.write(
+        13,
+        6,
+        "Finished · 48s",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+
+    canvas.write(15, 2, "▾ Watchers 1", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
         16,
         4,
-        "Queued · 1",
-        TextStyle::bold(ColorToken::Bright),
+        "  ○ Monitor next-step note after fixes",
+        TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
         17,
-        4,
-        "  ○ Update the next-step note after fixes",
-        TextStyle::plain(ColorToken::Muted),
+        6,
+        "Queued · waiting on failed review",
+        TextStyle::plain(ColorToken::Dim),
     )?;
+
     paint_dock_frame(
         &mut canvas,
         26,
         11,
-        "Repair this task?",
+        "Repair this item?",
         "Enter creates fix · Esc keeps failure visible",
     )?;
     canvas.write(
         28,
         5,
-        "Create a fix task for the missing rollback note.",
+        "Create a follow-up for the missing rollback note.",
         TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
@@ -485,82 +444,90 @@ fn workflow_monitor_failure() -> Result<Canvas, String> {
     finish(canvas)
 }
 
+/// Cortex Agent Dashboard: state-sorted agent rows + diamonds + dispatch ❯.
+/// Not an Owner kanban / Goals board invent.
 fn team_board() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    shell_goal_header(
+    pane_title(
         &mut canvas,
-        "Prepare the release safely and review the result.",
+        "Cortex · Dashboard - 3 agents · 1 awaiting",
+        "State-sorted sessions · subagents stay under parent",
+    )?;
+
+    // Needs input first (filled diamond / ●)
+    canvas.write(
+        5,
+        2,
+        "› ◆ reviewer · safe publish path     Awaiting your input            2m",
+        TextStyle::bold(ColorToken::Warn),
     )?;
     canvas.write(
         6,
         4,
-        "✗ Needs attention · Goals board  1/3",
-        TextStyle::plain(ColorToken::Bad),
-    )?;
-    canvas.write(
-        7,
-        4,
-        "Ownership and assignments for the current goal",
+        "Pending: approve rollback wording · branch master worktree",
         TextStyle::plain(ColorToken::Muted),
+    )?;
+
+    // Working (diamond row markers from product dashboard)
+    canvas.write(
+        8,
+        2,
+        "  ◆ implementer · next-step note      Running: cargo test          12m",
+        TextStyle::plain(ColorToken::Running),
     )?;
     canvas.write(
         9,
         4,
-        "Needs attention · 1",
-        TextStyle::bold(ColorToken::Bright),
+        "Last tool · $ cargo test note -- --nocapture",
+        TextStyle::plain(ColorToken::Muted),
     )?;
-    canvas.write(
-        10,
-        4,
-        "› ✗ Check the safe publish path · Review · blocked",
-        TextStyle::bold(ColorToken::Accent),
-    )?;
+
+    // Idle / completed (hollow diamond)
     canvas.write(
         11,
-        4,
-        "  Depends on · next-step note and review",
+        2,
+        "  ◇ notes · release open risks        idle · completed             48m",
         TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
-        13,
+        12,
         4,
-        "Working · 1",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        14,
-        4,
-        "  ● Update the next-step note after fixes",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        15,
-        4,
-        "  Owner · Notes agent · working",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "Completed · 1",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        18,
-        4,
-        "  ✓ Review the release notes for open risks",
+        "✓ notes reviewed · no open blockers",
         TextStyle::plain(ColorToken::Ok),
     )?;
+
+    // Dispatch jewel (product `❯` prompt)
+    let box_top = 28u16;
+    let left = 2u16;
+    let right = 117u16;
+    let width = (right - left + 1) as usize;
+    let top = format!("╭{}╮", "─".repeat(width - 2));
+    let bottom = format!("╰{}╯", "─".repeat(width - 2));
+    canvas.write(box_top, left, &top, TextStyle::plain(ColorToken::Border))?;
+    canvas.write(box_top + 2, left, &bottom, TextStyle::plain(ColorToken::Border))?;
     canvas.write(
-        19,
-        4,
-        "  Owner · Docs agent · complete",
-        TextStyle::plain(ColorToken::Muted),
+        box_top + 1,
+        left,
+        "│",
+        TextStyle::plain(ColorToken::Border),
     )?;
     canvas.write(
-        22,
-        4,
-        "Esc to tasks monitor · Enter opens selection",
+        box_top + 1,
+        right,
+        "│",
+        TextStyle::plain(ColorToken::Border),
+    )?;
+    let dispatch = format!("{PROMPT_ARROW} Dispatch a new agent");
+    canvas.write(
+        box_top + 1,
+        left + 2,
+        &dispatch,
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        32,
+        2,
+        "↑/↓ select · Enter open · Esc back · Ctrl+\\ toggle",
         TextStyle::plain(ColorToken::Dim),
     )?;
     paint_default_putty(&mut canvas)?;
@@ -569,56 +536,35 @@ fn team_board() -> Result<Canvas, String> {
 
 fn reviewer_output() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    shell_goal_header(
+    pane_title(
         &mut canvas,
-        "Prepare the release safely and review the result.",
+        "Plan review · changes requested",
+        "Review · 2 complete · 1 remaining",
     )?;
+    canvas.write(5, 2, "Changes requested", TextStyle::bold(ColorToken::Warn))?;
     canvas.write(
         6,
-        4,
-        "Plan review · changes requested",
-        TextStyle::bold(ColorToken::Bright),
+        2,
+        "Next-step note still omits open risk and rollback order",
+        TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         7,
-        4,
-        "Review · 2 complete · 1 remaining",
-        TextStyle::plain(ColorToken::Secondary),
+        2,
+        "Affected · Safe publish path",
+        TextStyle::plain(ColorToken::Muted),
     )?;
-    canvas.write(
-        9,
-        4,
-        "Changes requested",
-        TextStyle::bold(ColorToken::Warn),
-    )?;
+    canvas.write(9, 2, "Comments", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         10,
         4,
-        "Next-step note still omits open risk and rollback order",
+        "1. Name the open risk before marking the path ready.",
         TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         11,
         4,
-        "Affected · Safe publish path",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        13,
-        4,
-        "Comments",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        14,
-        4,
-        "  1. Name the open risk before marking the path ready.",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        15,
-        4,
-        "  2. Add rollback steps next to the publish checklist.",
+        "2. Add rollback steps next to the publish checklist.",
         TextStyle::plain(ColorToken::Text),
     )?;
     paint_dock_frame(
@@ -646,62 +592,46 @@ fn reviewer_output() -> Result<Canvas, String> {
 
 fn reviewer_approved() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    shell_goal_header(
+    pane_title(
         &mut canvas,
-        "Prepare the release safely and review the result.",
+        "Plan approved · ready to continue",
+        "Review · 3 complete · 0 remaining",
     )?;
+    canvas.write(5, 2, "Summary", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         6,
-        4,
-        "Plan approved · ready to continue",
-        TextStyle::bold(ColorToken::Ok),
+        2,
+        "Release notes, publish path, and next-step note are clear.",
+        TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         7,
-        4,
-        "Review · 3 complete · 0 remaining",
-        TextStyle::plain(ColorToken::Secondary),
+        2,
+        "No open comments · no held blockers.",
+        TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
         9,
-        4,
-        "Summary",
+        2,
+        "Completed items · 3/3",
         TextStyle::bold(ColorToken::Bright),
     )?;
     canvas.write(
         10,
         4,
-        "Release notes, publish path, and next-step note are clear.",
-        TextStyle::plain(ColorToken::Text),
+        "✓ Review the release notes for open risks",
+        TextStyle::plain(ColorToken::Ok),
     )?;
     canvas.write(
         11,
         4,
-        "No open comments · no held blockers.",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        13,
-        4,
-        "Completed tasks · 3/3",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        14,
-        4,
-        "  ✓ Review the release notes for open risks",
+        "✓ Check the safe publish path",
         TextStyle::plain(ColorToken::Ok),
     )?;
     canvas.write(
-        15,
+        12,
         4,
-        "  ✓ Check the safe publish path",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-    canvas.write(
-        16,
-        4,
-        "  ✓ Update the next-step note after fixes",
+        "✓ Update the next-step note after fixes",
         TextStyle::plain(ColorToken::Ok),
     )?;
     paint_dock_frame(
@@ -720,7 +650,7 @@ fn reviewer_approved() -> Result<Canvas, String> {
     canvas.write(
         31,
         5,
-        "  Open dashboard telemetry",
+        "  Open dashboard",
         TextStyle::plain(ColorToken::Text),
     )?;
     paint_default_putty(&mut canvas)?;
@@ -732,7 +662,7 @@ fn verification_ladder() -> Result<Canvas, String> {
     paint_detail_header(
         &mut canvas,
         "Advanced · Verification stages",
-        "Self-check progress for the active goal · counts stay compact",
+        "Self-check progress · secondary to Tasks / Dashboard",
     )?;
     canvas.write(
         7,
@@ -797,12 +727,12 @@ fn verification_ladder() -> Result<Canvas, String> {
     canvas.write(
         23,
         4,
-        "Enter opens detailed evidence · Esc returns to failure",
+        "Enter opens detailed evidence · Esc returns",
         TextStyle::plain(ColorToken::Dim),
     )?;
     paint_detail_footer(
         &mut canvas,
-        "Esc to return · verification stays secondary to the tasks board",
+        "Esc to return · verification stays secondary to Tasks",
     )?;
     finish(canvas)
 }
@@ -812,7 +742,7 @@ fn intent_scorer_pass() -> Result<Canvas, String> {
     paint_detail_header(
         &mut canvas,
         "Advanced · Verification summary",
-        "Advisory outcome for goal fit · not a factory score ladder",
+        "Advisory outcome for goal fit",
     )?;
     canvas.write(
         7,
@@ -826,12 +756,7 @@ fn intent_scorer_pass() -> Result<Canvas, String> {
         "Release prep plan matches the stated safe-publish goal.",
         TextStyle::plain(ColorToken::Text),
     )?;
-    canvas.write(
-        10,
-        4,
-        "Signals",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
+    canvas.write(10, 4, "Signals", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         11,
         4,
@@ -882,12 +807,7 @@ fn intent_scorer_fail() -> Result<Canvas, String> {
         "Next-step note still omits the open risk and rollback order.",
         TextStyle::plain(ColorToken::Text),
     )?;
-    canvas.write(
-        10,
-        4,
-        "Signals",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
+    canvas.write(10, 4, "Signals", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         11,
         4,
@@ -919,87 +839,71 @@ fn intent_scorer_fail() -> Result<Canvas, String> {
     finish(canvas)
 }
 
+/// Closest Cortex Dashboard active-agent density (not Mission runtime invent).
 fn concurrency_metrics() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_detail_header(
+    pane_title(
         &mut canvas,
-        "Dashboard · Runtime tiles",
-        "Time, tokens, and concurrent agent activity for this goal",
+        "Cortex · Dashboard - 3 agents · 1 awaiting",
+        "Runtime summary beside the agent list",
+    )?;
+    canvas.write(
+        5,
+        2,
+        "◆ reviewer · safe publish path     Awaiting your input            2m",
+        TextStyle::bold(ColorToken::Warn),
+    )?;
+    canvas.write(
+        6,
+        2,
+        "◆ implementer · next-step note      Running: cargo test          12m",
+        TextStyle::plain(ColorToken::Running),
     )?;
     canvas.write(
         7,
-        4,
-        "Tiles · 4",
-        TextStyle::bold(ColorToken::Bright),
+        2,
+        "◇ notes · release open risks        idle · completed             48m",
+        TextStyle::plain(ColorToken::Muted),
     )?;
-    // Four compact dashboard tiles.
-    canvas.write(
-        9,
-        4,
-        "╭ Time ──────────────╮  ╭ Tokens ────────────╮",
-        TextStyle::plain(ColorToken::Border),
-    )?;
-    canvas.write(
-        10,
-        4,
-        "│ Elapsed · 12m 40s  │  │ ⇣ 48.2k this goal  │",
-        TextStyle::plain(ColorToken::Text),
-    )?;
+    canvas.write(10, 2, "Summary", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         11,
         4,
-        "│ Active · 1 agent   │  │ Context · 8.5k     │",
-        TextStyle::plain(ColorToken::Muted),
+        "Elapsed · 12m40s · tokens ⇣ 48.2k this goal",
+        TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         12,
         4,
-        "╰────────────────────╯  ╰────────────────────╯",
-        TextStyle::plain(ColorToken::Border),
-    )?;
-    canvas.write(
-        14,
-        4,
-        "╭ Concurrency ───────╮  ╭ Queue ─────────────╮",
-        TextStyle::plain(ColorToken::Border),
-    )?;
-    canvas.write(
-        15,
-        4,
-        "│ Parallel · 1 / 3   │  │ Pending · 1 task   │",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        16,
-        4,
-        "│ Soft cap · 3       │  │ Send now available │",
+        "Active · 1 agent · parallel rooms 1 / 3",
         TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
-        17,
-        4,
-        "╰────────────────────╯  ╰────────────────────╯",
-        TextStyle::plain(ColorToken::Border),
-    )?;
-    canvas.write(
-        20,
+        13,
         4,
         &format!("Model · {MODEL_LABEL} · always-approve"),
         TextStyle::plain(ColorToken::Secondary),
     )?;
     canvas.write(
-        22,
-        4,
-        "Telemetry is secondary · Tasks monitor stays the home",
+        16,
+        2,
+        &format!("{PROMPT_ARROW} Dispatch a new agent"),
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        18,
+        2,
+        "Enter open agent · Esc returns to Tasks",
         TextStyle::plain(ColorToken::Dim),
     )?;
     paint_detail_footer(
         &mut canvas,
-        "Esc to return · dashboard tiles only under Advanced",
+        "Esc to return · dashboard summary only under Advanced",
     )?;
     finish(canvas)
 }
 
+/// Tool evidence Latin form: `$ cmd`, never hybrid `Shell ·` invent.
 fn tool_envelope() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_detail_header(
@@ -1010,7 +914,7 @@ fn tool_envelope() -> Result<Canvas, String> {
     canvas.write(
         7,
         4,
-        "Shell · cargo test publish -- --nocapture",
+        "$ cargo test publish -- --nocapture",
         TextStyle::plain(ColorToken::Running),
     )?;
     canvas.write(
@@ -1019,12 +923,7 @@ fn tool_envelope() -> Result<Canvas, String> {
         "Exit · 1 · 4.2s · truncated at 12k / 48k bytes",
         TextStyle::plain(ColorToken::Muted),
     )?;
-    canvas.write(
-        10,
-        4,
-        "Excerpt",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
+    canvas.write(10, 4, "Excerpt", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         11,
         4,
@@ -1055,12 +954,7 @@ fn tool_envelope() -> Result<Canvas, String> {
         "  … truncated …",
         TextStyle::plain(ColorToken::Dim),
     )?;
-    canvas.write(
-        17,
-        4,
-        "Redacted",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
+    canvas.write(17, 4, "Redacted", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         18,
         4,
@@ -1089,12 +983,30 @@ fn tool_envelope() -> Result<Canvas, String> {
 fn finish(canvas: Canvas) -> Result<Canvas, String> {
     let text = canvas.to_text();
     reject_copper_residual(&text)?;
+    reject_structure_residual(&text)?;
     if text.contains("Claude") || text.contains("Mission Control") {
         return Err("orchestration residual: Claude/Mission Control wording".to_owned());
     }
-    // Title may still use "Tasks" / plan language, not Factory Mission Control brand.
     if text.lines().any(|l| l.trim() == "Mission") {
         return Err("orchestration residual: bare Mission title".to_owned());
+    }
+    // VAL-V3-STRUCT-009 bans.
+    for invent in [
+        "Tasks monitor",
+        "i intervene",
+        "Goals board",
+        "Progress log",
+        "Owner ·",
+        "Shell  ",
+        "Shell ·",
+        "Esc to tasks monitor",
+        "Active work ·",
+    ] {
+        if text.contains(invent) {
+            return Err(format!(
+                "orchestration residual: banned invent {invent:?}"
+            ));
+        }
     }
     Ok(canvas)
 }
@@ -1134,10 +1046,73 @@ mod tests {
                     || text.contains("Dashboard")
                     || text.contains("plan")
                     || text.contains("Shift+Tab")
-                    || text.contains("Goal"),
-                "{id} lacks pure Cortex tasks/plan language"
+                    || text.contains("Subagents")
+                    || text.contains("Watchers")
+                    || text.contains("$ cargo"),
+                "{id} lacks pure Cortex tasks/dashboard language"
             );
             assert_eq!(text.lines().count(), 40, "{id}");
         }
+    }
+
+    #[test]
+    fn orchestration_bans_mission_control_invent() {
+        for id in [
+            "workflow-monitor",
+            "workflow-monitor-failure",
+            "team-board",
+            "workflow-launch",
+            "workflow-launch-blocked",
+            "concurrency-metrics",
+            "tool-envelope",
+        ] {
+            let text = render(id)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+                .to_text();
+            for invent in [
+                "Tasks monitor",
+                "i intervene",
+                "Goals board",
+                "Progress log",
+                "Owner ·",
+                "Shell  ",
+                "Shell ·",
+                "◆ Cortex",
+                "❯ You",
+            ] {
+                assert!(
+                    !text.contains(invent),
+                    "{id} still paints invent {invent:?}"
+                );
+            }
+            assert!(
+                text.contains("9.5K / 500K") || text.contains("K / "),
+                "{id} inherits M1 auth budget chrome"
+            );
+        }
+    }
+
+    #[test]
+    fn tasks_pane_and_dashboard_language_visible() {
+        let mon = render("workflow-monitor").unwrap().to_text();
+        assert!(mon.contains("Subagents"));
+        assert!(mon.contains("Tasks"));
+        assert!(mon.contains("Watchers"));
+        assert!(mon.contains("Task "));
+        assert!(mon.contains("Monitor "));
+        assert!(!mon.contains("Active work"));
+        assert!(!mon.contains("i intervene"));
+
+        let board = render("team-board").unwrap().to_text();
+        assert!(board.contains("Dashboard"));
+        assert!(board.contains("Dispatch a new agent") || board.contains(&PROMPT_ARROW.to_string()));
+        assert!(board.contains("◆") || board.contains("◇"));
+        assert!(!board.contains("Goals board"));
+        assert!(!board.contains("Owner ·"));
+
+        let env = render("tool-envelope").unwrap().to_text();
+        assert!(env.contains("$ cargo test publish"));
+        assert!(!env.contains("Shell ·"));
+        assert!(!env.contains("Shell  "));
     }
 }

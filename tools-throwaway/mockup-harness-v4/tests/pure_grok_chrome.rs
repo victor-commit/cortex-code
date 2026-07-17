@@ -182,14 +182,15 @@ fn all_f1_f7_screens_reject_copper_brand() {
 fn orchestration_uses_tasks_dashboard_plan_language() {
     let monitor = render_pilot("workflow-monitor").unwrap().to_text();
     assert!(monitor.contains("Tasks"));
-    assert!(monitor.contains("Running"));
+    assert!(monitor.contains("Subagents") || monitor.contains("Watchers"));
     assert!(!monitor.contains("Claude Opus"));
     assert!(!monitor.lines().any(|l| l.trim() == "Mission"));
+    assert!(!monitor.contains("Tasks monitor"));
     let mode = render_pilot("mode-switch").unwrap().to_text();
     assert!(mode.contains("Shift+Tab") || mode.contains("plan"));
     assert!(!mode.contains("How Code should work"));
     let dash = render_pilot("concurrency-metrics").unwrap().to_text();
-    assert!(dash.contains("Dashboard") || dash.contains("tiles"));
+    assert!(dash.contains("Dashboard"));
     assert!(dash.contains(MODEL_LABEL));
 }
 
@@ -671,5 +672,163 @@ fn published_permission_set_structure_language_bans() {
         if *id == "permission-shell" {
             assert!(text.contains("Allow `cargo`?") || text.contains("Yes, proceed"));
         }
+    }
+}
+
+/// VAL-V3-STRUCT-009: tasks_pane / Dashboard analogues (ban Mission Control invent).
+#[test]
+fn orchestration_family_tasks_dashboard_analogues() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+
+    let invent_bans = [
+        "Tasks monitor",
+        "i intervene",
+        "Goals board",
+        "Progress log",
+        "Owner ·",
+        "Shell  ",
+        "Shell ·",
+        "◆ Cortex",
+        "❯ You",
+        "Active work ·",
+        "Esc to tasks monitor",
+    ];
+    let orch_ids = [
+        "mode-switch",
+        "mode-switch-refused",
+        "workflow-launch",
+        "workflow-launch-blocked",
+        "workflow-monitor",
+        "workflow-monitor-failure",
+        "team-board",
+        "reviewer-output",
+        "reviewer-approved",
+        "verification-ladder",
+        "intent-scorer-pass",
+        "intent-scorer-fail",
+        "concurrency-metrics",
+        "tool-envelope",
+    ];
+    for id in orch_ids {
+        let text = render_pilot(id)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+            .to_text();
+        reject_structure_residual(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        for invent in invent_bans {
+            assert!(
+                !text.contains(invent),
+                "{id} still paints invent {invent:?}"
+            );
+        }
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "{id} inherits M1 auth budget chrome"
+        );
+        assert!(
+            text.contains("Shift+Tab:mode | Ctrl+c:cancel") || text.contains("Shift+Tab"),
+            "{id} putty / mode chrome"
+        );
+    }
+
+    let mon = render_pilot("workflow-monitor").unwrap().to_text();
+    assert!(mon.contains("Subagents"), "monitor needs Subagents group");
+    assert!(mon.contains("Watchers"), "monitor needs Watchers group");
+    assert!(mon.contains("Task ") || mon.contains("▾ Tasks"), "Task tag");
+    assert!(mon.contains("Monitor "), "Monitor tag");
+
+    let board = render_pilot("team-board").unwrap().to_text();
+    assert!(board.contains("Dashboard"), "board is Dashboard analogue");
+    assert!(
+        board.contains("Dispatch a new agent") || board.contains('❯'),
+        "dashboard dispatch ❯"
+    );
+    assert!(
+        board.contains('◆') || board.contains('◇'),
+        "dashboard diamonds"
+    );
+
+    let env = render_pilot("tool-envelope").unwrap().to_text();
+    assert!(env.contains("$ cargo test publish"), "tool-envelope $ form");
+    assert!(!env.contains("Shell ·"), "tool-envelope Shell invent");
+
+    let launch = render_pilot("workflow-launch").unwrap().to_text();
+    assert!(launch.contains("Subagents") || launch.contains("Tasks"));
+    assert!(!launch.contains("Tasks monitoring"));
+}
+
+/// Published orchestration set bans invent chrome when gallery exists.
+#[test]
+fn published_orchestration_set_structure_language_bans() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plans/assets/mockups-v3/orchestration");
+    if !root.exists() {
+        return;
+    }
+    let invent_bans = [
+        "Tasks monitor",
+        "i intervene",
+        "Goals board",
+        "Progress log",
+        "Owner ·",
+        "Shell  ",
+        "Shell ·",
+        "◆ Cortex",
+        "❯ You",
+    ];
+    for id in [
+        "workflow-monitor",
+        "workflow-monitor-failure",
+        "team-board",
+        "workflow-launch",
+        "workflow-launch-blocked",
+        "concurrency-metrics",
+        "tool-envelope",
+        "mode-switch",
+        "reviewer-output",
+        "reviewer-approved",
+        "verification-ladder",
+        "intent-scorer-pass",
+        "intent-scorer-fail",
+        "mode-switch-refused",
+    ] {
+        let path = root.join(format!("{id}.txt"));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("published orchestration/{id}: {e}"));
+        for invent in invent_bans {
+            assert!(
+                !text.contains(invent),
+                "published {id} invent {invent:?}"
+            );
+        }
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "published {id} budget"
+        );
+    }
+    let mon = root.join("workflow-monitor.txt");
+    if mon.exists() {
+        let text = std::fs::read_to_string(&mon).unwrap();
+        assert!(text.contains("Subagents") || text.contains("Watchers"));
+        assert!(!text.contains("Active work ·"));
+    }
+    let board = root.join("team-board.txt");
+    if board.exists() {
+        let text = std::fs::read_to_string(&board).unwrap();
+        assert!(text.contains("Dashboard"));
+        assert!(!text.contains("Goals board"));
+    }
+    let env = root.join("tool-envelope.txt");
+    if env.exists() {
+        let text = std::fs::read_to_string(&env).unwrap();
+        assert!(text.contains("$ cargo") || text.contains("$ "));
+        assert!(!text.contains("Shell ·"));
     }
 }

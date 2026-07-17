@@ -1,20 +1,20 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
+  Plan approved · ready to continue                                                                                     
+  Review · 3 complete · 0 remaining                                                                                     
                                                                                                                         
-    Tasks                                                                                                               
-    Prepare the release safely and review the result.                                                                   
+  Summary                                                                                                               
+  Release notes, publish path, and next-step note are clear.                                                            
+  No open comments · no held blockers.                                                                                  
                                                                                                                         
-    Plan approved · ready to continue                                                                                   
-    Review · 3 complete · 0 remaining                                                                                   
+  Completed items · 3/3                                                                                                 
+    ✓ Review the release notes for open risks                                                                           
+    ✓ Check the safe publish path                                                                                       
+    ✓ Update the next-step note after fixes                                                                             
                                                                                                                         
-    Summary                                                                                                             
-    Release notes, publish path, and next-step note are clear.                                                          
-    No open comments · no held blockers.                                                                                
                                                                                                                         
-    Completed tasks · 3/3                                                                                               
-      ✓ Review the release notes for open risks                                                                         
-      ✓ Check the safe publish path                                                                                     
-      ✓ Update the next-step note after fixes                                                                           
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,7 +29,7 @@
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
   │ Continue after approval?                                                                                         │  
   │  › Continue to chat                                                                                              │  
-  │    Open dashboard telemetry                                                                                      │  
+  │    Open dashboard                                                                                                │  
   │                                                                                                                  │  
   │                                                                                                                  │  
   │                                                                                                                  │  

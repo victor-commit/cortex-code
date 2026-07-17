@@ -1,26 +1,22 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
+  Cortex · Dashboard - 3 agents · 1 awaiting                                                                        
+  Runtime summary beside the agent list                                                                                 
                                                                                                                         
-    Dashboard · Runtime tiles                                                                                           
-    Time, tokens, and concurrent agent activity for this goal                                                           
-                                                                                                                        
-                                                                                                                        
-    Tiles · 4                                                                                                           
-                                                                                                                        
-    ╭ Time ──────────────╮  ╭ Tokens ────────────╮                                                                      
-    │ Elapsed · 12m 40s  │  │ ⇣ 48.2k this goal  │                                                                      
-    │ Active · 1 agent   │  │ Context · 8.5k     │                                                                      
-    ╰────────────────────╯  ╰────────────────────╯                                                                      
-                                                                                                                        
-    ╭ Concurrency ───────╮  ╭ Queue ─────────────╮                                                                      
-    │ Parallel · 1 / 3   │  │ Pending · 1 task   │                                                                      
-    │ Soft cap · 3       │  │ Send now available │                                                                      
-    ╰────────────────────╯  ╰────────────────────╯                                                                      
+  ◆ reviewer · safe publish path     Awaiting your input            2m                                                  
+  ◆ implementer · next-step note      Running: cargo test          12m                                                  
+  ◇ notes · release open risks        idle · completed             48m                                                  
                                                                                                                         
                                                                                                                         
+  Summary                                                                                                               
+    Elapsed · 12m40s · tokens ⇣ 48.2k this goal                                                                         
+    Active · 1 agent · parallel rooms 1 / 3                                                                             
     Model · Cortex · always-approve                                                                                   
                                                                                                                         
-    Telemetry is secondary · Tasks monitor stays the home                                                               
+                                                                                                                        
+  ❯ Dispatch a new agent                                                                                                
+                                                                                                                        
+  Enter open agent · Esc returns to Tasks                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -35,6 +31,10 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Esc to return · dashboard tiles only under Advanced                                                                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · dashboard summary only under Advanced                                                               
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
