@@ -59,6 +59,46 @@ fn harness_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Pure-Cortex dump mode: mockup-harness-v4 owns gallery bytes under the shared
+/// mockups-v3 roots and leaves `.renderer-manifest-v1-pure-cortex`. Hybrid v3
+/// `--all` / category / flow publishes would silently repaint copper Cortex
+/// chrome back into the gallery, so destruction tests switch to read-only or
+/// pure-publisher restore while that sidecar is present.
+fn pure_cortex_mode() -> bool {
+    gallery_root()
+        .join(".renderer-manifest-v1-pure-cortex")
+        .is_file()
+}
+
+fn pure_cortex_v4_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mockup-harness-v4/target/debug/mockup-harness-v4")
+}
+
+fn run_pure_publish(args: &[&str]) -> Output {
+    // Prefer an already-built pure publisher binary. Fall back to cargo run when
+    // the debug binary is missing (fresh trees before a harness-v4 build).
+    let bin = pure_cortex_v4_bin();
+    if bin.is_file() {
+        return Command::new(&bin)
+            .args(args)
+            .output()
+            .expect("pure Cortex publisher CLI must run");
+    }
+    Command::new("cargo")
+        .args([
+            "run",
+            "--quiet",
+            "--features",
+            "png",
+            "--manifest-path",
+        ])
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mockup-harness-v4/Cargo.toml"))
+        .arg("--")
+        .args(args)
+        .output()
+        .expect("pure Cortex cargo run must start")
+}
+
 fn ownership_manifest_paths(root: &Path) -> BTreeMap<String, String> {
     let path = root.join(".renderer-manifest-v1");
     let body = fs::read_to_string(&path)
@@ -355,17 +395,22 @@ fn public_list_statuses_and_selectors_cover_complete_registry() {
     .collect();
     for category in Category::ALL {
         let name = category.as_str();
+        let count = canonical_inventory()
+            .iter()
+            .filter(|screen| screen.category == category)
+            .count();
+        assert_eq!(count, *expected_counts.get(name).unwrap());
+        if pure_cortex_mode() {
+            // Read-only inventory/preflight proof: do not hybrid-repaint pure dump
+            // gallery bytes via category publish selectors.
+            continue;
+        }
         let output = run(&[name]);
         assert!(
             output.status.success(),
             "category selector {name} must succeed in the final gallery; stderr={}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let count = canonical_inventory()
-            .iter()
-            .filter(|screen| screen.category == category)
-            .count();
-        assert_eq!(count, *expected_counts.get(name).unwrap());
     }
 
     let unknown = run(&["definitely-not-registered"]);
@@ -646,8 +691,111 @@ fn clean_double_render_produces_identical_manifests() {
 
     let mut first_scope = BTreeMap::<String, String>::new();
     let mut second_scope = BTreeMap::<String, String>::new();
+    let readme = gallery_root().join("README.md");
 
-    // First complete run: full canonical + every ordered flow/gate.
+    if pure_cortex_mode() {
+        // Pure dump is owned by mockup-harness-v4. Double-publish through that
+        // crate so hybrid copper paint never lands in the sealed gallery.
+        let first_pilots = run_pure_publish(&["--publish-pilots"]);
+        assert!(
+            first_pilots.status.success(),
+            "first pure pilots publish must succeed: {}",
+            String::from_utf8_lossy(&first_pilots.stderr)
+        );
+        let first_gates = run_pure_publish(&["--publish-gates"]);
+        assert!(
+            first_gates.status.success(),
+            "first pure gates publish must succeed: {}",
+            String::from_utf8_lossy(&first_gates.stderr)
+        );
+        let first_canonical = sorted_artifact_manifest(&gallery_root());
+        let first_gate = sorted_artifact_manifest(&gate_root());
+        first_scope.insert("readme".to_owned(), sha256_file(&readme));
+        first_scope.insert(
+            "canonical-set".to_owned(),
+            sha256_hex(
+                first_canonical
+                    .iter()
+                    .map(|(path, hash)| format!("{path}\t{hash}\n"))
+                    .collect::<String>()
+                    .as_bytes(),
+            ),
+        );
+        first_scope.insert(
+            "gate-set".to_owned(),
+            sha256_hex(
+                first_gate
+                    .iter()
+                    .map(|(path, hash)| format!("{path}\t{hash}\n"))
+                    .collect::<String>()
+                    .as_bytes(),
+            ),
+        );
+        first_scope.insert(
+            "pure-sidecar".to_owned(),
+            sha256_file(&gallery_root().join(".renderer-manifest-v1-pure-cortex")),
+        );
+        assert_eq!(first_canonical.len(), 172);
+        assert_eq!(first_gate.len(), 70);
+
+        let second_pilots = run_pure_publish(&["--publish-pilots"]);
+        assert!(
+            second_pilots.status.success(),
+            "second pure pilots publish must succeed: {}",
+            String::from_utf8_lossy(&second_pilots.stderr)
+        );
+        let second_gates = run_pure_publish(&["--publish-gates"]);
+        assert!(
+            second_gates.status.success(),
+            "second pure gates publish must succeed: {}",
+            String::from_utf8_lossy(&second_gates.stderr)
+        );
+        let second_canonical = sorted_artifact_manifest(&gallery_root());
+        let second_gate = sorted_artifact_manifest(&gate_root());
+        second_scope.insert("readme".to_owned(), sha256_file(&readme));
+        second_scope.insert(
+            "canonical-set".to_owned(),
+            sha256_hex(
+                second_canonical
+                    .iter()
+                    .map(|(path, hash)| format!("{path}\t{hash}\n"))
+                    .collect::<String>()
+                    .as_bytes(),
+            ),
+        );
+        second_scope.insert(
+            "gate-set".to_owned(),
+            sha256_hex(
+                second_gate
+                    .iter()
+                    .map(|(path, hash)| format!("{path}\t{hash}\n"))
+                    .collect::<String>()
+                    .as_bytes(),
+            ),
+        );
+        second_scope.insert(
+            "pure-sidecar".to_owned(),
+            sha256_file(&gallery_root().join(".renderer-manifest-v1-pure-cortex")),
+        );
+
+        assert_eq!(
+            first_canonical, second_canonical,
+            "pure dump canonical artifact digests must match across clean publishes"
+        );
+        assert_eq!(
+            first_gate, second_gate,
+            "pure dump gate artifact digests must match across clean publishes"
+        );
+        assert_eq!(
+            first_scope, second_scope,
+            "pure dump scoped digests (canonical, gate, README, pure sidecar) must match"
+        );
+        assert_eq!(ownership_manifest_paths(&gallery_root()).len(), 172);
+        assert_eq!(ownership_manifest_paths(&gate_root()).len(), 70);
+        return;
+    }
+
+    // Hybrid v3 path: full canonical + every ordered flow/gate.
     let first_all = run(&["--all"]);
     assert!(
         first_all.status.success(),
@@ -675,7 +823,6 @@ fn clean_double_render_produces_identical_manifests() {
         "canonical-audit".to_owned(),
         sha256_hex(&first_audit.stdout),
     );
-    let readme = gallery_root().join("README.md");
     first_scope.insert("readme".to_owned(), sha256_file(&readme));
     first_scope.insert(
         "canonical-set".to_owned(),
@@ -863,13 +1010,22 @@ fn owned_cleanup_refuses_unknown_and_outside_paths() {
         "test cleanup must remove the injected unknown file"
     );
 
-    // Recover intentional ownership state by a successful controlled --all rerun.
-    let restored = run(&["--all"]);
-    assert!(
-        restored.status.success(),
-        "gallery must restore after owned cleanup of the injected stale file: {}",
-        String::from_utf8_lossy(&restored.stderr)
-    );
+    // Recover intentional ownership without hybrid-repainting a pure dump pack.
+    if pure_cortex_mode() {
+        let restored = run_pure_publish(&["--publish-pilots"]);
+        assert!(
+            restored.status.success(),
+            "pure dump must restore after owned cleanup of the injected stale file: {}",
+            String::from_utf8_lossy(&restored.stderr)
+        );
+    } else {
+        let restored = run(&["--all"]);
+        assert!(
+            restored.status.success(),
+            "gallery must restore after owned cleanup of the injected stale file: {}",
+            String::from_utf8_lossy(&restored.stderr)
+        );
+    }
 
     fs::remove_dir_all(&parent).expect("temp cleanup");
 }
@@ -884,6 +1040,34 @@ fn all_and_implemented_selectors_agree_in_final_gallery() {
     assert!(canonical_inventory()
         .iter()
         .all(|screen| screen.status == ImplementationStatus::Implemented));
+
+    if pure_cortex_mode() {
+        // Pure dump selector parity is inventory + ownership completeness. Hybrid
+        // v3 --implemented/--all would overwrite pure Cortex paint with copper chrome.
+        let inventory = canonical_inventory();
+        assert_eq!(inventory.len(), 86);
+        let ownership = ownership_manifest_paths(&gallery_root());
+        assert_eq!(ownership.len(), 172);
+        for screen in inventory {
+            let txt = format!("{}/{}.txt", screen.category.as_str(), screen.id);
+            let png = format!("{}/{}.png", screen.category.as_str(), screen.id);
+            assert!(
+                ownership.contains_key(&txt),
+                "pure ownership missing {txt}"
+            );
+            assert!(
+                ownership.contains_key(&png),
+                "pure ownership missing {png}"
+            );
+            assert_eq!(sha256_file(&gallery_root().join(&txt)), ownership[&txt]);
+            assert_eq!(sha256_file(&gallery_root().join(&png)), ownership[&png]);
+        }
+        // Preflight-only proof that the hybrid harness still accepts the pure
+        // root without attempting a selector publish in this mode.
+        let preflight = run(&["--list"]);
+        assert!(preflight.status.success());
+        return;
+    }
 
     let implemented = run(&["--implemented"]);
     assert!(

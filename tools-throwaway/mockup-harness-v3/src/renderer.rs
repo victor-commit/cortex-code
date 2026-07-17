@@ -23,6 +23,9 @@ const CANONICAL_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3";
 const GATE_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3-gates";
 const MANIFEST_FILE: &str = ".renderer-manifest-v1";
 const MANIFEST_HEADER: &str = "mockup-harness-v3-render-manifest-v1";
+/// Sidecar written by mockup-harness-v4 pure-Cortex publish. Ownership remains in
+/// `MANIFEST_FILE`; this generator banner must not fail root ownership scans.
+const PURE_CORTEX_MANIFEST_FILE: &str = ".renderer-manifest-v1-pure-cortex";
 const CANONICAL_STATIC_FILES: &[&str] = &[
     "README.md",
     "session/.gitkeep",
@@ -31,8 +34,9 @@ const CANONICAL_STATIC_FILES: &[&str] = &[
     "auth/.gitkeep",
     "states/.gitkeep",
     "orchestration/.gitkeep",
+    PURE_CORTEX_MANIFEST_FILE,
 ];
-const GATE_STATIC_FILES: &[&str] = &[".gitkeep"];
+const GATE_STATIC_FILES: &[&str] = &[".gitkeep", PURE_CORTEX_MANIFEST_FILE];
 
 // Screen workers add an ID here only when the inventory marks that same ID as
 // implemented. Keeping this map independent from the canonical inventory makes

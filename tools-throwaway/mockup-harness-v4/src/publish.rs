@@ -252,6 +252,8 @@ pub fn publish_pilots() -> Result<Vec<PublishResult>, String> {
         results.push(publish_pilot(spec)?);
     }
     write_manifest(&results)?;
+    // Keep the shared ownership sheet readable by mockup-harness-v3 preflight.
+    rewrite_v3_ownership_manifest(Path::new(CANONICAL_ROOT), "mockup-harness-v3-render-manifest-v1")?;
     Ok(results)
 }
 
@@ -314,6 +316,8 @@ pub fn publish_gates() -> Result<Vec<PublishResult>, String> {
         results.push(publish_gate_frame(flow, frame, screen_id)?);
     }
     write_gate_manifest(&results)?;
+    // Gate coordinators also parse the shared ownership sheet first.
+    rewrite_v3_ownership_manifest(Path::new(GATE_ROOT), "mockup-harness-v3-render-manifest-v1")?;
     Ok(results)
 }
 
@@ -351,6 +355,70 @@ fn write_gate_manifest(results: &[PublishResult]) -> Result<(), String> {
     }
     let path = Path::new(GATE_ROOT).join(GATE_MANIFEST_NAME);
     write_atomic(&path, body.as_bytes())
+}
+
+/// Refresh `.renderer-manifest-v1` so v3 preflight ownership matches the pure-Cortex
+/// TXT/PNG bytes that mockup-harness-v4 just wrote. Pure generator metadata stays
+/// in `.renderer-manifest-v1-pure-cortex` and is treated as a static sidecar.
+fn rewrite_v3_ownership_manifest(root: &Path, header: &str) -> Result<(), String> {
+    const SKIP: &[&str] = &[
+        ".renderer-manifest-v1",
+        ".renderer-manifest-v1-pure-cortex",
+        "README.md",
+        ".gitkeep",
+        "session/.gitkeep",
+        "input/.gitkeep",
+        "views/.gitkeep",
+        "auth/.gitkeep",
+        "states/.gitkeep",
+        "orchestration/.gitkeep",
+    ];
+    let mut entries: Vec<(String, String)> = Vec::new();
+    collect_artifact_digests(root, root, SKIP, &mut entries)?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut body = String::from(header);
+    body.push('\n');
+    for (relative, digest) in entries {
+        body.push_str(&relative);
+        body.push('\t');
+        body.push_str(&digest);
+        body.push('\n');
+    }
+    write_atomic(&root.join(".renderer-manifest-v1"), body.as_bytes())
+}
+
+fn collect_artifact_digests(
+    root: &Path,
+    dir: &Path,
+    skip: &[&str],
+    out: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    let read = fs::read_dir(dir).map_err(|e| format!("read_dir {dir:?}: {e}"))?;
+    for entry in read {
+        let entry = entry.map_err(|e| format!("dir entry {dir:?}: {e}"))?;
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|e| format!("strip prefix {path:?}: {e}"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if path.is_dir() {
+            collect_artifact_digests(root, &path, skip, out)?;
+            continue;
+        }
+        if skip.iter().any(|s| *s == relative)
+            || relative.ends_with("/.gitkeep")
+            || relative == ".gitkeep"
+        {
+            continue;
+        }
+        if !(relative.ends_with(".txt") || relative.ends_with(".png")) {
+            continue;
+        }
+        let bytes = fs::read(&path).map_err(|e| format!("read {path:?}: {e}"))?;
+        out.push((relative, sha256_hex(&bytes)));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
