@@ -47,9 +47,21 @@ fn publish_flow(harness: &str, flow: &str) {
     panic!("flow {flow} publication stayed busy");
 }
 
+fn pure_cortex_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 fn ensure_published_and_evidence() {
     PREPARED.call_once(|| {
         let _guard = render_lock();
+        if pure_cortex_mode() {
+            // Pure dump roots are owned by harness-v4; hybrid --flow thrash is
+            // forbidden. Refresh programmatic evidence tables against the live
+            // pure gate digests without repainting.
+            write_programmatic_publication_evidence(REPOSITORY, MISSION_DIRECTORY)
+                .expect("programmatic publication evidence must write under pure mode");
+            return;
+        }
         let harness = env!("CARGO_BIN_EXE_mockup-harness-v3");
         for flow in [
             "daily-work",

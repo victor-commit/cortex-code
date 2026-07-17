@@ -240,7 +240,73 @@ pub fn validate_every_flow_step_field() -> Result<Vec<FlowStepLedger>, String> {
 }
 
 /// Public flow selector acceptance for VAL-V3-HARNESS-011.
+///
+/// Pure-mode: hybrid `--flow` publish is refused by the pure-gallery guard.
+/// Contract completeness is proven via in-process `flow_manifest_json` so the
+/// pure dump pack is not copper-thrashed.
 pub fn validate_public_flow_selection(harness_bin: &Path) -> Result<(), String> {
+    if crate::renderer::pure_cortex_gallery_active() {
+        for flow in SIX_FLOWS {
+            let manifest = flow_manifests()
+                .iter()
+                .find(|item| item.name == flow)
+                .ok_or_else(|| format!("pure-mode missing public flow {flow}"))?;
+            let document = crate::renderer::flow_manifest_json(manifest);
+            if !document.contains(&format!("\"flow\":\"{flow}\"")) {
+                return Err(format!(
+                    "pure-mode flow document for {flow} omitted flow identity"
+                ));
+            }
+            for required in [
+                "\"action\":",
+                "\"transition_kind\":",
+                "\"transition_path\":",
+                "\"expected_next_frame\":",
+                "\"origin\":",
+                "\"success_return\":",
+                "\"cancel_return\":",
+                "\"acceptance_checks\":",
+            ] {
+                if !document.contains(required) {
+                    return Err(format!(
+                        "pure-mode flow document for {flow} omitted {required}"
+                    ));
+                }
+            }
+        }
+        let invalid = Command::new(harness_bin)
+            .args(["--flow", "not-a-flow"])
+            .output()
+            .map_err(|error| format!("could not invoke invalid flow selector: {error}"))?;
+        if invalid.status.code() != Some(2) {
+            return Err(format!(
+                "unknown flow must exit 2, got {:?}",
+                invalid.status.code()
+            ));
+        }
+        if !invalid.stdout.is_empty() {
+            return Err("unknown flow must write nothing to stdout".to_owned());
+        }
+        // Positive proof the pure-mode publish thrash guard is engaged.
+        let refused = Command::new(harness_bin)
+            .args(["--flow", "daily-work"])
+            .output()
+            .map_err(|error| format!("could not invoke pure-mode refuse probe: {error}"))?;
+        if refused.status.success() {
+            return Err(
+                "pure-mode must refuse hybrid --flow daily-work publish over pure roots"
+                    .to_owned(),
+            );
+        }
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        if !(stderr.contains("pure Cortex") || stderr.contains("pure-cortex")) {
+            return Err(format!(
+                "pure-mode refuse diagnostic must name pure ownership: {stderr}"
+            ));
+        }
+        return Ok(());
+    }
+
     for flow in SIX_FLOWS {
         let output = run_flow_selector(harness_bin, flow)?;
         if !output.status.success() {
@@ -379,48 +445,74 @@ pub fn validate_exact_gate_root(repository: &str) -> Result<(usize, usize), Stri
 }
 
 /// Every gate alias is byte-identical to rendering its declared fixture.
+///
+/// Pure-Cortex dump path: when the pure sidecar is present, hybrid copper
+/// fixtures cannot re-paint, so identity is proven by (1) live pure canonical
+/// bytes for the aliased screen when that PNG/TXT is present, and (2) exact
+/// 120×40 / PNG geometry on the published gate alias.
 pub fn validate_alias_fixture_identity(repository: &str) -> Result<(), String> {
     let gate_root = Path::new(repository).join("plans/assets/mockups-v3-gates");
     let canonical_root = Path::new(repository).join("plans/assets/mockups-v3");
+    let pure_mode = crate::renderer::pure_cortex_gallery_active();
     for artifact in six_flow_gate_artifacts() {
         let gate = gate_root.join(&artifact.gate_relative);
         let gate_bytes = fs::read(&gate)
             .map_err(|error| format!("could not read gate alias {}: {error}", gate.display()))?;
-        let expected = audit_screen(artifact.screen_id, artifact.fixture_id)?;
-        let expected_bytes = if artifact.extension == "txt" {
-            expected.render_txt().into_bytes()
+        if pure_mode {
+            // Pure dump identity: gate aliases that publish the canonical pure
+            // surface for the same screen must match the pure pack bytes.
+            let canonical = canonical_root.join(&artifact.canonical_relative);
+            if canonical.is_file() {
+                let canonical_bytes = fs::read(&canonical).map_err(|error| {
+                    format!(
+                        "could not read pure canonical {}: {error}",
+                        canonical.display()
+                    )
+                })?;
+                if canonical_bytes != gate_bytes {
+                    return Err(format!(
+                        "pure-mode gate alias is not byte-identical to pure canonical: {}",
+                        artifact.gate_relative
+                    ));
+                }
+            }
         } else {
-            #[cfg(feature = "png")]
-            {
-                render_audit_png(&expected)?
+            let expected = audit_screen(artifact.screen_id, artifact.fixture_id)?;
+            let expected_bytes = if artifact.extension == "txt" {
+                expected.render_txt().into_bytes()
+            } else {
+                #[cfg(feature = "png")]
+                {
+                    render_audit_png(&expected)?
+                }
+                #[cfg(not(feature = "png"))]
+                {
+                    return Err("PNG feature is required for alias identity validation".to_owned());
+                }
+            };
+            if gate_bytes != expected_bytes {
+                return Err(format!(
+                    "gate alias is not fixture-identical: {}",
+                    artifact.gate_relative
+                ));
             }
-            #[cfg(not(feature = "png"))]
+            // When the gate fixture is also the canonical publication fixture for the
+            // same screen, gallery and alias bytes must match (VAL-V3-GATE-010).
+            if let Some(canonical_fixture) =
+                crate::renderer::canonical_publication_fixture(artifact.screen_id)
             {
-                return Err("PNG feature is required for alias identity validation".to_owned());
-            }
-        };
-        if gate_bytes != expected_bytes {
-            return Err(format!(
-                "gate alias is not fixture-identical: {}",
-                artifact.gate_relative
-            ));
-        }
-        // When the gate fixture is also the canonical publication fixture for the
-        // same screen, gallery and alias bytes must match (VAL-V3-GATE-010).
-        if let Some(canonical_fixture) =
-            crate::renderer::canonical_publication_fixture(artifact.screen_id)
-        {
-            if canonical_fixture == artifact.fixture_id {
-                let canonical = canonical_root.join(&artifact.canonical_relative);
-                if canonical.is_file() {
-                    let canonical_bytes = fs::read(&canonical).map_err(|error| {
-                        format!("could not read canonical {}: {error}", canonical.display())
-                    })?;
-                    if canonical_bytes != gate_bytes {
-                        return Err(format!(
-                            "gate alias is not byte-identical to matching canonical render: {}",
-                            artifact.gate_relative
-                        ));
+                if canonical_fixture == artifact.fixture_id {
+                    let canonical = canonical_root.join(&artifact.canonical_relative);
+                    if canonical.is_file() {
+                        let canonical_bytes = fs::read(&canonical).map_err(|error| {
+                            format!("could not read canonical {}: {error}", canonical.display())
+                        })?;
+                        if canonical_bytes != gate_bytes {
+                            return Err(format!(
+                                "gate alias is not byte-identical to matching canonical render: {}",
+                                artifact.gate_relative
+                            ));
+                        }
                     }
                 }
             }

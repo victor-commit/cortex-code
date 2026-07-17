@@ -10,6 +10,10 @@ use mockup_harness_v3::{canonical_inventory, Category, ImplementationStatus};
 
 static RENDER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+fn pure_cortex_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
 }
@@ -111,6 +115,33 @@ fn implemented_and_all_selectors_publish_the_complete_86_state_gallery() {
         .iter()
         .all(|screen| screen.status == ImplementationStatus::Implemented));
 
+    if pure_cortex_mode() {
+        // Pure dump: hybrid --implemented/--all must refuse (v4 owns paint).
+        // Equality is proven from the live pure ownership sheet alone.
+        let ownership = ownership_manifest_paths(&gallery_root());
+        assert_eq!(ownership.len(), 172);
+        assert_complete_86_inventory_on_disk();
+        for selector in [["--implemented"], ["--all"]] {
+            let refused = run(&selector);
+            assert_eq!(
+                refused.status.code(),
+                Some(3),
+                "pure-mode must refuse hybrid {:?} over pure roots; stderr={}",
+                selector,
+                String::from_utf8_lossy(&refused.stderr)
+            );
+            let stderr = String::from_utf8_lossy(&refused.stderr);
+            assert!(
+                stderr.contains("pure Cortex") || stderr.contains("pure-cortex"),
+                "pure-mode refuse diagnostic: {stderr}"
+            );
+        }
+        // Independent pre/post ownership snapshots (no hybrid write) stay equal.
+        let after = ownership_manifest_paths(&gallery_root());
+        assert_eq!(ownership, after);
+        return;
+    }
+
     let implemented = run(&["--implemented"]);
     assert!(
         implemented.status.success(),
@@ -165,12 +196,24 @@ fn single_screen_selector_is_exact_and_unknown_screen_is_usage_error() {
         .and_then(|meta| meta.modified())
         .ok();
 
-    let output = run(&["home"]);
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    assert!(gallery_root().join("session/home.txt").is_file());
-    assert!(gallery_root().join("session/home.png").is_file());
+    if pure_cortex_mode() {
+        let refused = run(&["home"]);
+        assert_eq!(
+            refused.status.code(),
+            Some(3),
+            "pure-mode must refuse hybrid single-screen publish; stderr={}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert!(gallery_root().join("session/home.txt").is_file());
+        assert!(gallery_root().join("session/home.png").is_file());
+    } else {
+        let output = run(&["home"]);
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        assert!(gallery_root().join("session/home.txt").is_file());
+        assert!(gallery_root().join("session/home.png").is_file());
+    }
     let _ = marker;
 
     let rejected = run(&["not-a-screen"]);
@@ -186,12 +229,22 @@ fn category_selectors_are_exact_for_all_six_categories() {
     let expected = expected_category_counts();
     for category in Category::ALL {
         let name = category.as_str();
-        let output = run(&[name]);
-        assert!(
-            output.status.success(),
-            "category {name} selector must succeed; stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        if pure_cortex_mode() {
+            let refused = run(&[name]);
+            assert_eq!(
+                refused.status.code(),
+                Some(3),
+                "pure-mode must refuse hybrid category {name}; stderr={}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+        } else {
+            let output = run(&[name]);
+            assert!(
+                output.status.success(),
+                "category {name} selector must succeed; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let want = *expected.get(name).expect("expected category count");
         let mut pairs = 0usize;
         for screen in canonical_inventory()
@@ -227,6 +280,19 @@ fn busy_public_renderer_exits_75_without_replacing_the_canonical_gallery() {
         .join(".mockups-v3.render.lock");
     let prior_manifest = fs::read(output_root.join(".renderer-manifest-v1"))
         .expect("the final gallery must already have an ownership manifest");
+    if pure_cortex_mode() {
+        // Pure ownership refuses publish before the coordinator is acquired, so
+        // the busy lock is only a hybrid-path contract. Prove refuse + immutability.
+        let refused = run(&["--implemented"]);
+        assert_eq!(refused.status.code(), Some(3));
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("pure"));
+        assert_eq!(
+            fs::read(output_root.join(".renderer-manifest-v1"))
+                .expect("pure refuse must preserve ownership manifest"),
+            prior_manifest
+        );
+        return;
+    }
     let lock_file = OpenOptions::new()
         .write(true)
         .create_new(true)

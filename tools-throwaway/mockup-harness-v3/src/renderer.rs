@@ -38,6 +38,25 @@ const CANONICAL_STATIC_FILES: &[&str] = &[
 ];
 const GATE_STATIC_FILES: &[&str] = &[".gitkeep", PURE_CORTEX_MANIFEST_FILE];
 
+/// True when mockup-harness-v4 owns the live gallery roots.
+///
+/// When this sidecar exists, hybrid v3 must not publish into
+/// `mockups-v3` / `mockups-v3-gates` (pure publisher owns paint).
+pub fn pure_cortex_gallery_active() -> bool {
+    Path::new(CANONICAL_ROOT)
+        .join(PURE_CORTEX_MANIFEST_FILE)
+        .is_file()
+}
+
+/// Pure-mode reject reason for any hybrid gallery write selector.
+pub fn pure_cortex_publish_refusal(selector_label: &str) -> String {
+    format!(
+        "pure Cortex dump ownership active ({PURE_CORTEX_MANIFEST_FILE}); \
+hybrid mockup-harness-v3 must not publish {selector_label} over live pure gallery roots; \
+use mockup-harness-v4 pure publisher"
+    )
+}
+
 // Screen workers add an ID here only when the inventory marks that same ID as
 // implemented. Keeping this map independent from the canonical inventory makes
 // partial milestones fail closed instead of silently emitting placeholders.
@@ -306,6 +325,19 @@ pub fn parse_selector(arguments: &[String]) -> Result<PublicSelector, String> {
 pub fn preflight_render(selector: &PublicSelector) -> Result<RenderPlan, String> {
     validate_canonical_map()?;
     validate_renderer_map(canonical_inventory(), IMPLEMENTED_RENDERERS)?;
+
+    // Pure dump carousel: v4 owns paint. Hybrid thrash of live pure roots is
+    // fail-closed before coordinator acquisition or staging.
+    if pure_cortex_gallery_active() {
+        let label = match selector {
+            PublicSelector::Implemented => "--implemented",
+            PublicSelector::All => "--all",
+            PublicSelector::Screen(id) => id.as_str(),
+            PublicSelector::Category(category) => category.as_str(),
+            PublicSelector::Flow(name) => name.as_str(),
+        };
+        return Err(pure_cortex_publish_refusal(label));
+    }
 
     let inventory = canonical_inventory();
     let (canonical, flow) = match selector {

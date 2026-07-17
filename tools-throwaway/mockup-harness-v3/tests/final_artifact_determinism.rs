@@ -989,6 +989,8 @@ fn owned_cleanup_refuses_unknown_and_outside_paths() {
 
     // Inject an unowned file into the live canonical root; public preflight must
     // refuse publication, then restore the root by removing only that file.
+    // Pure-mode: hybrid --all is refused by the pure ownership guard before the
+    // unknown-file path is inspected (v4 owns write; thrash is forbidden).
     let stale = gallery_root().join("session/__unknown-stale-artifact__.txt");
     fs::write(&stale, b"not owned by the renderer manifest\n").expect("inject stale");
     let refused = run(&["--all"]);
@@ -996,12 +998,15 @@ fn owned_cleanup_refuses_unknown_and_outside_paths() {
     assert_eq!(
         refused.status.code(),
         Some(3),
-        "unknown file must fail closed before publication"
+        "unknown file / pure guard must fail closed before publication"
     );
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        stderr.contains("unknown file") || stderr.contains("__unknown-stale-artifact__"),
-        "diagnostic must name the unknown artifact: {stderr}"
+        stderr.contains("unknown file")
+            || stderr.contains("__unknown-stale-artifact__")
+            || stderr.contains("pure Cortex")
+            || stderr.contains("pure-cortex"),
+        "diagnostic must name the unknown artifact or pure ownership: {stderr}"
     );
     assert!(
         !gallery_root()

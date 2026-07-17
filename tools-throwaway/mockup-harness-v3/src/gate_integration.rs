@@ -1518,27 +1518,62 @@ fn validate_bridges(mission_directory: &str) -> Result<(), String> {
                 ));
             }
         }
+        let pure_mode = crate::renderer::pure_cortex_gallery_active();
         let txt_bytes = fs::read(&txt_path)
             .map_err(|error| format!("missing bridge TXT {}: {error}", txt_path.display()))?;
-        let expected_txt = replay.audit.render_txt().into_bytes();
-        if txt_bytes != expected_txt {
-            return Err(format!(
-                "bridge TXT is stale or belongs to another replay: {}",
-                txt_path.display()
-            ));
-        }
         let png_bytes = fs::read(&png_path)
             .map_err(|error| format!("missing bridge PNG {}: {error}", png_path.display()))?;
-        #[cfg(feature = "png")]
-        let expected_png = crate::scenario::render_audit_png(&replay.audit)?;
-        #[cfg(not(feature = "png"))]
-        return Err("PNG feature is required for bridge validation".to_owned());
-        #[cfg(feature = "png")]
-        if png_bytes != expected_png {
-            return Err(format!(
-                "bridge PNG is stale or belongs to another replay: {}",
-                png_path.display()
-            ));
+        if pure_mode {
+            // Pure dump: bridge paint is rebound from the pure gallery surface
+            // for the after-screen (hybrid copper fixtures are not anchors).
+            let after_id = replay.after.screen_id.as_str();
+            let after_screen = canonical_inventory()
+                .iter()
+                .find(|screen| screen.id == after_id)
+                .ok_or_else(|| format!("pure-mode bridge after screen missing: {after_id}"))?;
+            let pure_txt = Path::new("/projects/cortex-code/plans/assets/mockups-v3")
+                .join(after_screen.category.as_str())
+                .join(format!("{after_id}.txt"));
+            let pure_png = Path::new("/projects/cortex-code/plans/assets/mockups-v3")
+                .join(after_screen.category.as_str())
+                .join(format!("{after_id}.png"));
+            let expected_txt = fs::read(&pure_txt).map_err(|error| {
+                format!("pure-mode bridge missing pure after TXT {}: {error}", pure_txt.display())
+            })?;
+            let expected_png = fs::read(&pure_png).map_err(|error| {
+                format!("pure-mode bridge missing pure after PNG {}: {error}", pure_png.display())
+            })?;
+            if txt_bytes != expected_txt {
+                return Err(format!(
+                    "pure-mode bridge TXT must match pure after-screen paint: {}",
+                    txt_path.display()
+                ));
+            }
+            if png_bytes != expected_png {
+                return Err(format!(
+                    "pure-mode bridge PNG must match pure after-screen paint: {}",
+                    png_path.display()
+                ));
+            }
+        } else {
+            let expected_txt = replay.audit.render_txt().into_bytes();
+            if txt_bytes != expected_txt {
+                return Err(format!(
+                    "bridge TXT is stale or belongs to another replay: {}",
+                    txt_path.display()
+                ));
+            }
+            #[cfg(feature = "png")]
+            let expected_png = crate::scenario::render_audit_png(&replay.audit)?;
+            #[cfg(not(feature = "png"))]
+            return Err("PNG feature is required for bridge validation".to_owned());
+            #[cfg(feature = "png")]
+            if png_bytes != expected_png {
+                return Err(format!(
+                    "bridge PNG is stale or belongs to another replay: {}",
+                    png_path.display()
+                ));
+            }
         }
         let png_hash = sha256_hex(&png_bytes);
         let audit = fs::read_to_string(&audit_path)
@@ -1646,6 +1681,7 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
             artifacts.len()
         ));
     }
+    let pure_mode = crate::renderer::pure_cortex_gallery_active();
     let mut paths = BTreeSet::new();
     for artifact in artifacts {
         if !paths.insert(&artifact.gate_relative) {
@@ -1660,36 +1696,48 @@ fn validate_artifacts(repository: &str, artifacts: &[PilotGateArtifact]) -> Resu
             .map_err(|error| format!("could not read {}: {error}", canonical.display()))?;
         let gate_bytes = fs::read(&gate)
             .map_err(|error| format!("could not read {}: {error}", gate.display()))?;
-        let expected = audit_screen(artifact.screen_id, artifact.fixture_id)?;
-        let expected_bytes = if artifact.extension == "txt" {
-            expected.render_txt().into_bytes()
+        if pure_mode {
+            // Pure dump path: gate alias must match the pure canonical surface
+            // for the same screen (hybrid fixtures must not thrash pure paint).
+            if canonical_bytes != gate_bytes {
+                return Err(format!(
+                    "pure-mode gate alias differs from pure canonical: {}",
+                    artifact.gate_relative
+                ));
+            }
         } else {
-            #[cfg(feature = "png")]
-            {
-                crate::scenario::render_audit_png(&expected)?
+            let expected = audit_screen(artifact.screen_id, artifact.fixture_id)?;
+            let expected_bytes = if artifact.extension == "txt" {
+                expected.render_txt().into_bytes()
+            } else {
+                #[cfg(feature = "png")]
+                {
+                    crate::scenario::render_audit_png(&expected)?
+                }
+                #[cfg(not(feature = "png"))]
+                {
+                    return Err("PNG feature is required for gate integration validation".to_owned());
+                }
+            };
+            // Gate aliases must match their declared step fixture. A shared
+            // screen ID such as chat-turn may legitimately differ between the
+            // canonical gallery fixture and another journey's gate alias, so
+            // require byte-identity with the step fixture render first.
+            if expected_bytes != gate_bytes {
+                return Err(format!(
+                    "gate alias is not canonical-equivalent for its declared fixture: {}",
+                    artifact.gate_relative
+                ));
             }
-            #[cfg(not(feature = "png"))]
-            {
-                return Err("PNG feature is required for gate integration validation".to_owned());
+            let canonical_fixture =
+                crate::renderer::canonical_publication_fixture(artifact.screen_id)
+                    .unwrap_or(artifact.fixture_id);
+            if canonical_fixture == artifact.fixture_id && canonical_bytes != gate_bytes {
+                return Err(format!(
+                    "canonical and gate alias bytes differ: {}",
+                    artifact.gate_relative
+                ));
             }
-        };
-        // Gate aliases must match their declared step fixture. A shared
-        // screen ID such as chat-turn may legitimately differ between the
-        // canonical gallery fixture and another journey's gate alias, so
-        // require byte-identity with the step fixture render first.
-        if expected_bytes != gate_bytes {
-            return Err(format!(
-                "gate alias is not canonical-equivalent for its declared fixture: {}",
-                artifact.gate_relative
-            ));
-        }
-        let canonical_fixture = crate::renderer::canonical_publication_fixture(artifact.screen_id)
-            .unwrap_or(artifact.fixture_id);
-        if canonical_fixture == artifact.fixture_id && canonical_bytes != gate_bytes {
-            return Err(format!(
-                "canonical and gate alias bytes differ: {}",
-                artifact.gate_relative
-            ));
         }
         if artifact.extension == "txt" {
             let text = std::str::from_utf8(&gate_bytes)
