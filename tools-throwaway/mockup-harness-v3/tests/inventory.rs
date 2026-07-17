@@ -6,10 +6,6 @@ use mockup_harness_v3::{
 };
 
 
-fn pure_mode() -> bool {
-    mockup_harness_v3::renderer::pure_cortex_gallery_active()
-}
-
 fn ids_in(category: Category) -> Vec<&'static str> {
     canonical_inventory()
         .iter()

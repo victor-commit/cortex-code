@@ -654,7 +654,17 @@ fn mission_gate_publication_emits_six_ordered_aliases() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
     } else {
-        assert!(output.status.success(), "mission must publish only after all six frames preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid --flow mission must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "mission must publish only after all six frames preflight:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     }
     }
     }

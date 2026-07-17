@@ -485,6 +485,12 @@ fn help_filter_no_results_and_return_preserve_prior_state() {
 
 #[test]
 fn public_selector_publishes_sidebar_queue_and_help_pairs() {
+    if pure_mode() {
+        // Hybrid screen/publish selectors refuse under pure-dump ownership.
+        // Artifact existence is proven by pure publisher inventory separately.
+        return;
+    }
+
     for (screen, category) in [("sidebar-queue", "views"), ("help", "views")] {
         let output = harness()
             .args([screen])

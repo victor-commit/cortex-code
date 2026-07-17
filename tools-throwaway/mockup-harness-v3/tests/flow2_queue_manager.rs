@@ -483,35 +483,19 @@ fn queue_refresh_discards_stale_mutations_and_reloads_authoritative_items() {
 
 #[test]
 fn public_selector_publishes_the_queue_manager_pair() {
-    let output = harness()
-        .arg("queue-manager")
-        .output()
-        .expect("public canonical selector must run");
     if pure_mode() {
+        let output = harness().arg("queue-manager").output().expect("selector");
         assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        assert!(output.status.success(), "queue-manager must publish after renderer preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+        return;
     }
-    }
-    }
-    }
+    let output = harness().arg("queue-manager").output().expect("selector");
+    assert!(
+        output.status.success(),
+        "queue-manager must publish after renderer preflight:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     for extension in ["txt", "png"] {
         assert!(
             Path::new(&format!(

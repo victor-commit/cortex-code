@@ -234,10 +234,6 @@ fn assert_txt_canonical(path: &Path) {
 fn assert_png_canonical(path: &Path) {
     use image::ColorType;
 
-fn pure_mode() -> bool {
-    mockup_harness_v3::renderer::pure_cortex_gallery_active()
-}
-
     let bytes = fs::read(path).expect("PNG must be readable");
     let image = image::load_from_memory(&bytes).expect("PNG must decode");
     assert_eq!(image.width(), 1200, "{} width", path.display());

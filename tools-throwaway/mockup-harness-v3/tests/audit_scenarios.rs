@@ -7,10 +7,6 @@ use mockup_harness_v3::{
 };
 
 
-fn pure_mode() -> bool {
-    mockup_harness_v3::renderer::pure_cortex_gallery_active()
-}
-
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
 }

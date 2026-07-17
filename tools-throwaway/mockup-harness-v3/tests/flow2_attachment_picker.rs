@@ -227,35 +227,22 @@ fn attachment_confirm_and_cancel_preserve_the_exact_multiline_origin() {
 
 #[test]
 fn public_selector_publishes_the_attachment_picker_pair() {
+    if pure_mode() {
+        let output = harness().arg("attachment-picker").output().expect("public selector runs");
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+        return;
+    }
     let output = harness()
         .arg("attachment-picker")
         .output()
         .expect("public canonical selector must run");
-    if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        assert!(output.status.success(), "attachment-picker must publish after renderer preflight:\n{}", String::from_utf8_lossy(&output.stderr));
-    }
-    }
-    }
-    }
+    assert!(
+        output.status.success(),
+        "attachment-picker must publish after renderer preflight:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     for extension in ["txt", "png"] {
         assert!(
             Path::new(&format!(

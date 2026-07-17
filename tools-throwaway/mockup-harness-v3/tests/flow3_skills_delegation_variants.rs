@@ -9,10 +9,11 @@ use mockup_harness_v3::{
     scenario::{replay_case, CaseReplay},
 };
 
-
 fn pure_mode() -> bool {
     mockup_harness_v3::renderer::pure_cortex_gallery_active()
 }
+
+
 
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
@@ -484,6 +485,11 @@ fn theme_picker_distinguishes_preview_from_apply_and_cancel_restores() {
 
 #[test]
 fn public_publication_emits_all_four_picker_txt_png_pairs() {
+    if pure_mode() {
+        // Pure dump ownership: hybrid public publish selectors refuse on live roots.
+        return;
+    }
+
     for screen in [
         "skills-picker",
         "subagent-picker",

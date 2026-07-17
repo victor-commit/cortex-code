@@ -269,35 +269,19 @@ fn export_cancel_creates_no_artifact_or_success_claim() {
 
 #[test]
 fn public_selector_publishes_the_export_picker_pair() {
-    let output = harness()
-        .arg("export-picker")
-        .output()
-        .expect("public canonical selector must run");
     if pure_mode() {
+        let output = harness().arg("export-picker").output().expect("selector");
         assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        if pure_mode() {
-        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
-    } else {
-        assert!(output.status.success(), "export-picker must publish after renderer preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+        return;
     }
-    }
-    }
-    }
+    let output = harness().arg("export-picker").output().expect("selector");
+    assert!(
+        output.status.success(),
+        "export-picker must publish after renderer preflight:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     for extension in ["txt", "png"] {
         assert!(
             Path::new(&format!(

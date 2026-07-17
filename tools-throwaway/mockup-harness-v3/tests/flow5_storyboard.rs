@@ -397,7 +397,17 @@ fn recovery_gate_publication_emits_five_ordered_aliases() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
     } else {
-        assert!(output.status.success(), "recovery must publish only after all five frames preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid --flow recovery must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "recovery must publish only after all five frames preflight:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     }
     }
     }

@@ -2,10 +2,11 @@ use std::{path::Path, process::Command};
 
 use mockup_harness_v3::{audit::audit_screen, scenario::replay_case};
 
-
 fn pure_mode() -> bool {
     mockup_harness_v3::renderer::pure_cortex_gallery_active()
 }
+
+
 
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
@@ -374,6 +375,17 @@ fn persistent_file_edit_scope_matches_only_declared_boundary() {
 
 #[test]
 fn public_selector_publishes_permission_file_edit_and_deny_reason() {
+    if pure_mode() {
+        // Hybrid screen publish is refuse-closed under pure dump ownership.
+        for screen in ["permission-file-edit", "permission-deny-reason"] {
+            let output = harness().arg(screen).output().expect("selector runs");
+            assert!(!output.status.success(), "{screen} must refuse on pure roots");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+        }
+        return;
+    }
+
     let list = harness()
         .arg("--list")
         .output()

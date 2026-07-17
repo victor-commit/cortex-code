@@ -21,10 +21,6 @@ use mockup_harness_v3::{
 };
 
 
-fn pure_mode() -> bool {
-    mockup_harness_v3::renderer::pure_cortex_gallery_active()
-}
-
 const RECOVERY_TASK: &str = "Finish the release notes without losing the current work.";
 const RECOVERY_ORIGIN: &str = "Recovery · paused conversation";
 /// Phase-A paints subject title `Recovery`; audit/scenario keep the long form.

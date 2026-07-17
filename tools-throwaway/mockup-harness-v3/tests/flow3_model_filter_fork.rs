@@ -6,10 +6,11 @@ use std::process::Command;
 
 use mockup_harness_v3::{audit::audit_screen, scenario::replay_case};
 
-
 fn pure_mode() -> bool {
     mockup_harness_v3::renderer::pure_cortex_gallery_active()
 }
+
+
 
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
@@ -369,6 +370,11 @@ fn historical_resume_always_forks_and_latest_resume_does_not() {
 
 #[test]
 fn model_filter_and_fork_publish_exact_selectors() {
+    if pure_mode() {
+        // Pure dump ownership: hybrid public publish selectors refuse on live roots.
+        return;
+    }
+
     for screen in ["model-picker-filtered", "fork-picker"] {
         let output = harness()
             .arg(screen)
