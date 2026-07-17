@@ -9,15 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Fork conversation                                                                                                   
-    Branches keep history up to the selected turn                                                                       
-                                                                                                                        
-    › Fork at pause                                                                                                     
-      New session · original stays untouched                                                                            
-      Fork + open draft                                                                                                 
-      Copies the current draft into the fork                                                                            
-      Cancel                                                                                                            
-      Return without branching                                                                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +18,23 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ Fork at pause      New session · original stays untouched                                                         
+      Fork + open draft  Copies the current draft into the fork                                                         
+      Cancel             Return without branching                                                                       
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Confirm fork destination                                                                                         │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to fork · Esc to cancel                                                                                    │  
+  │ ❯ /fork                                                                        Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

@@ -9,13 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Queued prompts · submenu                                                                                            
-    Scoped under the palette · Esc returns to Actions                                                                   
-                                                                                                                        
-    › Send next now · interrupt current stream safely                                                                   
-      Move up · raise priority one slot                                                                                 
-      Move down · lower priority one slot                                                                               
-      Remove from queue · keeps draft unsent                                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +20,21 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ send-next  Send the next queued prompt now                                                                        
+      move-up    Raise priority one slot                                                                                
+      move-down  Lower priority one slot                                                                                
+      remove     Remove from queue                                                                                      
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Esc exits submenu only · parent stays open                                                                       │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to apply · Esc to back · ↑↓ to choose                                                                      │  
+  │ ❯ /queue                                                                       Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

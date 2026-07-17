@@ -1,12 +1,20 @@
-//! Pure Cortex composer & pickers (F4).
+//! Pure Cortex composer & pickers (M3 pure-structure slash / model geometry).
 //!
-//! Slash dropdowns, model/agent/session catalogs, queue, attachment, export,
-//! and multi-line composer. Magenta `›` focus, putty footer allowed, no copper.
+//! Authority: `library/pure-structure-law.md`, fidelity-audit-views-orchestration.md,
+//! source `/tmp/grok-build-ref/.../views/slash_dropdown.rs` + slash/commands/{model,resume,session_info}.
+//!
+//! VAL-V3-STRUCT-011:
+//! - `slash-menu` = slash_dropdown glued over live prompt with product command names
+//!   (`/resume`, `/session-info`), never a detached Commands essay + Filter putty invent.
+//! - `model-picker` / `model-picker-filtered` = `/model` arg suggestions + effort geometry,
+//!   never marketing catalog + Selected putty invent.
+//!
+//! VAL-V3-CROSS-027: authenticated shell chrome (cwd + budget + putty pipes) inherited.
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
-    paint_default_putty, paint_dock_frame, paint_picker_row, paint_picker_row_compact,
-    paint_prompt_jewel_multiline, paint_quiet_origin, reject_copper_residual,
+    paint_default_putty, paint_prompt_jewel, paint_prompt_jewel_multiline, paint_quiet_origin,
+    paint_slash_dropdown_over_prompt, paint_slash_suggestion_row, reject_copper_residual,
     reject_structure_residual, MODEL_LABEL,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme};
@@ -34,61 +42,37 @@ pub fn render(id: &str) -> Result<Canvas, String> {
     }
 }
 
+/// `/` command completions — product `slash_dropdown` over the live prompt.
+///
+/// Product names (source): /model, /theme, /mcps, /export, /resume, /session-info.
+/// BAN: detached "Commands" essay, "Filter · /" putty rewrite, fake `/session` alias.
 fn slash_menu() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_quiet_origin(
         &mut canvas,
         "Tighten the retry helper before we merge.",
-        "Applying the retry guard and covering the failure path…",
+        "Applied the retry guard and covered the failure path…",
     )?;
-    canvas.write(11, 4, "Commands", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Type more to filter · Esc restores the draft",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        14,
-        "/model",
-        "switch Cortex catalog model",
-        true,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        15,
-        "/theme",
-        "preview CortexNight or CortexDay",
-        false,
-    )?;
-    paint_picker_row_compact(&mut canvas, 16, "/mcp", "manage MCP connections", false)?;
-    paint_picker_row_compact(
-        &mut canvas,
-        17,
-        "/export",
-        "share this conversation",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        18,
-        "/session",
-        "resume an earlier turn",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Filter · /",
-        "Enter to run · Esc to cancel · ↑↓ to choose",
-    )?;
-    canvas.write(32, 5, "❯ /m", TextStyle::plain(ColorToken::Text))?;
+
+    // Suggestion rows sit immediately above the live jewel (not mid-scroll essay).
+    // Rows use product descriptions from slash command registry (not gallery marketing).
+    let rows: &[(&str, &str)] = &[
+        ("/model", "Switch the active model"),
+        ("/theme", "Switch the color theme"),
+        ("/mcps", "Show MCP server status"),
+        ("/export", "Export the current conversation to a file or clipboard"),
+        ("/resume", "Resume a previous session"),
+        ("/session-info", "Show session info"),
+    ];
+    // first_row leaves room above the prompt: jewel starts around row 33 style.
+    // 6 rows + 1 gap + 3 jewel = 10 → first_row = 28 ⇒ jewel top 35? Too low.
+    // Prefer first_row 26 → jewel 33 (matches chat-turn prompt row).
+    paint_slash_dropdown_over_prompt(&mut canvas, 26, rows, 0, "/m")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
+/// Root action palette still a compact list, but product command naming (no Filter invent).
 fn command_palette() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_quiet_origin(
@@ -96,49 +80,15 @@ fn command_palette() -> Result<Canvas, String> {
         "Open a command without leaving this chat.",
         "",
     )?;
-    canvas.write(11, 4, "Actions", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Shortcuts that stay bound to this origin",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "Switch model",
-        "Open the Cortex catalog for this turn",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "Queued prompts",
-        "Reorder, drop, or send the next prompt now",
-        false,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        18,
-        "All shortcuts",
-        "Ctrl+. cheatsheet with context-sensitive hints",
-        false,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        20,
-        "Export conversation",
-        "Markdown or plain text snapshot",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Filter · empty shows recent actions",
-        "Enter to open · Esc to cancel · ↑↓ to choose",
-    )?;
-    canvas.write(32, 5, "❯ ", TextStyle::plain(ColorToken::Text))?;
+    // Palette uses slash_dropdown geometry over live prompt rather than Filter dock.
+    let rows: &[(&str, &str)] = &[
+        ("/model", "Switch the active model"),
+        ("/queue", "Manage queued prompts"),
+        ("/help", "Browse commands and keyboard shortcuts"),
+        ("/export", "Export the current conversation to a file or clipboard"),
+        ("/session-info", "Show session info"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 26, rows, 0, "/")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -150,150 +100,55 @@ fn command_palette_submenu() -> Result<Canvas, String> {
         "Manage queued prompts for this turn.",
         "",
     )?;
-    canvas.write(
-        11,
-        4,
-        "Queued prompts · submenu",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        12,
-        4,
-        "Scoped under the palette · Esc returns to Actions",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        14,
-        "Send next now",
-        "interrupt current stream safely",
-        true,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        15,
-        "Move up",
-        "raise priority one slot",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        16,
-        "Move down",
-        "lower priority one slot",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        17,
-        "Remove from queue",
-        "keeps draft unsent",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Esc exits submenu only · parent stays open",
-        "Enter to apply · Esc to back · ↑↓ to choose",
-    )?;
+    // Submenu remains a compact list pane glided above the live prompt.
+    let rows: &[(&str, &str)] = &[
+        ("send-next", "Send the next queued prompt now"),
+        ("move-up", "Raise priority one slot"),
+        ("move-down", "Lower priority one slot"),
+        ("remove", "Remove from queue"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 27, rows, 0, "/queue ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
+/// `/model` arg suggestion dropdown (display name + desc), optional current tag.
+/// Effort is a chained sub-menu when the model supports reasoning.
+/// BAN: marketing essay body + Selected · putty + "statusline stays Cortex-labeled".
 fn model_picker() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_quiet_origin(
         &mut canvas,
-        "Choose the model for the next reply.",
+        "Switch model for the next reply only when needed.",
         "",
     )?;
-    canvas.write(11, 4, "Models", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Each row says what changes before you apply it.",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "Cortex",
-        "Current · balanced depth for everyday coding",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "Cortex (high)",
-        "More reasoning budget · slower, deeper plans",
-        false,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        18,
-        "xAI model Fast",
-        "Quick edits and triage · lighter reasoning",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        &format!("Selected · {MODEL_LABEL}"),
-        "Enter to apply · Esc to cancel · f for Filter models",
-    )?;
-    canvas.write(
-        32,
-        5,
-        "Applies to the next reply only · statusline stays Cortex-labeled",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
+    // Model catalog as /model arg suggestions (product form: Name (current) + description).
+    let rows: &[(&str, &str)] = &[
+        ("Cortex (current)", "Balanced default · reasoning supported"),
+        ("Cortex Fast", "Lower latency · lighter reasoning"),
+        ("code model", "Code-focused next-turn completions"),
+    ];
+    // Live prompt shows partial `/model ` so Enter is arg-commit geometry.
+    paint_slash_dropdown_over_prompt(&mut canvas, 27, rows, 0, "/model ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
+/// Filtered `/model` document cube: typed prefix narrows the same arg dropdown
+/// (not a full marketing filter pane with selected putty invent).
 fn model_picker_filtered() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_quiet_origin(
         &mut canvas,
-        "Filter the catalog for a faster match.",
+        "Narrow the model list with a typed prefix.",
         "",
     )?;
-    canvas.write(
-        11,
-        4,
-        "Models · filter \"fast\"",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        12,
-        4,
-        "2 matches · filter text stays until Esc",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "xAI model Fast",
-        "Quick edits and triage · lighter reasoning",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "Cortex (high)",
-        "Still listed when the filter touches effort tags",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Filter · fast",
-        "Enter to apply · Esc clears filter then cancels",
-    )?;
-    canvas.write(32, 5, "❯ fast", TextStyle::plain(ColorToken::Text))?;
+    // Prefix "fast" keeps only matches; still slash_dropdown over live prompt.
+    let rows: &[(&str, &str)] = &[
+        ("Cortex Fast", "Lower latency · lighter reasoning"),
+        ("Cortex (current)", "Still listed when prefix hits the catalog"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/model fast")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -305,41 +160,13 @@ fn agent_picker() -> Result<Canvas, String> {
         "Pick how Cortex should approach this task.",
         "",
     )?;
-    canvas.write(11, 4, "Agents", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Personas and agents · not a Cortex work-style matrix",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "Coding",
-        "Default · edit, test, and explain in one loop",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "Plan",
-        "Read-only planning before any write",
-        false,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        18,
-        "Review",
-        "Critique diffs and suggest repairs only",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Selected · Coding",
-        "Enter to apply · Esc to cancel · ↑↓ to choose",
-    )?;
+    // Agent list as compact suggestions over live prompt (no Selected putty invent).
+    let rows: &[(&str, &str)] = &[
+        ("Coding", "Default · edit, test, and explain"),
+        ("Plan", "Read-only planning before any write"),
+        ("Review", "Critique diffs and suggest repairs"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/agents ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -351,145 +178,52 @@ fn skills_picker() -> Result<Canvas, String> {
         "Enable skills for this session.",
         "",
     )?;
-    canvas.write(11, 4, "Skills", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Session-scoped plugins and extensions",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        14,
-        "✓ retry-audit",
-        "inspect retry helpers",
-        true,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        15,
-        "  docs-search",
-        "index docs for lookups",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        16,
-        "✓ shell-safe",
-        "sandboxed command preflight",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        17,
-        "  image-caption",
-        "describe pasted screenshots",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Space toggles · only checked skills load",
-        "Enter to save · Esc to cancel · ↑↓ to move",
-    )?;
+    let rows: &[(&str, &str)] = &[
+        ("✓ retry-audit", "inspect retry helpers"),
+        ("  docs-search", "index docs for lookups"),
+        ("✓ shell-safe", "sandboxed command preflight"),
+        ("  image-caption", "describe pasted screenshots"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 27, rows, 0, "/plugin ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
+/// `/resume` session picker surface — resume list, not Filter invent.
 fn session_picker() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_quiet_origin(
         &mut canvas,
-        "Resume an earlier conversation in this workspace.",
+        "Resume a previous conversation.",
         "",
     )?;
-    canvas.write(11, 4, "Sessions", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Local resume list · drafts restore with the transcript",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "Retry policy review",
-        "17 turns · master · open draft kept",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "Cache invalidation sketch",
-        "9 turns · feature/cache · idle",
-        false,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        18,
-        "MCP docs research",
-        "4 turns · connect work still open",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Selected · Retry policy review",
-        "Enter to resume · Esc to cancel · ↑↓ to choose",
-    )?;
+    // Product: /resume opens session picker. Keep list gloved above live prompt.
+    let rows: &[(&str, &str)] = &[
+        ("Retry policy review", "17 turns · master"),
+        ("Cache invalidation sketch", "9 turns · feature/cache"),
+        ("MCP docs research", "4 turns · idle"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/resume")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
+/// Effort sub-menu for `/model <name> ` chained args (`low|medium|high|xhigh`).
 fn variant_picker() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_quiet_origin(
         &mut canvas,
-        "Pick effort for this reply only.",
+        "Pick reasoning effort for the next reply.",
         "",
     )?;
-    canvas.write(
-        11,
-        4,
-        "Effort · /effort",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        12,
-        4,
-        "Reasoning budget for the next assistant turn",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        14,
-        "Low",
-        "fast answers · light plan",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        15,
-        "Medium",
-        "default balanced budget",
-        true,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        16,
-        "High",
-        "deep plans · slower stream",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Selected · Medium",
-        "Enter to apply · Esc keeps previous effort",
-    )?;
+    // Product chained effort phase after a reasoning-capable model name + space.
+    let rows: &[(&str, &str)] = &[
+        ("low", "Fast answers · light plan"),
+        ("medium", "Default balanced budget"),
+        ("high", "Deep plans · slower stream"),
+        ("xhigh", "Maximum reasoning budget"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 27, rows, 2, "/model Cortex ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -501,41 +235,12 @@ fn fork_picker() -> Result<Canvas, String> {
         "Fork from this turn into a new branch of the chat.",
         "",
     )?;
-    canvas.write(11, 4, "Fork conversation", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Branches keep history up to the selected turn",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "Fork at pause",
-        "New session · original stays untouched",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "Fork + open draft",
-        "Copies the current draft into the fork",
-        false,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        18,
-        "Cancel",
-        "Return without branching",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Confirm fork destination",
-        "Enter to fork · Esc to cancel",
-    )?;
+    let rows: &[(&str, &str)] = &[
+        ("Fork at pause", "New session · original stays untouched"),
+        ("Fork + open draft", "Copies the current draft into the fork"),
+        ("Cancel", "Return without branching"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/fork ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -547,34 +252,13 @@ fn theme_picker() -> Result<Canvas, String> {
         "Preview a theme without leaving this origin.",
         "",
     )?;
-    canvas.write(11, 4, "Themes", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Live preview · Apply writes ui.theme only",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "CortexNight",
-        "Default dark · magenta accent #bb9af7",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "CortexDay",
-        "Light peer · deepened magenta #7d4bc6",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Preview active · CortexNight",
-        "Enter to apply · Esc to cancel · ↑↓ previews",
-    )?;
+    // `/theme` arg suggestions (product theme kinds), not Selected · putty invent.
+    let rows: &[(&str, &str)] = &[
+        ("CortexNight", "Default dark · magenta accent"),
+        ("CortexDay", "Light peer · deepened magenta"),
+        ("auto", "Follow system appearance"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/theme ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -586,41 +270,12 @@ fn export_picker() -> Result<Canvas, String> {
         "Export or share this conversation.",
         "",
     )?;
-    canvas.write(11, 4, "Export", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Choose a format · secrets stay redacted",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        14,
-        "Markdown",
-        "transcript with tool folds",
-        true,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        15,
-        "Plain text",
-        "flat copy without role chrome",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        16,
-        "Share link",
-        "redacted snapshot URL when enabled",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Selected · Markdown",
-        "Enter to export · Esc to cancel",
-    )?;
+    let rows: &[(&str, &str)] = &[
+        ("markdown", "Transcript with tool folds"),
+        ("plain", "Flat copy without role chrome"),
+        ("clipboard", "Copy the export payload now"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/export ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -632,41 +287,13 @@ fn attachment_picker() -> Result<Canvas, String> {
         "Attach a project file to the next send.",
         "",
     )?;
-    canvas.write(11, 4, "Attach file", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Workspace files only · images use [Image #N] chips",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        14,
-        "crates/agent/src/retry.rs",
-        "14 KB · rust",
-        true,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        15,
-        "docs/retry.md",
-        "4 KB · markdown",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        16,
-        "fixtures/rate_limit.json",
-        "1 KB · json",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Selected · crates/agent/src/retry.rs",
-        "Enter to attach · Esc to cancel · type to filter",
-    )?;
+    // File-search style rows still glued above live prompt (no Filter invent dock).
+    let rows: &[(&str, &str)] = &[
+        ("crates/agent/src/retry.rs", "14 KB · rust"),
+        ("docs/retry.md", "4 KB · markdown"),
+        ("fixtures/rate_limit.json", "1 KB · json"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "@ret")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -678,41 +305,12 @@ fn subagent_picker() -> Result<Canvas, String> {
         "Spawn a task-local helper for this turn.",
         "",
     )?;
-    canvas.write(11, 4, "Subagents", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Short-lived helpers · results fold back into chat",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        14,
-        "audit-subagent",
-        "Scan retry helpers for races",
-        true,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        16,
-        "coverage-subagent",
-        "Find untested floor cases",
-        false,
-    )?;
-    paint_picker_row(
-        &mut canvas,
-        18,
-        "docs-subagent",
-        "Gather related notes without edits",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Selected · audit-subagent",
-        "Enter to spawn · Esc to cancel",
-    )?;
+    let rows: &[(&str, &str)] = &[
+        ("audit-subagent", "Scan retry helpers for races"),
+        ("coverage-subagent", "Find untested floor cases"),
+        ("docs-subagent", "Gather related notes without edits"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/tasks ")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -724,55 +322,41 @@ fn file_mention() -> Result<Canvas, String> {
         "Mention a path with @ before sending.",
         "",
     )?;
-    canvas.write(11, 4, "Files · @", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Fuzzy path match · soft highlight on hits",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    // Soft Info decoration on match fragment.
-    canvas.write(14, 4, "› crates/agent/src/", TextStyle::bold(ColorToken::Accent))?;
-    canvas.write(14, 24, "retry", TextStyle::plain(ColorToken::Info))?;
-    canvas.write(14, 29, ".rs", TextStyle::bold(ColorToken::Accent))?;
-    canvas.write(
-        15,
-        6,
-        "14 KB · last touched this branch",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "  crates/agent/src/rate_limit.rs",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        18,
-        6,
-        "9 KB · related helper",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-    canvas.write(
-        20,
-        4,
-        "  tests/retry_floors.rs",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        21,
-        6,
-        "3 KB · suite entry",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-    paint_dock_frame(
+    // Soft Info decoration on match fragment + dropdown glue above prompt.
+    let label_col_w = "crates/agent/src/retry.rs".chars().count().min(40);
+    paint_slash_suggestion_row(
         &mut canvas,
-        30,
-        7,
-        "Filter · @ret",
-        "Enter to insert · Esc to cancel · ↑↓ to choose",
+        26,
+        "crates/agent/src/retry.rs",
+        "14 KB · last touched this branch",
+        true,
+        label_col_w,
     )?;
-    canvas.write(32, 5, "❯ Check @ret", TextStyle::plain(ColorToken::Text))?;
+    // Soft-info paint over the match run inside the selected path.
+    canvas.write(26, 4 + 2 + 17, "retry", TextStyle::plain(ColorToken::Info))?;
+    paint_slash_suggestion_row(
+        &mut canvas,
+        27,
+        "crates/agent/src/rate_limit.rs",
+        "9 KB · related helper",
+        false,
+        label_col_w,
+    )?;
+    paint_slash_suggestion_row(
+        &mut canvas,
+        28,
+        "tests/retry_floors.rs",
+        "3 KB · suite entry",
+        false,
+        label_col_w,
+    )?;
+    paint_prompt_jewel(
+        &mut canvas,
+        33,
+        "Check @ret",
+        MODEL_LABEL,
+        "always-approve",
+    )?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -784,41 +368,12 @@ fn queue_manager() -> Result<Canvas, String> {
         "Three prompts are waiting behind the live stream.",
         "Still writing the retry summary…",
     )?;
-    canvas.write(11, 4, "Queue", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "Reorder · remove · Enter to send now",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        14,
-        "1  Add floor integration case",
-        "next",
-        true,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        15,
-        "2  Document jitter order",
-        "waiting",
-        false,
-    )?;
-    paint_picker_row_compact(
-        &mut canvas,
-        16,
-        "3  Note rate-limit ceiling",
-        "waiting",
-        false,
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        30,
-        7,
-        "Selected · 1 of 3 · send interrupts safely",
-        "Enter to send now · d remove · j/k reorder · Esc dismiss",
-    )?;
+    let rows: &[(&str, &str)] = &[
+        ("1  Add floor integration case", "next"),
+        ("2  Document jitter order", "waiting"),
+        ("3  Note rate-limit ceiling", "waiting"),
+    ];
+    paint_slash_dropdown_over_prompt(&mut canvas, 28, rows, 0, "/queue")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
@@ -849,6 +404,35 @@ fn finish(canvas: Canvas) -> Result<Canvas, String> {
     let text = canvas.to_text();
     reject_copper_residual(&text)?;
     reject_structure_residual(&text)?;
+    // Picker-specific invent bans (STRUCT-011).
+    for invent in [
+        "Commands",
+        "Filter · /",
+        "Filter ·",
+        "Selected ·",
+        "statusline stays Cortex-labeled",
+        "f for Filter models",
+        "Type more to filter",
+        "Esc restores the draft",
+        "/session ·",
+        "switch Cortex catalog model",
+        "Each row says what changes before you apply it",
+        "Models · filter",
+    ] {
+        // Allow product word "session-info" and "Cortex" while banning essays.
+        if invent == "Commands" {
+            // Ban standalone detached Commands essay header (whole-line-ish substring
+            // "Commands" was used as title). Product never paints a mid-scroll
+            // "Commands" heading for slash_dropdown.
+            if text.lines().any(|l| l.trim() == "Commands") {
+                return Err(format!("picker invent refused: {invent:?}"));
+            }
+            continue;
+        }
+        if text.contains(invent) {
+            return Err(format!("picker invent refused: {invent:?}"));
+        }
+    }
     Ok(canvas)
 }
 
@@ -883,16 +467,44 @@ mod tests {
             assert!(!text.contains("Claude Opus"), "{id}");
             assert!(!text.contains("Work mode"), "{id}");
             assert!(!text.contains("How Code should work"), "{id}");
-            if id == "model-picker" || id == "composer-multiline" {
+            assert!(!text.contains("Selected ·"), "{id} Selected invent");
+            assert!(!text.contains("Filter ·"), "{id} Filter invent");
+            assert!(!text.contains("statusline stays Cortex-labeled"), "{id}");
+            assert!(
+                text.contains("9.5K / 500K") || text.contains("K / "),
+                "{id} auth budget"
+            );
+            if id == "model-picker" || id == "composer-multiline" || id == "slash-menu" {
                 assert!(text.contains(MODEL_LABEL), "{id} missing model");
             }
             if id == "composer-multiline" {
-                // Right-aligned effort chip on draft row — no invented Draft·N meta.
                 assert!(
                     text.contains("Cortex (high)") && text.contains("always-approve"),
                     "{id} missing right jewel chip"
                 );
                 assert!(!text.contains("Draft ·"), "{id} Draft·N invent");
+            }
+            if id == "slash-menu" {
+                assert!(text.contains("/resume"), "{id} product /resume");
+                assert!(text.contains("/session-info"), "{id} product /session-info");
+                assert!(!text.contains("/session ·"), "{id} fake /session");
+                assert!(!text.lines().any(|l| l.trim() == "Commands"), "{id}");
+                // Geometry: live prompt draft includes slash query.
+                assert!(text.contains("❯ /m") || text.contains("/m"), "{id} live prompt");
+            }
+            if id == "model-picker" {
+                assert!(text.contains("/model"), "{id} /model arg geometry");
+                assert!(text.contains("Cortex"), "{id}");
+                assert!(!text.contains("f for Filter models"), "{id}");
+            }
+            if id == "model-picker-filtered" {
+                assert!(text.contains("/model"), "{id}");
+                assert!(!text.contains("Models · filter"), "{id}");
+            }
+            if id == "variant-picker" {
+                // Effort sub-menu product ids.
+                assert!(text.contains("high") || text.contains("xhigh"), "{id} effort");
+                assert!(text.contains("/model Cortex"), "{id} chained phase");
             }
             assert!(text.contains("Shift+Tab:mode"), "{id} putty");
             assert!(
@@ -900,5 +512,29 @@ mod tests {
                 "{id} putty must use product | / multi-space separators"
             );
         }
+    }
+
+    #[test]
+    fn slash_dropdown_rows_use_product_prefix() {
+        let mut canvas = Canvas::new(Theme::CortexNight);
+        paint_slash_suggestion_row(&mut canvas, 10, "/model", "Switch the active model", true, 14)
+            .unwrap();
+        paint_slash_suggestion_row(
+            &mut canvas,
+            11,
+            "/resume",
+            "Resume a previous session",
+            false,
+            14,
+        )
+        .unwrap();
+        let text = canvas.to_text();
+        let sel = text.lines().nth(10).unwrap();
+        let unsel = text.lines().nth(11).unwrap();
+        assert!(sel.contains('❯'), "selected uses ❯ prefix: {sel}");
+        assert!(sel.contains("/model"));
+        assert!(sel.contains("Switch the active model"));
+        assert!(!unsel.trim_start().starts_with('❯') || unsel.contains("  /resume"));
+        assert!(unsel.contains("/resume"));
     }
 }

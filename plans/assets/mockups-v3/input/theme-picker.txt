@@ -9,13 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Themes                                                                                                              
-    Live preview · Apply writes ui.theme only                                                                           
-                                                                                                                        
-    › CortexNight                                                                                                         
-      Default dark · magenta accent #bb9af7                                                                             
-      CortexDay                                                                                                           
-      Light peer · deepened magenta #7d4bc6                                                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +20,21 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ CortexNight  Default dark · magenta accent                                                                          
+      CortexDay    Light peer · deepened magenta                                                                          
+      auto       Follow system appearance                                                                               
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Preview active · CortexNight                                                                                       │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to apply · Esc to cancel · ↑↓ previews                                                                     │  
+  │ ❯ /theme                                                                       Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

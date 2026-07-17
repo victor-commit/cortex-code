@@ -9,13 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Skills                                                                                                              
-    Session-scoped plugins and extensions                                                                               
-                                                                                                                        
-    › ✓ retry-audit · inspect retry helpers                                                                             
-        docs-search · index docs for lookups                                                                            
-      ✓ shell-safe · sandboxed command preflight                                                                        
-        image-caption · describe pasted screenshots                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +20,21 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ ✓ retry-audit    inspect retry helpers                                                                            
+        docs-search    index docs for lookups                                                                           
+      ✓ shell-safe     sandboxed command preflight                                                                      
+        image-caption  describe pasted screenshots                                                                      
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Space toggles · only checked skills load                                                                         │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to save · Esc to cancel · ↑↓ to move                                                                       │  
+  │ ❯ /plugin                                                                      Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

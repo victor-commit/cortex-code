@@ -9,12 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Attach file                                                                                                         
-    Workspace files only · images use [Image #N] chips                                                                  
-                                                                                                                        
-    › crates/agent/src/retry.rs · 14 KB · rust                                                                          
-      docs/retry.md · 4 KB · markdown                                                                                   
-      fixtures/rate_limit.json · 1 KB · json                                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +21,20 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ crates/agent/src/retry.rs  14 KB · rust                                                                           
+      docs/retry.md              4 KB · markdown                                                                        
+      fixtures/rate_limit.json   1 KB · json                                                                            
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · crates/agent/src/retry.rs                                                                             │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to attach · Esc to cancel · type to filter                                                                 │  
+  │ ❯ @ret                                                                         Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

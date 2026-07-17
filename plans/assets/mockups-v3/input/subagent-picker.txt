@@ -9,15 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Subagents                                                                                                           
-    Short-lived helpers · results fold back into chat                                                                   
-                                                                                                                        
-    › audit-subagent                                                                                                    
-      Scan retry helpers for races                                                                                      
-      coverage-subagent                                                                                                 
-      Find untested floor cases                                                                                         
-      docs-subagent                                                                                                     
-      Gather related notes without edits                                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +18,23 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ audit-subagent     Scan retry helpers for races                                                                   
+      coverage-subagent  Find untested floor cases                                                                      
+      docs-subagent      Gather related notes without edits                                                             
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · audit-subagent                                                                                        │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to spawn · Esc to cancel                                                                                   │  
+  │ ❯ /tasks                                                                       Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

@@ -1,20 +1,7 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ❯ Pick effort for this reply only.                                                                                    
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-    Effort · /effort                                                                                                    
-    Reasoning budget for the next assistant turn                                                                        
-                                                                                                                        
-      Low · fast answers · light plan                                                                                   
-    › Medium · default balanced budget                                                                                  
-      High · deep plans · slower stream                                                                                 
+  ❯ Pick reasoning effort for the next reply.                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +14,27 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+      low     Fast answers · light plan                                                                                 
+      medium  Default balanced budget                                                                                   
+    ❯ high    Deep plans · slower stream                                                                                
+      xhigh   Maximum reasoning budget                                                                                  
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Medium                                                                                                │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to apply · Esc keeps previous effort                                                                       │  
+  │ ❯ /model Cortex                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

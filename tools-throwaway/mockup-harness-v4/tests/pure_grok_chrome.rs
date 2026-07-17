@@ -839,6 +839,182 @@ fn published_orchestration_set_structure_language_bans() {
     }
 }
 
+/// VAL-V3-STRUCT-011 / CROSS-027: slash_dropdown + /model arg geometry over live prompt.
+#[test]
+fn pickers_family_slash_model_geometry() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+
+    let invent_bans = [
+        "Filter · /",
+        "Filter ·",
+        "Selected ·",
+        "statusline stays Cortex-labeled",
+        "f for Filter models",
+        "Type more to filter",
+        "Esc restores the draft",
+        "switch Cortex catalog model",
+        "Each row says what changes before you apply it",
+        "Models · filter",
+        "◆ Cortex",
+        "❯ You",
+    ];
+
+    for id in [
+        "slash-menu",
+        "model-picker",
+        "model-picker-filtered",
+        "command-palette",
+        "session-picker",
+        "variant-picker",
+        "theme-picker",
+        "export-picker",
+        "file-mention",
+        "queue-manager",
+        "composer-multiline",
+    ] {
+        let text = render_pilot(id)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+            .to_text();
+        reject_structure_residual(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        for invent in invent_bans {
+            assert!(!text.contains(invent), "{id} invent {invent:?}");
+        }
+        assert!(
+            !text.lines().any(|l| l.trim() == "Commands"),
+            "{id} detached Commands essay"
+        );
+        assert!(
+            !text.contains("/session ·"),
+            "{id} fake /session alias (use /resume or /session-info)"
+        );
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "{id} inherits shell budget chrome"
+        );
+        assert!(
+            text.contains("Shift+Tab:mode | Ctrl+c:cancel") || text.contains("Shift+Tab"),
+            "{id} putty chrome"
+        );
+        // Root command pickers keep a live jewel over the dropdown (not mid-scroll only).
+        assert!(
+            text.contains('╭') && text.contains('╰'),
+            "{id} live prompt jewel"
+        );
+    }
+
+    let slash = render_pilot("slash-menu").unwrap().to_text();
+    assert!(slash.contains("/resume"), "product /resume naming");
+    assert!(slash.contains("/session-info"), "product /session-info naming");
+    assert!(slash.contains("/model"), "product /model");
+    assert!(
+        slash.contains("Switch the active model") || slash.contains("Resume a previous session"),
+        "product slash descriptions"
+    );
+    // Draft keeps the typed slash query inside the jewel, not a Filter dock.
+    let jewel_has_query = slash.lines().any(|l| l.contains('❯') && l.contains('/'));
+    assert!(jewel_has_query, "slash-menu live prompt must show slash query");
+
+    let model = render_pilot("model-picker").unwrap().to_text();
+    assert!(model.contains("/model"));
+    assert!(model.contains(MODEL_LABEL) || model.contains("Cortex"));
+    // No marketing Selected putty, no filter hotkey theater.
+    assert!(!model.contains("Enter to apply · Esc to cancel · f for Filter"));
+    assert!(!model.contains("Applies to the next reply only"));
+
+    let filtered = render_pilot("model-picker-filtered").unwrap().to_text();
+    assert!(filtered.contains("/model"));
+    assert!(!filtered.contains("2 matches · filter text stays until Esc"));
+
+    let effort = render_pilot("variant-picker").unwrap().to_text();
+    assert!(
+        effort.contains("high") || effort.contains("medium") || effort.contains("xhigh"),
+        "effort sub-menu levels"
+    );
+    assert!(
+        effort.contains("/model Cortex") || effort.contains("Cortex "),
+        "chained /model effort prompt"
+    );
+
+    let session = render_pilot("session-picker").unwrap().to_text();
+    assert!(
+        session.contains("/resume") || session.contains("Resume"),
+        "session-picker is /resume surface"
+    );
+}
+
+/// Published pickers ban Filter/Selected invent + Commands essay when gallery exists.
+#[test]
+fn published_pickers_slash_model_structure_bans() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plans/assets/mockups-v3/input");
+    if !root.exists() {
+        return;
+    }
+    let invent_bans = [
+        "Filter · /",
+        "Filter ·",
+        "Selected ·",
+        "statusline stays Cortex-labeled",
+        "f for Filter models",
+        "Type more to filter",
+        "Esc restores the draft",
+        "switch Cortex catalog model",
+        "Models · filter",
+        "◆ Cortex",
+        "❯ You",
+        "/session ·",
+    ];
+    for id in [
+        "slash-menu",
+        "model-picker",
+        "model-picker-filtered",
+        "command-palette",
+        "session-picker",
+        "variant-picker",
+        "theme-picker",
+        "export-picker",
+        "composer-multiline",
+    ] {
+        let path = root.join(format!("{id}.txt"));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("published input/{id}: {e}"));
+        for invent in invent_bans {
+            assert!(
+                !text.contains(invent),
+                "published {id} invent {invent:?}"
+            );
+        }
+        assert!(
+            !text.lines().any(|l| l.trim() == "Commands"),
+            "published {id} Commands essay"
+        );
+        assert!(
+            text.contains("9.5K / 500K") || text.contains("K / "),
+            "published {id} budget"
+        );
+    }
+    let slash = root.join("slash-menu.txt");
+    if slash.exists() {
+        let text = std::fs::read_to_string(&slash).unwrap();
+        assert!(text.contains("/resume"));
+        assert!(text.contains("/session-info"));
+        assert!(text.contains('╭'));
+    }
+    let model = root.join("model-picker.txt");
+    if model.exists() {
+        let text = std::fs::read_to_string(&model).unwrap();
+        assert!(text.contains("/model"));
+        assert!(!text.contains("statusline stays Cortex-labeled"));
+    }
+}
+
 /// VAL-V3-STRUCT-010: help = shortcuts_help modal; status = session-info + context.
 #[test]
 fn help_status_product_surfaces() {

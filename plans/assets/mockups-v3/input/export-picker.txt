@@ -9,12 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Export                                                                                                              
-    Choose a format · secrets stay redacted                                                                             
-                                                                                                                        
-    › Markdown · transcript with tool folds                                                                             
-      Plain text · flat copy without role chrome                                                                        
-      Share link · redacted snapshot URL when enabled                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +21,20 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ markdown   Transcript with tool folds                                                                             
+      plain      Flat copy without role chrome                                                                          
+      clipboard  Copy the export payload now                                                                            
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Markdown                                                                                              │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to export · Esc to cancel                                                                                  │  
+  │ ❯ /export                                                                      Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

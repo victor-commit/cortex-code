@@ -1,21 +1,7 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ❯ Filter the catalog for a faster match.                                                                              
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-    Models · filter "fast"                                                                                              
-    2 matches · filter text stays until Esc                                                                             
-                                                                                                                        
-    › xAI model Fast                                                                                                       
-      Quick edits and triage · lighter reasoning                                                                        
-      Cortex (high)                                                                                                   
-      Still listed when the filter touches effort tags                                                                  
+  ❯ Narrow the model list with a typed prefix.                                                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +13,28 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ Cortex Fast       Lower latency · lighter reasoning                                                             
+      Cortex (current)  Still listed when prefix hits the catalog                                                     
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Filter · fast                                                                                                    │  
-  │  ❯ fast                                                                                                          │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to apply · Esc clears filter then cancels                                                                  │  
+  │ ❯ /model fast                                                                  Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

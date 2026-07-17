@@ -9,17 +9,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Actions                                                                                                             
-    Shortcuts that stay bound to this origin                                                                            
-                                                                                                                        
-    › Switch model                                                                                                      
-      Open the Cortex catalog for this turn                                                                               
-      Queued prompts                                                                                                    
-      Reorder, drop, or send the next prompt now                                                                        
-      All shortcuts                                                                                                     
-      Ctrl+. cheatsheet with context-sensitive hints                                                                    
-      Export conversation                                                                                               
-      Markdown or plain text snapshot                                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +16,25 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ /model         Switch the active model                                                                            
+      /queue         Manage queued prompts                                                                              
+      /help          Browse commands and keyboard shortcuts                                                             
+      /export        Export the current conversation to a file or clipboard                                             
+      /session-info  Show session info                                                                                  
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Filter · empty shows recent actions                                                                              │  
-  │  ❯                                                                                                               │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to open · Esc to cancel · ↑↓ to choose                                                                     │  
+  │ ❯ /                                                                            Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

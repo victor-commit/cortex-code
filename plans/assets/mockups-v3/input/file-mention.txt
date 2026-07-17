@@ -9,32 +9,32 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Files · @                                                                                                           
-    Fuzzy path match · soft highlight on hits                                                                           
-                                                                                                                        
-    › crates/agent/src/ retry.rs                                                                                        
-      14 KB · last touched this branch                                                                                  
-                                                                                                                        
-      crates/agent/src/rate_limit.rs                                                                                    
-      9 KB · related helper                                                                                             
-                                                                                                                        
-      tests/retry_floors.rs                                                                                             
-      3 KB · suite entry                                                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    ❯ crates/agent/src/retry.rs  14 KB · last touched this branch                                                       
+      crates/agent/src/rate_limit9 KB · related helper                                                                  
+      tests/retry_floors.rs      3 KB · suite entry                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Filter · @ret                                                                                                    │  
-  │  ❯ Check @ret                                                                                                    │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter to insert · Esc to cancel · ↑↓ to choose                                                                   │  
+  │ ❯ Check @ret                                                                   Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+                                                                                                                        
                                                                                                                         
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

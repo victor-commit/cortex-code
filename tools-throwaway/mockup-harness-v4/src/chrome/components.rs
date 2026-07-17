@@ -623,6 +623,90 @@ pub fn paint_picker_row_compact(
     Ok(())
 }
 
+/// Product slash_dropdown suggestion row: `❯ label` + aligned description.
+///
+/// Source: `/tmp/grok-build-ref/.../views/slash_dropdown.rs` — PREFIX_W=2 (`❯ `/`  `),
+/// label column + gap + description. Selection uses Accent `❯` (canvas has no bg_visual fill).
+/// Glue these immediately above the live prompt jewel; do not invent a detached
+/// Commands essay or Filter putty rewrite.
+pub fn paint_slash_suggestion_row(
+    canvas: &mut Canvas,
+    row: u16,
+    label: &str,
+    description: &str,
+    selected: bool,
+    label_col_w: usize,
+) -> Result<(), String> {
+    let left = 4u16;
+    let prefix = if selected { "❯ " } else { "  " };
+    let prefix_style = if selected {
+        TextStyle::bold(ColorToken::Accent)
+    } else {
+        TextStyle::plain(ColorToken::Text)
+    };
+    let label_style = if selected {
+        TextStyle::bold(ColorToken::Bright)
+    } else {
+        TextStyle::plain(ColorToken::Text)
+    };
+    canvas.write(row, left, prefix, prefix_style)?;
+    canvas.write(row, left + 2, label, label_style)?;
+    if !description.is_empty() {
+        let desc_col = left + 2 + label_col_w as u16 + 2;
+        // Keep description inside the inner frame (col ~115).
+        if desc_col < 115 {
+            canvas.write(
+                row,
+                desc_col,
+                description,
+                TextStyle::plain(ColorToken::Muted),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Paint slash/model arg suggestions glued above a live prompt jewel.
+///
+/// `prompt_draft` is the in-progress slash query (e.g. `/m`, `/model `, `/model Cortex `).
+/// The jewel remains the anchored composer, not a Filter · / Selected · invent dock.
+pub fn paint_slash_dropdown_over_prompt(
+    canvas: &mut Canvas,
+    first_row: u16,
+    rows: &[(&str, &str)],
+    selected: usize,
+    prompt_draft: &str,
+) -> Result<(), String> {
+    let label_col_w = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(8)
+        .min(40);
+    for (i, (label, desc)) in rows.iter().enumerate() {
+        paint_slash_suggestion_row(
+            canvas,
+            first_row + i as u16,
+            label,
+            desc,
+            i == selected,
+            label_col_w,
+        )?;
+    }
+    // One blank separator row, then the live prompt jewel (3 rows: border+draft+border).
+    let jewel_top = first_row + rows.len() as u16 + 1;
+    // Draft keeps model chip right-aligned when the prompt is not mid-slash; slash
+    // queries keep the chip so authenticated shell chrome remains product-true.
+    paint_prompt_jewel(
+        canvas,
+        jewel_top,
+        prompt_draft,
+        MODEL_LABEL,
+        MODEL_MODE_DEFAULT,
+    )?;
+    Ok(())
+}
+
 /// Bottom action dock frame replacing the idle composer for pickers/permissions.
 pub fn paint_dock_frame(
     canvas: &mut Canvas,
