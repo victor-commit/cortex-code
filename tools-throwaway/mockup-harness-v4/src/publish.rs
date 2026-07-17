@@ -136,9 +136,7 @@ fn assert_gallery_text(text: &str) -> Result<(), String> {
         }
     }
     // Pure dump: no copper brand residual.
-    if text.contains("Cortex Code") || text.contains("Connect a model provider") {
-        return Err("pure Cortex publish refused copper residual".to_owned());
-    }
+    crate::chrome::components::reject_copper_residual(text)?;
     Ok(())
 }
 

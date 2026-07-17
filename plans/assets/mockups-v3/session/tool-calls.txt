@@ -1,21 +1,18 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
-     › You · Find where the server applies the rate limit and explain the safe path.                                    
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    I am checking the shared rules, then the failing suite, while scanning code.                                        
+  ❯ You                                                                                                                 
+    Inspect the retry helper and tighten the shell path.                                                                
                                                                                                                         
                                                                                                                         
-    ✓ Read session rules · 0.2s · found the shared guard                                                                
+  ◆ Cortex                                                                                                                
                                                                                                                         
-    ✗ Ran rate-limit tests · 41s · 2 of 38 tests failed                                                                 
-      Tests assert the wrong recovery message. · Enter to retry tests                                                   
+  Read  crates/agent/src/retry.rs                                                                                       
+  Search  rate.?limit  ·  3 matches                                                                                     
+  Shell  cargo test retry -- --nocapture                                                                                
+  Edit  crates/agent/src/retry.rs +12/-4                                                                                
                                                                                                                         
-    ● Searching project code · 12s · 118 of 240 files · 1 match so far                                                  
+    Mixed tool inventory · expand any row for details.                                                                  
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,12 +26,15 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ● Running · 12s                                                                                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                  │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    Enter to send                                                                                                       
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

@@ -1,22 +1,23 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Current conversation                                                                                                
-    Implement rate limiting on the login endpoint.                                                                      
-     › You · Implement rate limiting on the login endpoint.                                                             
+  ❯ You                                                                                                                 
+    Track the remaining recovery steps as todos.                                                                        
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
+  ◆ Cortex                                                                                                                
                                                                                                                         
-    Updated plan                                                                                                        
+    Todos                                                                                                               
                                                                                                                         
-    ✓ Read the auth middleware            reviewed the login handler · done                                             
-    ✓ Add a token-bucket limiter          created the request guard · done                                              
-    ✓ Wire the POST /login route          attached the limiter · done                                                   
-    ● Add tests/login_ratelimit.rs        cover the fifth attempt · in progress                                         
-    ○ Run cargo test and cargo fmt        verify the full change · pending                                              
-      ● Writing tests… 22s · 1 file · next work is this item                                                            
+    ✓ Pin fixture ids in the flaky suite                                                                                
+    › Rebuild group counter before re-run                                                                               
+    ○ Add rate-limit floor integration case                                                                             
+    ○ Document recovery in docs/recovery.md                                                                             
                                                                                                                         
-    3 of 5 done · 1 in progress · 1 pending                                                                             
+    2/4 complete · Enter toggles selected row                                                                           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Type a follow-up, it runs after this turn…                                                                     │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

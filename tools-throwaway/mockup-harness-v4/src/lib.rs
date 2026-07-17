@@ -1,10 +1,10 @@
 //! Pure Cortex dump harness (mockup-harness-v4).
 //!
-//! Publishes pilot TXT/PNG into existing product roots:
+//! Publishes F1–F3 TXT/PNG into existing product roots:
 //! - plans/assets/mockups-v3/
 //! - plans/assets/mockups-v3-gates/
 //!
-//! NO copper Cortex Identity helpers. Chrom e law: library/grok-pure-dump-spec.md.
+//! NO copper Cortex Identity helpers. Chrome law: library/grok-pure-dump-spec.md.
 
 pub mod chrome;
 pub mod publish;

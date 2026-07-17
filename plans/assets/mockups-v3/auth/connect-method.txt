@@ -1,19 +1,9 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Connections                                                                                                         
-    Sign in to OpenAI                                                                                                   
-                                                                                                                        
-    Only the methods this provider supports are shown.                                                                  
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-    › Browser sign-in                                                                                                   
-      authorize in your browser, then return here.                                                                      
-                                                                                                                        
-                                                                                                                        
-      Use an API key                                                                                                    
-      paste a key stored only on this machine.                                                                          
+    How do you want to sign in?                                                                                         
+    Cortex uses your xAI account or an API key.                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -26,15 +16,25 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+    Method                                                                                                              
+                                                                                                                        
+    › Browser device code (recommended)                                                                                 
+      Open browser OAuth tab                                                                                            
+      Paste XAI_API_KEY                                                                                                 
+                                                                                                                        
+    Enter to choose method · Esc to back                                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Browser sign-in                                                                                       │  
-  │ You keep control of the browser steps. Your keystroke never leaves this device.                                  │  
-  │ › Continue with browser sign-in                                                                                  │  
-  │   Esc to go back                                                                                                 │  
-  │ Back keeps the OpenAI provider choice.                                                                           │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Tip: device code works in headless SSH shells.                                                                      
+                                                      ctrl+d  quit                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

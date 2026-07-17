@@ -1,23 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Connections                                                                                                         
-    Confirm disconnect                                                                                                  
                                                                                                                         
-    Disconnect Anthropic?                                                                                               
                                                                                                                         
-    Anthropic is still connected until you confirm.                                                                     
+    Sign out of Cortex?                                                                                             
+    This clears the local xAI session on this machine.                                                                  
                                                                                                                         
-    This will remove the removable local key for Anthropic.                                                             
                                                                                                                         
-    No other effective credential source for this provider remains.                                                     
+    › Sign out now                                                                                                      
+      Keep me signed in                                                                                                 
                                                                                                                         
-    After disconnect, Anthropic will show as not connected.                                                             
                                                                                                                         
-    Other providers and MCP connections stay unchanged.                                                                 
+    Enter to confirm · Esc to cancel                                                                                    
                                                                                                                         
-    Cancel keeps the credential and returns to the provider list.                                                       
-                                                                                                                        
+    Drafts and local transcripts stay on disk.                                                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,12 +26,15 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Anthropic · Connected                                                                                 │  
-  │ Disconnect removes only this named target and source.                                                            │  
-  │ › Disconnect Anthropic                                                                                           │  
-  │   Esc to cancel · keep connected                                                                                 │  
-  │ Credential remains until you confirm disconnect.                                                                 │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                      ctrl+d  quit                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

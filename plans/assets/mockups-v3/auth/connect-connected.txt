@@ -1,23 +1,25 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Connections                                                                                                         
-    Connect the model needed for this conversation.                                                                     
+  ✓ Signed in to xAI                                                                                                    
+    Cortex is ready for this workspace.                                                                             
                                                                                                                         
-    OpenAI is connected                                                                                                 
+    Account   demo@x.ai                                                                                                 
+    Model     Cortex                                                                                                  
+    Mode      always-approve                                                                                            
                                                                                                                         
-    ✓ Connected                                                                                                         
                                                                                                                         
-    Method · Browser sign-in · ready on this device                                                                     
+    Enter to open agent shell · Esc stays here                                                                          
                                                                                                                         
-    GPT-5.2 Codex can use this provider now.                                                                            
                                                                                                                         
-    Return to the blocked model action to finish applying GPT-5.2 Codex.                                                
                                                                                                                         
-    Capability setup stays on its own ordered path, not this return.                                                    
-    The ordered storyboard later opens that separate capability branch.                                                 
                                                                                                                         
-    Continue is safe to repeat · it cannot create another connection.                                                   
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Provider ready                                                                                                   │  
-  │ Draft and pending GPT-5.2 Codex stay exactly as left. · never into MCP.                                          │  
-  │ › Continue                                                                                                       │  
-  │   Esc to close · Return to model choices                                                                         │  
-  │ Continue resumes the blocked model action exactly once.                                                          │  
+  │ ❯ Ask Cortex to start a task…                                                                                      │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

@@ -1,16 +1,13 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Recovery                                                                                                            
-    Finish the release notes without losing the current work.       │ ✗ BAD  Settings were not saved                    
-                                                                    │ s for Retry save · stays until you act            
-    You · /settings save                                            │ ● WARN  Connection recovered after a brief pause  
-                                                                    │  clears on its own                                
-    Code                                                                                                                
-                                                                    │ ● INFO  Model switched                            
-    Your preferences stay in this project after they are saved.     │  clears on its own                                
                                                                                                                         
-    Completed earlier · retry window copy accepted for the release b│ ✓ OK    Checkpoint saved                          
-    Draft kept · Keep the risk note short before we publish.        │  clears on its own                                
+  ❯ You                                                                                                                 
+    Save the export and maybe fire a toast.                                                                             
+                                                                                                                        
+                                                                                                                        
+  ◆ Cortex                                                                                                                
+    Export packed. Showing confirmations above the prompt.                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -23,18 +20,21 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                  ╭────────────────────────────╮                        
+                                                                  │ ✓ Export saved             │                        
+                                                                  │ · session-a1b2c3.md        │                        
+                                                                  ╰────────────────────────────╯                        
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+                                                                  ╭────────────────────────────╮                        
+                                                                  │ ✗ Clipboard blocked        │                        
+                                                                  │ · grant terminal paste     │                        
+                                                                  ╰────────────────────────────╯                        
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply when ready…                                                                                                 
-  │   Draft · Keep the risk note short before we publish.                                                               
-                                                                                                                        
-    Enter to Send reply                                                                                                 
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

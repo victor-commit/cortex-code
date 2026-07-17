@@ -1,24 +1,16 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Current conversation                                                                                                
-    Check the branch, then run the focused tests.                                                                       
-     › You · Check the branch, then run the focused tests.                                                              
+  ❯ You                                                                                                                 
+    ! cargo test --package agent -- retry                                                                               
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
+  ◆ Cortex                                                                                                                
                                                                                                                         
-    I will check the branch state first, then run the focused suite.                                                    
-                                                                                                                        
-    ✓ Ran git status --short --branch · exit 0 · 0.2s                                                                   
-      ⎿ ## master...origin/master [ahead 1]                                                                             
-      ⎿ M crates/server/src/models/session.rs                                                                           
-      ⎿ ?? crates/server/tests/login_regression.rs                                                                      
-                                                                                                                        
-    ● Running cargo test --workspace · running · 4s elapsed · Esc to stop command                                       
-      ⎿ Compiling cortex-server v0.1.0                                                                                  
-      ⎿ Finished test profile in 3.1s                                                                                   
-      ⎿ test routes::login::rate_limited ... ok                                                                         
-      ⎿ test routes::api::quota_enforced ... █                                                                          
+  bash  cargo test --package agent -- retry                                                                             
+      $ cargo test --package agent -- retry                                                                             
+      running 8 tests                                                                                                   
+      test result: ok. 8 passed; 0 failed                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,12 +21,20 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ● Running · 4s · Esc to stop                                                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Type a follow-up, it will wait until this command finishes                                                     │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

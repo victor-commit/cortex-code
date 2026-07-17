@@ -1,25 +1,26 @@
                                                                                                                         
-                                                                                                                        
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
-                                                                                                                        
-     ██████              ██                                                                                             
-    ██                   ██                                                                                             
-    ██        ████    █████   ████                                                                                      
-    ██       ██  ██  ██  ██  ██████                                                                                     
-    ██       ██  ██  ██  ██  ██                                                                                         
-     ██████   ████    █████   █████                                                                                     
-                                                                                                                        
-                                                                                                                        
-    Recent work                                                                                                         
-                                                                                                                        
-    Login timeout · safer session check ready                                                                           
-    Enter to resume                                                                                                     
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄                                                     
+                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀                                                     
+                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀                                                     
+                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀                                                     
+                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀                                                     
+                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀                                                     
+                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                     
                                                                                                                         
+                                                                                                                        
+                                                       Cortex                                                       
+                                                                                                                        
+                                           Cortex · ready in this workspace                                           
+                                                                                                                        
+                                                                                                                        
+                                     Tips: /model  /theme  /mcp  Shift+Tab for mode                                     
+                                                                                                                        
+                                      Type a goal or paste a stack trace to begin.                                      
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Ask Code…                                                                                                      │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯ Ask Cortex to start a task…                                                                                      │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

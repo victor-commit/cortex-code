@@ -1,23 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Connections                                                                                                         
-    Add an API key for OpenAI                                                                                           
-                                                                                                                        
-    The key is never shown in full. Only this device validates it.                                                      
-                                                                                                                        
-    Provider · OpenAI · locked for this connection                                                                      
+    Paste an XAI API key                                                                                                
+    Never paint real secrets. Keys stay local.                                                                          
                                                                                                                         
                                                                                                                         
-    API key                                                                                                             
-    sk- ························ 4f2a           █                                                                       
                                                                                                                         
-    ● Looks valid · ready to connect.                                                                                   
                                                                                                                         
-    Saved in removable local storage on this machine · never echoed.                                                    
+    ╭──────────────────────────────────────────────╮                                                                    
+    │  xai-••••••••••••••••••••••••••••  █         │                                                                    
+    ╰──────────────────────────────────────────────╯                                                                    
                                                                                                                         
-    Cancel discards only what you typed. Provider and method stay selected.                                             
+    Or set XAI_API_KEY in your environment and reload.                                                                  
                                                                                                                         
+    Enter to save key · Esc to back                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,12 +26,15 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ API key · OpenAI                                                                                                 │  
-  │ Local key stays on this device and can be removed later.                                                         │  
-  │ › Connect                                                                                                        │  
-  │   Esc to cancel · discard key input                                                                              │  
-  │ Cancel returns to method choice without saving the key.                                                          │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                      ctrl+d  quit                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

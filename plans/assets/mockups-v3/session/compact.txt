@@ -1,21 +1,22 @@
                                                                                                                         
-                                                                                                                        
-    Current conversation                                                                                                
-    Continue from the compacted conversation summary.                                                                   
-     › You · /compact                                                                                                   
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
+  Compact recap · auto-compact after long tool stream                                                                   
                                                                                                                         
-    Conversation compacted                                                                                              
+    Kept: retry helper + rate-limit plan + failing floors.                                                              
+    Dropped: intermediate search spills and partial shells.                                                             
                                                                                                                         
-    → Found the shared rate-limit guard and the two route call sites.                                                   
-    → Confirmed login and API reuse one safety rule.                                                                    
-    → Next: write a short regression note, then run the focused suite.                                                  
+    Context  184k / 1.0M  after compact                                                                                 
                                                                                                                         
-    The full transcript is preserved in this session.                                                                   
                                                                                                                         
-    › 18 earlier turns stay available · Enter to expand full history                                                    
+  ❯ You                                                                                                                 
+    Continue from the recap: finish the floor case.                                                                     
+                                                                                                                        
+                                                                                                                        
+  ◆ Cortex                                                                                                                
+    Picking up from the recap. Opening floors next.                                                                     
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Resume from the compacted summary                                                                              │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    Enter to send                                                                                                       
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

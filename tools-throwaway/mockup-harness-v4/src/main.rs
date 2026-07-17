@@ -1,9 +1,9 @@
-//! Public pure-Cortex dump CLI (F0 chrome foundation).
+//! Public pure-Cortex dump CLI (F1–F3 auth + conversation + tools).
 //!
 //! Commands:
-//!   --list                 list pilot IDs
-//!   --publish-pilots       render + publish login + chat-turn into mockups-v3
-//!   --publish <id>         publish one pilot id
+//!   --list                 list implemented IDs
+//!   --publish-pilots       render + publish all F1–F3 IDs into mockups-v3
+//!   --publish <id>         publish one id
 
 use std::process::ExitCode;
 
@@ -16,7 +16,7 @@ fn main() -> ExitCode {
     if args == ["--list"] {
         for pilot in mockup_harness_v4::list_pilots() {
             println!(
-                "{}\t{}\timplemented\tpilot\tpure-cortex-shell",
+                "{}\t{}\timplemented\tf1-f3\tpure-cortex-shell",
                 pilot.category, pilot.id
             );
         }
@@ -68,6 +68,84 @@ fn main() -> ExitCode {
             }
         };
     }
+
+    // Optional filter publish: --publish-batch auth|conversation|tools
+    if args.len() == 2 && args[0] == "--publish-batch" {
+        let batch = args[1].as_str();
+        let filter: Box<dyn Fn(&str) -> bool> = match batch {
+            "auth" => Box::new(|id| {
+                matches!(
+                    id,
+                    "login"
+                        | "connect-provider"
+                        | "connect-method"
+                        | "connect-oauth"
+                        | "connect-apikey"
+                        | "connect-connected"
+                        | "connect-disconnect"
+                )
+            }),
+            "conversation" => Box::new(|id| {
+                matches!(
+                    id,
+                    "home"
+                        | "chat-turn"
+                        | "chat-long-scroll"
+                        | "streaming"
+                        | "reasoning"
+                        | "reasoning-collapsed"
+                        | "rich-response"
+                        | "empty"
+                        | "toasts"
+                )
+            }),
+            "tools" => Box::new(|id| {
+                matches!(
+                    id,
+                    "tool-calls"
+                        | "tool-running"
+                        | "tool-success"
+                        | "tool-success-expanded"
+                        | "tool-failed"
+                        | "tool-task"
+                        | "tool-task-expanded"
+                        | "shell"
+                        | "todo-list"
+                        | "compact"
+                        | "diff-edit"
+                )
+            }),
+            other => {
+                eprintln!("unknown batch: {other} (auth|conversation|tools)");
+                return ExitCode::from(2);
+            }
+        };
+        let mut ok = true;
+        for spec in mockup_harness_v4::list_pilots() {
+            if !filter(spec.id) {
+                continue;
+            }
+            match mockup_harness_v4::publish_pilot(spec) {
+                Ok(result) => println!(
+                    "published {}/{} txt={} png={}",
+                    result.category,
+                    result.id,
+                    result.txt_sha256,
+                    result.png_sha256.as_deref().unwrap_or("-")
+                ),
+                Err(error) => {
+                    eprintln!("publish {id} failed: {error}", id = spec.id);
+                    ok = false;
+                }
+            }
+        }
+        return if ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(3)
+        };
+    }
+
     eprintln!("usage error");
     print_usage();
     ExitCode::from(2)
@@ -75,9 +153,10 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "mockup-harness-v4 (pure Cortex dump)\n\
+        "mockup-harness-v4 (pure Cortex dump F1-F3)\n\
          --list\n\
          --publish-pilots\n\
-         --publish <login|chat-turn>\n"
+         --publish <id>\n\
+         --publish-batch <auth|conversation|tools>\n"
     );
 }

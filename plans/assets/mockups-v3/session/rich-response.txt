@@ -1,40 +1,40 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
-     › You · Find where the server applies the rate limit and explain the safe path.                                    
+  ❯ You                                                                                                                 
+    Document the recovery procedure with steps and a sample.                                                            
+                                                                                                                        
+  ◆ Cortex                                                                                                                
+    Recovery procedure                                                                                                  
+                                                                                                                        
+    1. Stop the worker with [stop] or Ctrl+c.                                                                           
+    2. Clear temp keys that hold stale membership.                                                                      
+    3. Re-run the suite and confirm the counter rebuilds.                                                               
+                                                                                                                        
+      cargo test --test flush_root_retry                                                                                
+      # expect: membership rebuilt · 0 flaky                                                                            
+      cargo test --test rate_limit_floors                                                                               
+                                                                                                                        
+    See also: docs/recovery.md for the long form.                                                                       
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
-                                                                                                                        
-    The shared request guard applies the limit before route work begins.                                                
-                                                                                                                        
-    Both login and API routes reuse it, so the same safety rule stays in place.                                         
                                                                                                                         
                                                                                                                         
-    Where                 How the guard applies it                                                                      
-    Login route           Stops an invalid request before handler work.                                                 
-    API routes            Reuses the same check for authenticated requests.                                             
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
-      fn authorize_request(request: &Request) -> Result<Session, AuthError> {                                           
-          let session = shared_guard(request)?;                                                                         
-          apply_rate_limit(&session)?;                                                                                  
-          Ok(session)                                                                                                   
-      }                                                                                                                 
                                                                                                                         
-      c to copy code                                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                  │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    Enter to send                                                                                                       
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

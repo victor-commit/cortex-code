@@ -3,13 +3,14 @@
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
-    paint_braille_logo, paint_login_quit, paint_top_branch_bar, DEVICE_CODE,
+    paint_braille_logo, paint_login_quit, paint_top_branch_bar, reject_copper_residual,
+    AUTH_PATH, DEMO_BRANCH, DEVICE_CODE,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme};
 
 pub fn render() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_top_branch_bar(&mut canvas, "master", "/projects/cortex-code")?;
+    paint_top_branch_bar(&mut canvas, DEMO_BRANCH, AUTH_PATH)?;
     paint_braille_logo(&mut canvas, 5)?;
 
     canvas.write_centered(
@@ -39,15 +40,7 @@ pub fn render() -> Result<Canvas, String> {
         TextStyle::plain(ColorToken::Muted),
     )?;
     paint_login_quit(&mut canvas)?;
-
-    // Hard guarantee: pure Cortex, not Cortex Identity.
-    let text = canvas.to_text();
-    if text.contains("Code") && text.contains("Connections") {
-        return Err("login surface regressed into Cortex copper identity".to_owned());
-    }
-    if text.contains("Code needs a provider") {
-        return Err("copper glyph residual and identity copy in login".to_owned());
-    }
+    reject_copper_residual(&canvas.to_text())?;
     Ok(canvas)
 }
 
@@ -65,12 +58,11 @@ mod tests {
         assert!(text.contains("Waiting for approval"));
         assert!(text.contains("ctrl+d  quit"));
         assert!(text.contains(''));
-        // braille block present
+        assert!(text.contains("/projects/demo"));
+        assert!(!text.contains("cortex-code"));
         assert!(text.chars().any(|c| (0x2800..=0x28FF).contains(&(c as u32))));
-        // no Cortex product brand monument
         assert!(!text.contains("Connect a model provider"));
         assert!(!text.lines().any(|l| l.trim() == "Code"));
-        // 40x120
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 40);
         assert!(lines.iter().all(|l| l.chars().count() == 120));

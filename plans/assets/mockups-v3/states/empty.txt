@@ -1,19 +1,20 @@
                                                                                                                         
-                                                                                                                        
-    Empty conversation                                                                                                  
-    Start a new conversation                                                                                            
-                                                                                                                        
-    No messages yet. Type below to begin, or resume earlier work.                                                       
-    Ready · Claude Opus 4.8 · How Code should work · Careful edits                                                      
-                                                                                                                        
-    Secondary · /resume previous sessions · /model · /theme · change work style                                         
-    Those configuration detours return here without inventing a transcript.                                             
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    New agent shell                                                                                                     
+                                                                                                                        
+    No turns yet. Describe a goal or paste a stack trace.                                                               
+                                                                                                                        
+    Model ready · Cortex · always-approve                                                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Ask Code to start a task                                                                                       │  
-  │   Claude Opus 4.8 · Careful edits                                                                                │  
+  │ ❯ What should Cortex work on?                                                                                      │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    Primary start · resume and settings stay secondary                                                                  
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

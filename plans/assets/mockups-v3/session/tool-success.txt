@@ -1,20 +1,21 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
-     › You · Find where the server applies the rate limit and explain the safe path.                                    
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    The result shows the shared guard applied by both login and API routes.                                             
+  ❯ You                                                                                                                 
+    Inspect the retry helper and tighten the shell path.                                                                
                                                                                                                         
                                                                                                                         
-    ✓ Searched project code · 0.4s · 3 matches in 400 files                                                             
+  ◆ Cortex                                                                                                                
+                                                                                                                        
+  ✓ Shell  cargo test retry  ·  1.8s                                                                                    
+    ⎿ exit 0 · 24 tests passed                                                                                          
+                                                                                                                        
+  ✓ Edit  crates/agent/src/retry.rs                                                                                     
+    ⎿ +12 / -4  ·  Enter to expand output                                                                               
                                                                                                                         
                                                                                                                         
-    Shared guard applied · ready for the full answer.                                                                   
-                                                                                                                        
+  ◆ Cortex                                                                                                                
+    Retry helper is covered. Ready for the rate-limit floor case.                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                  │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    Enter to continue                                                                                                   
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

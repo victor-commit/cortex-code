@@ -1,15 +1,16 @@
-//! F0 pure product chrome unit gates: palette hex, glyph coverage, logo/login smoke.
+//! Pure product chrome + F1-F3 paint unit gates.
 
 use mockup_harness_v4::chrome::canvas::Canvas;
 use mockup_harness_v4::chrome::components::{
     paint_braille_logo, paint_prompt_jewel, paint_putty_footer, paint_top_branch_bar,
-    paint_turn_status_busy, DEVICE_CODE, MODEL_LABEL, PROMPT_ARROW, BRAILLE_LOGO,
+    paint_turn_status_busy, reject_copper_residual, DEVICE_CODE, MODEL_LABEL, PROMPT_ARROW,
+    BRAILLE_LOGO,
 };
 use mockup_harness_v4::chrome::tokens::{
     glyph_allowed, glyph_rendering, palette, validate_glyphs, ColorToken, FORBIDDEN_COPPER_ACCENT,
     GlyphRendering, TextStyle, Theme, ALLOWED_GLYPHS,
 };
-use mockup_harness_v4::screens::{render_pilot, list_pilots};
+use mockup_harness_v4::screens::{list_pilots, render_pilot};
 
 #[test]
 fn palette_cortexnight_identity_hex() {
@@ -37,10 +38,10 @@ fn glyph_coverage_prompt_diamonds_braille_stop_putty() {
     for c in [
         '❯', '◆', '◇', '◈', '◉', '◎', '•', '⧉', '✓', '✗', '⇣', '', '▸', '▾', '·',
     ] {
-        assert!(glyph_allowed(c), "glyph {c} should be allowed");
+        assert!(glyph_allowed(c), "glyph should be allowed: {c}");
     }
     for c in ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] {
-        assert!(glyph_allowed(c), "spinner {c}");
+        assert!(glyph_allowed(c), "spinner should be allowed: {c}");
     }
     assert!(glyph_allowed('\u{2801}'));
     assert!(glyph_allowed('\u{28FF}'));
@@ -61,7 +62,7 @@ fn glyph_coverage_prompt_diamonds_braille_stop_putty() {
 #[test]
 fn logo_login_smoke_cells() {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_top_branch_bar(&mut canvas, "master", "/projects/cortex-code").unwrap();
+    paint_top_branch_bar(&mut canvas, "master", "/projects/demo").unwrap();
     paint_braille_logo(&mut canvas, 5).unwrap();
     canvas
         .write_centered(16, DEVICE_CODE, TextStyle::bold(ColorToken::Bright))
@@ -81,23 +82,74 @@ fn logo_login_smoke_cells() {
 }
 
 #[test]
-fn pilot_login_and_chat_turn_no_copper_brand() {
-    assert_eq!(list_pilots().len(), 2);
-    let login = render_pilot("login").expect("login");
-    let login_text = login.to_text();
-    assert!(login_text.contains(DEVICE_CODE));
-    assert!(login_text.contains("Waiting for approval"));
-    assert!(!login_text.contains("Connect a model provider"));
-    assert!(!login_text.contains("Code needs a provider"));
+fn f1_f3_inventory_is_twenty_seven() {
+    assert_eq!(list_pilots().len(), 27);
+    let ids: Vec<&str> = list_pilots().iter().map(|p| p.id).collect();
+    for expected in [
+        "login",
+        "connect-oauth",
+        "chat-turn",
+        "streaming",
+        "empty",
+        "toasts",
+        "tool-running",
+        "diff-edit",
+        "shell",
+        "todo-list",
+        "compact",
+    ] {
+        assert!(ids.contains(&expected), "missing id {expected}");
+    }
+}
 
-    let chat = render_pilot("chat-turn").expect("chat-turn");
-    let chat_text = chat.to_text();
-    assert!(chat_text.contains(PROMPT_ARROW));
-    assert!(chat_text.contains(MODEL_LABEL));
-    assert!(chat_text.contains("always-approve"));
-    assert!(chat_text.contains("Shift+Tab:mode"));
-    assert!(!chat_text.contains("Claude Opus"));
-    assert!(!chat_text.contains("Code ·"));
+#[test]
+fn all_f1_f3_screens_reject_copper_brand() {
+    for spec in list_pilots() {
+        let canvas = render_pilot(spec.id).unwrap_or_else(|e| panic!("{}: {e}", spec.id));
+        let text = canvas.to_text();
+        reject_copper_residual(&text).unwrap_or_else(|e| panic!("{}: {e}", spec.id));
+        assert!(!text.contains("Claude Opus"), "claude residual: {}", spec.id);
+        assert!(
+            !text.contains("Authorize OpenAI"),
+            "openai residual: {}",
+            spec.id
+        );
+        assert!(!text.contains("Code ·"), "code brand residual: {}", spec.id);
+        assert!(
+            !text.contains("Connect a model provider"),
+            "provider residual: {}",
+            spec.id
+        );
+        assert!(!text.contains("Ask Code"), "ask code residual: {}", spec.id);
+        assert!(!text.contains("Work mode"), "work mode residual: {}", spec.id);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 40, "row count for {}", spec.id);
+        let bad_width = lines.iter().any(|l| l.chars().count() != 120);
+        assert!(!bad_width, "row width for {}", spec.id);
+    }
+}
+
+#[test]
+fn device_auth_freeze_deterministic_codes() {
+    for id in ["login", "connect-oauth"] {
+        let text = render_pilot(id).unwrap().to_text();
+        assert!(
+            text.contains(DEVICE_CODE),
+            "{id} must freeze device code {DEVICE_CODE}"
+        );
+        // No live wall-clock theatre.
+        assert!(!text.contains("Elapsed"), "{id} has live elapsed timer");
+    }
+}
+
+#[test]
+fn busy_frames_expose_stop_and_putty() {
+    let running = render_pilot("tool-running").unwrap().to_text();
+    assert!(running.contains("[stop]"));
+    assert!(running.contains("Shift+Tab:mode"));
+    let streaming = render_pilot("streaming").unwrap().to_text();
+    assert!(streaming.contains("[stop]"));
+    assert!(streaming.contains(MODEL_LABEL));
 }
 
 #[test]
@@ -120,8 +172,11 @@ fn prompt_jewel_and_putty_present() {
         "always-approve",
     )
     .unwrap();
-    paint_putty_footer(&mut canvas, "Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts")
-        .unwrap();
+    paint_putty_footer(
+        &mut canvas,
+        "Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts",
+    )
+    .unwrap();
     let text = canvas.to_text();
     assert!(text.contains(PROMPT_ARROW));
     assert!(text.contains(MODEL_LABEL));
@@ -132,17 +187,27 @@ fn prompt_jewel_and_putty_present() {
 
 #[cfg(feature = "png")]
 #[test]
-fn png_glyph_coverage_login_and_chat() {
+fn png_glyph_coverage_sample_batch() {
     use mockup_harness_v4::chrome::canvas::render_png;
-    for id in ["login", "chat-turn"] {
+    for id in [
+        "login",
+        "chat-turn",
+        "streaming",
+        "tool-running",
+        "diff-edit",
+        "empty",
+        "connect-oauth",
+    ] {
         let canvas = render_pilot(id).expect(id);
         let bytes = render_png(&canvas).expect("png");
-        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "{id} png magic");
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "{id} missing png magic"
+        );
         assert!(bytes.len() > 1_000, "{id} png too small");
-        // PNG IHDR chunk: after 8-byte signature, 4 len + 4 "IHDR" then width/height.
         assert_eq!(&bytes[12..16], b"IHDR", "{id} missing IHDR");
         let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
         let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-        assert_eq!((width, height), (1200, 840), "{id}");
+        assert_eq!((width, height), (1200, 840), "{id} png size");
     }
 }

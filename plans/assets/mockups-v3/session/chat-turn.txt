@@ -1,5 +1,5 @@
                                                                                                                         
-   master  /projects/demo                                                                                              
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
   ❯ You                                                                                                                 

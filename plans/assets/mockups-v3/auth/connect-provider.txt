@@ -1,40 +1,40 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Connections                                                                                                         
-    GPT-5.2 Codex is waiting for a provider connection.                                                                 
-                                                                                                                        
-    Choose a provider                                                                                                   
-                                                                                                                        
-    Each row shows whether a provider is ready, connected, or still needs sign-in.                                      
-                                                                                                                        
-                                                                                                                        
-      OpenRouter                                                                                                        
-      Unified access to many models · Connected · in use                                                                
-                                                                                                                        
-      Anthropic                                                                                                         
-      Claude models for everyday coding · Connected                                                                     
-                                                                                                                        
-    › OpenAI                                                                                                            
-      GPT-5.2 Codex and related models · Not connected                                                                  
-                                                                                                                        
-      Google                                                                                                            
-      Gemini models for broad tasks · Not connected                                                                     
+                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄                                                     
+                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀                                                     
+                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀                                                     
+                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀                                                     
+                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀                                                     
+                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀                                                     
+                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                     
                                                                                                                         
                                                                                                                         
+                                               Sign in to use Cortex                                                
+                                                                                                                        
+                                    xAI account powers Cortex for this workspace.                                     
                                                                                                                         
                                                                                                                         
+    Account                                                                                                             
+    One cloud account · no multi-vendor sprawl                                                                          
                                                                                                                         
+    › xAI Cortex (recommended)                                                                                            
+      Paste XAI_API_KEY later                                                                                           
                                                                                                                         
+    Enter to continue · Esc to quit                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · OpenAI · Not connected                                                                                │  
-  │ Connecting unlocks GPT-5.2 Codex for the paused model choice.                                                    │  
-  │ › Connect OpenAI                                                                                                 │  
-  │   Esc to go back                                                                                                 │  
-  │ Back keeps provider choice and drafts unchanged.                                                                 │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                      ctrl+d  quit                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

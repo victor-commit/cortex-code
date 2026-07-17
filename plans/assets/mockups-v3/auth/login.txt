@@ -1,5 +1,5 @@
                                                                                                                         
-   master /projects/cortex-code                                                                                        
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
