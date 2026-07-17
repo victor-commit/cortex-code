@@ -1,29 +1,30 @@
                                                                                                                         
+   master  /projects/demo                                                                                              
                                                                                                                         
-    Paused conversation                                                                                                 
+                                                                                                                        
+  ❯ You                                                                                                                 
     Check the retry path before we merge.                                                                               
-                                                                                                                        
-     › You · Check the retry path before we merge.                                                                      
-                                                                                                                        
-    Check the retry path in @src/net/retry_policy.rs                                                                    
-    Then explain the failure path that still needs coverage before the merge;                                           
-      include a concise test plan with the visible recovery behavior.                                                   
-    Keep the summary short before we merge.                                                                             
+    Keep the summary short and list one follow-up test.                                                                 
                                                                                                                         
                                                                                                                         
-    Code · Same turn resumed                                                                                            
+  ◆ Cortex                                                                                                                
+    Applied the retry guard and covered the failure path.                                                               
+    Follow-up: add an integration case for rate-limit floors.                                                           
                                                                                                                         
-    Applied 1 included hunk to src/net/retry_policy.rs.                                                                 
-    One review hunk remains pending · Git index unchanged                                                               
-                                                                                                                        
-    Paused activity · retry-policy edit · still open                                                                    
-    Session · retry-path review · same paused turn                                                                      
-    Turn · same pause window · resumed                                                                                  
+    Thought for 1s                                                                                                      
+    ◇ expanded thinking kept collapsed in this idle frame                                                               
                                                                                                                         
                                                                                                                         
-    Later draft · not sent                                                                                              
                                                                                                                         
-    Add a short note about the remaining test hunk.                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Add a short note about the remaining test hunk.                                                                │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯ Add a note about the remaining test hunk…                                                                      │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    Enter to send                                                                                                       
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

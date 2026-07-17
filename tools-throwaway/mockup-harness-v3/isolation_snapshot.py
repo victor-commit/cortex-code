@@ -15,6 +15,7 @@ from typing import Any, NoReturn
 
 ALLOWED_PREFIXES = (
     "tools-throwaway/mockup-harness-v3/",
+    "tools-throwaway/mockup-harness-v4/",
     "plans/assets/mockups-v3/",
     "plans/assets/mockups-v3-gates/",
 )

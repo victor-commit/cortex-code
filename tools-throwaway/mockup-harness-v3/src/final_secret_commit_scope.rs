@@ -58,6 +58,7 @@ pub const SECRET_SENTINELS: &[&str] = &[
 /// Path prefixes every ledgered mission commit is allowed to touch.
 pub const ALLOWED_COMMIT_PREFIXES: &[&str] = &[
     "tools-throwaway/mockup-harness-v3/",
+    "tools-throwaway/mockup-harness-v4/",
     "plans/assets/mockups-v3/",
     "plans/assets/mockups-v3-gates/",
 ];

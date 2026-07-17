@@ -1,0 +1,6 @@
+mockup-harness-v4-pure-cortex-manifest-v1
+generator=mockup-harness-v4
+identity=pure-cortex-no-copper
+theme=CortexNight
+artifact	auth/login	txt=c7ee3995997d5ff3e7183e7bd6640622ca083ea5acbf0b2e64fb02bb9186d295	png=3191cc0527a8ec10714346bbcd63a00d1100b271074eae564e8da077a93fdb47
+artifact	session/chat-turn	txt=63e3d40a134f1987f625e860200d6edecf2a4cc433275eda1aa8dba307d21f0c	png=9d503f6d628f2a5b5fac6d60a4e8a26daf91596ddfd1a903391b6154678e58e6
