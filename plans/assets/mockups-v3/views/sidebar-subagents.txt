@@ -5,8 +5,8 @@
                                                               │                                                         
                                                               │ Live                                                    
                                                               │ ● audit-subagent                                        
-  ◆ Cortex                                                      │   scanning retry races                                  
-    Retry path is guarded. Sidebar stays task-local.          │                                                         
+  Retry path is guarded. Sidebar stays task-local.            │   scanning retry races                                  
+  Context facts stay next to the live turn.                   │                                                         
                                                               │ Done                                                    
                                                               │ ✓ coverage-subagent                                     
                                                               │   1 open follow-up                                      

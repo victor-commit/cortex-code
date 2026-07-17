@@ -1,40 +1,40 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-                                                                                                                        
-    Session status                                                                                                      
-    Active configuration · return keeps draft and turn                                                                  
+  ❯ /session-info                                                                                                       
                                                                                                                         
                                                                                                                         
-    Active now                                                                                                          
-    Model · Cortex                                                                                                    
-    Mode · always-approve · Shift+Tab cycles                                                                            
-    Project · /projects/demo · master · clean                                                                           
-    Session · Retry policy review · 17 turns                                                                            
+  Title: Retry policy review                                                                                            
+  Shell version: 1.0.0                                                                                                  
+  Session ID: sess_demo_retry_01                                                                                        
+  Working directory: /projects/demo                                                                                     
+  Model: Cortex                                                                                                       
+  Turn: 17                                                                                                              
+  Context: 9500 / 500000 tokens (1.9%)                                                                                  
                                                                                                                         
-    Needs attention                                                                                                     
-    ● Docs research · needs sign-in before next lookup                                                                  
-    ○ Local tools · ready · no blockers                                                                                 
+  Context                                                                                                               
+  9.5k / 500k tokens (1.9%)                                                                                             
+  Cortex                                                                                                              
                                                                                                                         
+  ◆ ◆ ◆ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇                                                                               
+  ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇                                                                               
                                                                                                                         
-    Context  ████████░░░░░░░░░░░░  8.5K / 1.0M                                                                          
+  ◆ System prompt     1.2k tokens  (0.2%)                                                                               
+  ◆ Messages          7.1k tokens  (1.4%)                                                                               
+  ◇ Free              490k tokens   (98%)                                                                               
                                                                                                                         
-    Advanced raw metadata stays folded until Details                                                                    
+  ◈ Tool definitions  5.6k tokens  (1.1%) · 12 tools                                                                    
+  ◈ Skills            2.4k tokens  (0.5%) · 21 skills                                                                   
+  ◈ MCP servers        320 tokens  (0.1%) ·  4 servers                                                                  
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  Auto-compact at 85% · ~490k tokens remaining                                                                          
+  Turns: 17 · Tool calls: 42 · Compactions: 0                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Esc to return · keeps draft, selection, and origin                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

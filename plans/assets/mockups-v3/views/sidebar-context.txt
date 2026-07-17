@@ -3,17 +3,17 @@
                                                                                                                         
   ❯ Keep the chat visible while inspecting context.           │ Context                                                 
                                                               │                                                         
-                                                              │ Usage                                                   
-                                                              │ 8.5K / 1.0M                                             
-  ◆ Cortex                                                      │ ████░░░░░░  1%                                          
-    Retry path is guarded. Sidebar stays task-local.          │                                                         
-                                                              │ Memory                                                  
-                                                              │ · retry floors policy                                   
-                                                              │ · workspace master                                      
+                                                              │ 9.5k / 500k tokens                                      
+                                                              │ (1.9%)                                                  
+  Retry path is guarded. Sidebar stays task-local.            │                                                         
+  Context facts stay next to the live turn.                   │ ◆ Messages  7.1k                                        
+                                                              │ ◆ System    1.2k                                        
+                                                              │ ◇ Free      490k                                        
                                                               │                                                         
-                                                              │ Project                                                 
-                                                              │ /projects/demo                                          
+                                                              │ ◈ Tools  12 · 5.6k                                      
+                                                              │ ◈ Skills 21 · 2.4k                                      
                                                               │                                                         
+                                                              │ cwd /projects/demo                                      
                                                               │                                                         
                                                               │                                                         
                                                               │                                                         

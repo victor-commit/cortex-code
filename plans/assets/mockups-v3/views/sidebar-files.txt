@@ -5,8 +5,8 @@
                                                               │                                                         
                                                               │ crates/agent/src/                                       
                                                               │ › retry.rs                                              
-  ◆ Cortex                                                      │   rate_limit.rs                                         
-    Retry path is guarded. Sidebar stays task-local.          │   mod.rs                                                
+  Retry path is guarded. Sidebar stays task-local.            │   rate_limit.rs                                         
+  Context facts stay next to the live turn.                   │   mod.rs                                                
                                                               │                                                         
                                                               │ tests/                                                  
                                                               │   retry_floors.rs                                       

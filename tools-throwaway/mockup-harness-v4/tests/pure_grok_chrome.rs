@@ -204,11 +204,17 @@ fn f4_f6_markers_putty_and_stop() {
     assert!(interrupt.contains("[stop]"));
     assert!(interrupt.contains(MODEL_LABEL));
     let help = render_pilot("help").unwrap().to_text();
-    assert!(help.contains("[stop]"));
-    assert!(help.contains("Shift+Tab"));
+    // Product Ctrl+. surface is categorical Keyboard Shortcuts modal, not a
+    // flat putty essay that invents `[stop]` as a typed key row.
+    assert!(
+        help.contains("Keyboard Shortcuts") || help.contains("Essentials"),
+        "help must paint shortcuts_help categories"
+    );
+    assert!(help.contains("Shift+Tab") || help.contains("Ctrl+."));
     let status = render_pilot("status").unwrap().to_text();
     assert!(status.contains(MODEL_LABEL));
     assert!(!status.contains("Claude Opus"));
+    assert!(!status.contains("Needs attention"));
 }
 
 #[test]
@@ -830,5 +836,166 @@ fn published_orchestration_set_structure_language_bans() {
         let text = std::fs::read_to_string(&env).unwrap();
         assert!(text.contains("$ cargo") || text.contains("$ "));
         assert!(!text.contains("Shell ·"));
+    }
+}
+
+/// VAL-V3-STRUCT-010: help = shortcuts_help modal; status = session-info + context.
+#[test]
+fn help_status_product_surfaces() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+
+    let invent_bans = [
+        "Needs attention",
+        "Session status",
+        "Active configuration · return keeps draft",
+        "Local dock bylines",
+        "putty footer remains",
+        "context-sensitive hints match the putty",
+        "match the putty",
+        "Advanced raw metadata stays folded",
+        "◆ Cortex",
+        "❯ You",
+    ];
+
+    let help = render_pilot("help")
+        .unwrap_or_else(|e| panic!("help: {e}"))
+        .to_text();
+    reject_structure_residual(&help).unwrap_or_else(|e| panic!("help residual: {e}"));
+    for invent in invent_bans {
+        assert!(!help.contains(invent), "help invent {invent:?}");
+    }
+    assert!(
+        help.contains("Keyboard Shortcuts"),
+        "help needs product modal title"
+    );
+    assert!(
+        help.contains("Essentials"),
+        "help needs Essentials category"
+    );
+    // At least one collapsed later category from CATEGORY_ORDER.
+    let cat_hit = help.contains("Input")
+        || help.contains("Conversation Navigation")
+        || help.contains("Conversation Actions")
+        || help.contains("Panels")
+        || help.contains("Session")
+        || help.contains("Dashboard");
+    assert!(cat_hit, "help needs additional category headers");
+    assert!(
+        help.contains("Enter details")
+            || help.contains("Esc close")
+            || help.contains("/ search")
+            || help.contains("expand"),
+        "help needs modal affordance chrome"
+    );
+    assert!(
+        help.contains("9.5K / 500K") || help.contains("K / "),
+        "help inherits M1 auth budget"
+    );
+    assert!(
+        help.contains("Shift+Tab:mode | Ctrl+c:cancel") || help.contains("Shift+Tab"),
+        "help putty chrome"
+    );
+    // Flat putty lecture / gallery essay primary is banned.
+    assert!(!help.contains("This putty"));
+    assert!(!help.contains("gallery"));
+
+    let status = render_pilot("status")
+        .unwrap_or_else(|e| panic!("status: {e}"))
+        .to_text();
+    reject_structure_residual(&status).unwrap_or_else(|e| panic!("status residual: {e}"));
+    for invent in invent_bans {
+        assert!(!status.contains(invent), "status invent {invent:?}");
+    }
+    // Compact /session-info facts.
+    let session_facts = status.contains("Session ID")
+        || status.contains("Working directory")
+        || status.contains("session-info");
+    assert!(session_facts, "status needs session-info facts");
+    assert!(
+        status.contains("Model") || status.contains(MODEL_LABEL),
+        "status model fact"
+    );
+    // Compact /context facts (categories / usage), not mission Needs attention.
+    let context_facts = status.contains("Context")
+        || status.contains("tokens")
+        || status.contains("Tool definitions")
+        || status.contains("Auto-compact");
+    assert!(context_facts, "status needs context compact facts");
+    assert!(
+        status.contains("9.5K / 500K")
+            || status.contains("8.5K / 1.0M")
+            || status.contains("K / ")
+            || status.contains("tokens"),
+        "status inherits context budget facts"
+    );
+    assert!(
+        status.contains("Shift+Tab:mode | Ctrl+c:cancel") || status.contains("Shift+Tab"),
+        "status putty chrome"
+    );
+    assert!(!status.contains("Docs research · needs sign-in"));
+    assert!(!status.contains("return keeps draft and turn"));
+
+    // Closely related inspectors sharing invent chrome must not keep nameplates.
+    let ctx = render_pilot("sidebar-context")
+        .unwrap_or_else(|e| panic!("sidebar-context: {e}"))
+        .to_text();
+    reject_structure_residual(&ctx).unwrap_or_else(|e| panic!("sidebar-context residual: {e}"));
+    assert!(!ctx.contains("◆ Cortex"), "sidebar nameplate");
+    assert!(!ctx.contains("Needs attention"));
+    assert!(
+        ctx.contains("Context") || ctx.contains("tokens") || ctx.contains("K / "),
+        "sidebar-context compact facts"
+    );
+}
+
+/// Published help/status ban invent strings when gallery exists.
+#[test]
+fn published_help_status_structure_language_bans() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plans/assets/mockups-v3/views");
+    if !root.exists() {
+        return;
+    }
+    let invent_bans = [
+        "Needs attention",
+        "Session status",
+        "Active configuration · return keeps draft",
+        "Local dock bylines",
+        "putty footer remains",
+        "match the putty",
+        "◆ Cortex",
+        "❯ You",
+    ];
+    for id in ["help", "status", "sidebar-context"] {
+        let path = root.join(format!("{id}.txt"));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("published views/{id}: {e}"));
+        for invent in invent_bans {
+            assert!(
+                !text.contains(invent),
+                "published {id} invent {invent:?}"
+            );
+        }
+        if id == "help" {
+            assert!(
+                text.contains("Keyboard Shortcuts") || text.contains("Essentials"),
+                "published help"
+            );
+        }
+        if id == "status" {
+            assert!(
+                text.contains("Session ID")
+                    || text.contains("Working directory")
+                    || text.contains("Context"),
+                "published status session/context facts"
+            );
+        }
     }
 }

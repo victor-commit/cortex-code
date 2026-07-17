@@ -1,11 +1,19 @@
 //! Pure views / side inspectors (F6).
 //!
 //! Status, timeline, MCP, diffs, help, review, theme galleries, and sidebars.
+//!
+//! Pure-structure M3 (VAL-V3-STRUCT-010):
+//! - `help` → `shortcuts_help` categorical Keyboard Shortcuts modal
+//! - `status` → compact `/session-info` + `/context` facts in shell
+//! - sidebars inherit shell chrome without `◆ Cortex` nameplates
+//!
+//! Source: `/tmp/grok-build-ref` views/shortcuts_help.rs, slash session_info /
+//! context, scrollback context_info.rs; mission pure-structure-law.
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
     paint_default_putty, paint_demo_top_bar, paint_detail_footer, paint_detail_header,
-    paint_user_turn, reject_copper_residual, MODEL_LABEL,
+    paint_dock_frame, paint_user_turn, reject_copper_residual, MODEL_LABEL,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme};
 
@@ -31,72 +39,123 @@ pub fn render(id: &str) -> Result<Canvas, String> {
     }
 }
 
+/// Compact `/session-info` + `/context` facts (product dispatch surfaces).
+///
+/// Never a "Session status" mission page or "Needs attention" checklist invent.
 fn status() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_detail_header(
+    paint_demo_top_bar(&mut canvas)?;
+    paint_user_turn(
         &mut canvas,
-        "Session status",
-        "Active configuration · return keeps draft and turn",
+        2,
+        &["/session-info"],
     )?;
-    canvas.write(7, 4, "Active now", TextStyle::bold(ColorToken::Bright))?;
+
+    // System-block style `/session-info` output (format_session_info).
+    canvas.write(5, 2, "Title: Retry policy review", TextStyle::plain(ColorToken::Text))?;
+    canvas.write(
+        6,
+        2,
+        "Shell version: 1.0.0",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+    canvas.write(
+        7,
+        2,
+        "Session ID: sess_demo_retry_01",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
     canvas.write(
         8,
-        4,
-        &format!("Model · {MODEL_LABEL}"),
-        TextStyle::plain(ColorToken::Text),
+        2,
+        "Working directory: /projects/demo",
+        TextStyle::plain(ColorToken::Secondary),
     )?;
     canvas.write(
         9,
-        4,
-        "Mode · always-approve · Shift+Tab cycles",
-        TextStyle::plain(ColorToken::Secondary),
+        2,
+        &format!("Model: {MODEL_LABEL}"),
+        TextStyle::plain(ColorToken::Text),
     )?;
-    canvas.write(
-        10,
-        4,
-        "Project · /projects/demo · master · clean",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
+    canvas.write(10, 2, "Turn: 17", TextStyle::plain(ColorToken::Secondary))?;
     canvas.write(
         11,
-        4,
-        "Session · Retry policy review · 17 turns",
-        TextStyle::plain(ColorToken::Secondary),
+        2,
+        "Context: 9500 / 500000 tokens (1.9%)",
+        TextStyle::plain(ColorToken::Muted),
     )?;
-    canvas.write(
-        13,
-        4,
-        "Needs attention",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
+
+    // Compact `/context` block facts (ContextInfoBlock layout).
+    canvas.write(13, 2, "Context", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         14,
-        4,
-        "● Docs research · needs sign-in before next lookup",
-        TextStyle::plain(ColorToken::Warn),
+        2,
+        "9.5k / 500k tokens (1.9%)",
+        TextStyle::plain(ColorToken::Text),
     )?;
+    canvas.write(15, 2, MODEL_LABEL, TextStyle::plain(ColorToken::Muted))?;
     canvas.write(
-        15,
-        4,
-        "○ Local tools · ready · no blockers",
+        17,
+        2,
+        "◆ ◆ ◆ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇",
         TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
         18,
-        4,
-        "Context  ████████░░░░░░░░░░░░  8.5K / 1.0M",
-        TextStyle::plain(ColorToken::Muted),
+        2,
+        "◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇",
+        TextStyle::plain(ColorToken::Dim),
     )?;
     canvas.write(
         20,
-        4,
-        "Advanced raw metadata stays folded until Details",
+        2,
+        "◆ System prompt     1.2k tokens  (0.2%)",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    canvas.write(
+        21,
+        2,
+        "◆ Messages          7.1k tokens  (1.4%)",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        22,
+        2,
+        "◇ Free              490k tokens   (98%)",
         TextStyle::plain(ColorToken::Dim),
     )?;
-    paint_detail_footer(
-        &mut canvas,
-        "Esc to return · keeps draft, selection, and origin",
+    canvas.write(
+        24,
+        2,
+        "◈ Tool definitions  5.6k tokens  (1.1%) · 12 tools",
+        TextStyle::plain(ColorToken::Secondary),
     )?;
+    canvas.write(
+        25,
+        2,
+        "◈ Skills            2.4k tokens  (0.5%) · 21 skills",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+    canvas.write(
+        26,
+        2,
+        "◈ MCP servers        320 tokens  (0.1%) ·  4 servers",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+    canvas.write(
+        28,
+        2,
+        "Auto-compact at 85% · ~490k tokens remaining",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    canvas.write(
+        29,
+        2,
+        "Turns: 17 · Tool calls: 42 · Compactions: 0",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+
+    paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
@@ -320,37 +379,95 @@ fn diff_viewer_staging() -> Result<Canvas, String> {
     finish(canvas)
 }
 
+/// `Ctrl+.` / `shortcuts_help` categorical modal (not a flat putty essay).
+///
+/// Categories follow product `CATEGORY_ORDER`: Essentials expanded first,
+/// remaining sections collapsed with counts. Modal footer affordances match
+/// source: nav / filter / expand / details / search / Esc close.
 fn help() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_detail_header(
+    // Live shell origin behind modal (transparent edges still show putty + top bar).
+    paint_demo_top_bar(&mut canvas)?;
+    paint_user_turn(
         &mut canvas,
-        "Shortcuts",
-        "Ctrl+. cheatsheet · context-sensitive hints match the putty",
+        2,
+        &["Continue the retry guard path when you're ready."],
     )?;
-    let rows = [
-        ("Shift+Tab", "cycle mode / permission chip"),
-        ("Ctrl+c", "cancel stream or clear draft step"),
-        ("Ctrl+.", "open this shortcuts help"),
-        ("/", "slash command menu"),
-        ("@", "file mention dropdown"),
-        ("[stop]", "halt the busy turn · keeps draft"),
-        ("Enter", "send · or apply focused dock action"),
-        ("Esc", "back / cancel · return to origin"),
-    ];
-    for (row, (key, meaning)) in (7u16..).zip(rows) {
-        canvas.write(row, 4, key, TextStyle::bold(ColorToken::Accent))?;
-        canvas.write(row, 18, meaning, TextStyle::plain(ColorToken::Text))?;
-    }
     canvas.write(
-        17,
-        4,
-        "Local dock bylines stay next to the action they control.",
-        TextStyle::plain(ColorToken::Muted),
+        5,
+        2,
+        "Retry floor is guarded. Use Ctrl+. for all shortcuts.",
+        TextStyle::plain(ColorToken::Dim),
     )?;
-    paint_detail_footer(
+
+    // ModalWindow-style chrome (command-palette appearance).
+    paint_dock_frame(
         &mut canvas,
-        "Esc to return · putty footer remains outside this view",
+        7,
+        28,
+        "Keyboard Shortcuts",
+        "↑/↓ nav · f filter · e/Space/→ expand · h collapse · Enter details · / search · Esc close",
     )?;
+
+    // Essentials section expanded (default_collapsed keeps only 0 open).
+    canvas.write(
+        9,
+        6,
+        "▾ Essentials  (4)",
+        TextStyle::bold(ColorToken::Bright),
+    )?;
+    canvas.write(
+        10,
+        8,
+        "› Enter          Send prompt",
+        TextStyle::bold(ColorToken::Accent),
+    )?;
+    canvas.write(
+        11,
+        8,
+        "  Tab            Focus prompt / scrollback",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        12,
+        8,
+        "  Shift+Tab      Cycle permission mode",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        13,
+        8,
+        "  Ctrl+c         Cancel turn / clear draft",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+
+    // Remaining categories collapsed (product default).
+    let collapsed = [
+        (15u16, "▸ Input  (6)"),
+        (16, "▸ Conversation Navigation  (12)"),
+        (17, "▸ Conversation Actions  (9)"),
+        (18, "▸ Panels  (7)"),
+        (19, "▸ Session  (5)"),
+        (20, "▸ Dashboard  (4)"),
+    ];
+    for (row, label) in collapsed {
+        canvas.write(row, 6, label, TextStyle::plain(ColorToken::Secondary))?;
+    }
+
+    canvas.write(
+        22,
+        6,
+        "Ctrl+. / Ctrl+X toggles this cheatsheet",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+    canvas.write(
+        23,
+        6,
+        "/help opens the command palette, not this modal",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+
+    paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
@@ -511,6 +628,8 @@ fn theme_gallery_light() -> Result<Canvas, String> {
 }
 
 /// Shared left transcript + narrow right inspector for sidebar IDs.
+///
+/// No `◆ Cortex` nameplate (pure-structure shell law). Dense assistant body only.
 fn paint_sidebar_shell(
     canvas: &mut Canvas,
     divider_col: u16,
@@ -523,11 +642,17 @@ fn paint_sidebar_shell(
         3,
         &["Keep the chat visible while inspecting context."],
     )?;
-    canvas.write(7, 2, "◆ Cortex", TextStyle::plain(ColorToken::Dim))?;
+    // Assistant stream without nameplate — dim markdown body only.
+    canvas.write(
+        7,
+        2,
+        "Retry path is guarded. Sidebar stays task-local.",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
     canvas.write(
         8,
-        4,
-        "Retry path is guarded. Sidebar stays task-local.",
+        2,
+        "Context facts stay next to the live turn.",
         TextStyle::plain(ColorToken::Dim),
     )?;
 
@@ -552,21 +677,23 @@ fn paint_sidebar_shell(
 
 fn sidebar_context() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
+    // Compact context facts matching /context categories (not Memory invent).
     paint_sidebar_shell(
         &mut canvas,
         62,
         "Context",
         &[
-            ("Usage", TextStyle::bold(ColorToken::Bright)),
-            ("8.5K / 1.0M", TextStyle::plain(ColorToken::Text)),
-            ("████░░░░░░  1%", TextStyle::plain(ColorToken::Muted)),
+            ("9.5k / 500k tokens", TextStyle::bold(ColorToken::Bright)),
+            ("(1.9%)", TextStyle::plain(ColorToken::Muted)),
             ("", TextStyle::plain(ColorToken::Dim)),
-            ("Memory", TextStyle::bold(ColorToken::Bright)),
-            ("· retry floors policy", TextStyle::plain(ColorToken::Secondary)),
-            ("· workspace master", TextStyle::plain(ColorToken::Secondary)),
+            ("◆ Messages  7.1k", TextStyle::plain(ColorToken::Text)),
+            ("◆ System    1.2k", TextStyle::plain(ColorToken::Muted)),
+            ("◇ Free      490k", TextStyle::plain(ColorToken::Dim)),
             ("", TextStyle::plain(ColorToken::Dim)),
-            ("Project", TextStyle::bold(ColorToken::Bright)),
-            ("/projects/demo", TextStyle::plain(ColorToken::Path)),
+            ("◈ Tools  12 · 5.6k", TextStyle::plain(ColorToken::Secondary)),
+            ("◈ Skills 21 · 2.4k", TextStyle::plain(ColorToken::Secondary)),
+            ("", TextStyle::plain(ColorToken::Dim)),
+            ("cwd /projects/demo", TextStyle::plain(ColorToken::Path)),
         ],
     )?;
     finish(canvas)

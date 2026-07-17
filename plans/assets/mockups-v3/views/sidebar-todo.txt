@@ -5,8 +5,8 @@
                                                               │                                                         
                                                               │ Plan                                                    
                                                               │ ✓ guard floor at 250ms                                  
-  ◆ Cortex                                                      │ › add floor integration                                 
-    Retry path is guarded. Sidebar stays task-local.          │   document jitter order                                 
+  Retry path is guarded. Sidebar stays task-local.            │ › add floor integration                                 
+  Context facts stay next to the live turn.                   │   document jitter order                                 
                                                               │   note rate-limit ceiling                               
                                                               │                                                         
                                                               │ 1 remaining open                                        

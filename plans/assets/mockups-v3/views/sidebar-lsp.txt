@@ -5,8 +5,8 @@
                                                               │                                                         
                                                               │ Diagnostics                                             
                                                               │ ● retry.rs:42                                           
-  ◆ Cortex                                                      │   floor_ms may underflow                                
-    Retry path is guarded. Sidebar stays task-local.          │ ○ rate_limit.rs                                         
+  Retry path is guarded. Sidebar stays task-local.            │   floor_ms may underflow                                
+  Context facts stay next to the live turn.                   │ ○ rate_limit.rs                                         
                                                               │   clean                                                 
                                                               │                                                         
                                                               │ Honest analog panel                                     

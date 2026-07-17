@@ -5,8 +5,8 @@
                                                               │                                                         
                                                               │ Attention                                               
                                                               │ ● Docs research                                         
-  ◆ Cortex                                                      │   needs sign-in                                         
-    Retry path is guarded. Sidebar stays task-local.          │                                                         
+  Retry path is guarded. Sidebar stays task-local.            │   needs sign-in                                         
+  Context facts stay next to the live turn.                   │                                                         
                                                               │ Ready                                                   
                                                               │ ○ Local tools                                           
                                                               │ ○ Memory notes                                          

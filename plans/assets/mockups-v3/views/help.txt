@@ -1,40 +1,40 @@
   ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-                                                                                                                        
-    Shortcuts                                                                                                           
-    Ctrl+. cheatsheet · context-sensitive hints match the putty                                                         
+  ❯ Continue the retry guard path when you're ready.                                                                    
                                                                                                                         
                                                                                                                         
-    Shift+Tab     cycle mode / permission chip                                                                          
-    Ctrl+c        cancel stream or clear draft step                                                                     
-    Ctrl+.        open this shortcuts help                                                                              
-    /             slash command menu                                                                                    
-    @             file mention dropdown                                                                                 
-    [stop]        halt the busy turn · keeps draft                                                                      
-    Enter         send · or apply focused dock action                                                                   
-    Esc           back / cancel · return to origin                                                                      
+  Retry floor is guarded. Use Ctrl+. for all shortcuts.                                                                 
+                                                                                                                        
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Keyboard Shortcuts                                                                                               │  
+  │   ▾ Essentials  (4)                                                                                              │  
+  │     › Enter          Send prompt                                                                                 │  
+  │       Tab            Focus prompt / scrollback                                                                   │  
+  │       Shift+Tab      Cycle permission mode                                                                       │  
+  │       Ctrl+c         Cancel turn / clear draft                                                                   │  
+  │                                                                                                                  │  
+  │   ▸ Input  (6)                                                                                                   │  
+  │   ▸ Conversation Navigation  (12)                                                                                │  
+  │   ▸ Conversation Actions  (9)                                                                                    │  
+  │   ▸ Panels  (7)                                                                                                  │  
+  │   ▸ Session  (5)                                                                                                 │  
+  │   ▸ Dashboard  (4)                                                                                               │  
+  │                                                                                                                  │  
+  │   Ctrl+. / Ctrl+X toggles this cheatsheet                                                                        │  
+  │   /help opens the command palette, not this modal                                                                │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ ↑/↓ nav · f filter · e/Space/→ expand · h collapse · Enter details · / search · Esc close                        │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
-    Local dock bylines stay next to the action they control.                                                            
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-    Esc to return · putty footer remains outside this view                                                              
                                                                                                                         
  Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

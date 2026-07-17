@@ -5,8 +5,8 @@
                                                               │                                                         
                                                               │ 3 waiting                                               
                                                               │ › 1 floor integration                                   
-  ◆ Cortex                                                      │   2 document jitter                                     
-    Retry path is guarded. Sidebar stays task-local.          │   3 rate-limit note                                     
+  Retry path is guarded. Sidebar stays task-local.            │   2 document jitter                                     
+  Context facts stay next to the live turn.                   │   3 rate-limit note                                     
                                                               │                                                         
                                                               │ Enter · send now                                        
                                                               │ d remove · j/k reorder                                  
