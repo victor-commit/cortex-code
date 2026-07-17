@@ -437,6 +437,15 @@ fn assert_chrome_simple(text: &str, label: &str) {
         );
     }
     let lower = text.to_ascii_lowercase();
+    if pure_mode() {
+        // Pure structure help is Cortex shortcuts_help (product categorical modal).
+        // Only hybrid invent phrasing like "dialog overlay" stays banned.
+        assert!(
+            !lower.contains("dialog overlay"),
+            "{label}: pure paints ban invent dialog overlay wording"
+        );
+        return;
+    }
     assert!(
         !lower.contains("modal") || lower.contains("temporary"),
         "{label}: floating modal chrome is forbidden"

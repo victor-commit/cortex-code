@@ -70,15 +70,18 @@ const SESSION_FILTER_MATRIX: &[&str] = &[
 /// harness-v4 uses these short origin/prompt-aligned labels (VAL residual
 /// `public_publication_covers_all_nine_picker_txt_artifacts`).
 pub fn pure_picker_title(screen_id: &str) -> Option<&'static str> {
+    // Titles must match pure-structure slash_dropdown /live-prompt paint from
+    // harness-v4 screens/pickers.rs (M3 STRUCT-011 / CROSS-027). Prefer the
+    // exact `❯ …` origin line that ships under plans/assets/mockups-v3/input/.
     Some(match screen_id {
         "agent-picker" => "Pick how Cortex should approach this task.",
-        "model-picker" => "Choose the model for the next reply.",
-        "model-picker-filtered" => "Filter the catalog for a faster match.",
-        "fork-picker" => "Fork conversation",
+        "model-picker" => "Switch model for the next reply only when needed.",
+        "model-picker-filtered" => "Narrow the model list with a typed prefix.",
+        "fork-picker" => "Fork from this turn into a new branch of the chat.",
         "skills-picker" => "Enable skills for this session.",
-        "session-picker" => "Resume an earlier conversation in this workspace.",
+        "session-picker" => "Resume a previous conversation.",
         "subagent-picker" => "Spawn a task-local helper for this turn.",
-        "variant-picker" => "Pick effort for this reply only.",
+        "variant-picker" => "Pick reasoning effort for the next reply.",
         "theme-picker" => "Preview a theme without leaving this origin.",
         _ => return None,
     })
