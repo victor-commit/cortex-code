@@ -6,7 +6,7 @@
 //! inventory/flow, TXT/PNG fidelity, semantic/transition audit, negative
 //! fixtures, immutable v2 references, assertion-to-case coverage, vision
 //! evidence, README index, programmatic check.sh, statusline policy,
-//! approval integrity, secret/commit/path scope, contractual 493-assertion
+//! approval integrity, secret/commit/path scope, contractual 496-assertion
 //! inventory, and double-render determinism via the public scripts.
 
 use std::collections::BTreeMap;
@@ -40,8 +40,9 @@ const CANONICAL_GALLERY: &str = "/projects/cortex-code/plans/assets/mockups-v3";
 const GATE_GALLERY: &str = "/projects/cortex-code/plans/assets/mockups-v3-gates";
 /// Exact validation-contract assertion inventory for the final aggregate.
 /// Pure Cortex dump added DS-038..040, CROSS-024, HARNESS-042 (481 + 5 = 486).
-/// Pure-structure shell added STRUCT-001..006, DS-039, CROSS-025 (486 + 7 = 493).
-pub const CONTRACT_ASSERTION_COUNT: usize = 493;
+/// Pure-structure shell added STRUCT-001..006, CROSS-025 (among other shell rows) to 493.
+/// Pure-structure tools added STRUCT-007..008 and CROSS-026 (493 + 3 = 496).
+pub const CONTRACT_ASSERTION_COUNT: usize = 496;
 const DEFAULT_MISSION: &str = "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
