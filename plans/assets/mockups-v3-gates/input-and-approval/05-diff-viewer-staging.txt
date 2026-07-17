@@ -1,29 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
+    Staging review                                                                                                      
+    Select hunks to keep · rest stays unstaged                                                                          
                                                                                                                         
-    Review changes · temporary detail                                                                                   
-    From pending edit in the paused retry conversation                                                                  
                                                                                                                         
-    Included 1 of 2 hunks · Git index unchanged                                                                         
-    File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
-    › ✓ Included · hunk.retry-guard · old 42,2 -> new 42,3                                                              
-       42   42 │ -    return retry_after                                                                                
-       43   43 │ -    backoff = backoff + 1                                                                             
-            42 │ +    return retry_after + jitter                                                                       
-            43 │ +    backoff = backoff + jitter                                                                        
-            44 │ +    log_retry_window(jitter)                                                                          
+    › Hunk 1 · floor guard                                                                                              
+      + if floor_ms < 250 { return Err(..); }                                                                           
+      staged · will apply on confirm                                                                                    
                                                                                                                         
-    ○ Pending · hunk.retry-test · old 88,2 -> new 89,2                                                                  
-       88   89 │ -assert_eq!(wait, 4)                                                                                   
-       89   90 │ -assert_eq!(attempts, 1)                                                                               
-            89 │ +assert_eq!(wait, 5)                                                                                   
-            90 │ +assert_eq!(attempts, 1)                                                                               
+      Hunk 2 · docs note                                                                                                
+      + // floors documented in module                                                                                  
+      unstaged · skip for this apply                                                                                    
                                                                                                                         
-    No file is written until Finish.                                                                                    
                                                                                                                         
-    i to include · x to exclude · a to include all · e to edit · Enter to finish · Esc to cancel                        
+    Space toggles staged · Enter applies selection                                                                      
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +28,13 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Enter to apply staged · Esc cancels without writes                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

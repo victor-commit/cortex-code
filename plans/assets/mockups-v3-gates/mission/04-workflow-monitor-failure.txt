@@ -1,28 +1,23 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
+    Tasks                                                                                                               
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
+    ✗ Needs attention · Tasks monitor  1/3                                                                              
+    1 failed · 1 complete · 1 remaining                                                                                 
                                                                                                                         
-    Code                                                                                                                
-    I can run that as a small mission with three connected tasks.                                                       
-                                                                                                                        
-    ✗ Needs attention · Failure  1/3                                                                                    
-                                                                                                                        
-    Prepare the release safely and review the result.                                                                   
-    Needs attention · 1 complete · 2 remaining                                                                          
-    Needs attention: Publish path validation failed the safe release checks                                             
-                                                                                                                        
-    Needs attention · 1/3                                                                                               
+    Needs attention · 1                                                                                                 
     › ✗ Check the safe publish path                                                                                     
-      Publish path validation failed the safe release checks                                                            
+      Staging checklist still missing the rollback step                                                                 
+                                                                                                                        
+    Completed · 1                                                                                                       
       ✓ Review the release notes for open risks                                                                         
                                                                                                                         
-    Completed · 1 preserved                                                                                             
-    ✓ Review the release notes for open risks                                                                           
+    Queued · 1                                                                                                          
+      ○ Update the next-step note after fixes                                                                           
                                                                                                                         
-    Completed work stays preserved. Create a fix task to repair.                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +25,16 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Repair the validation failure                                                                                    │  
-  │ Create planned fix work from this failure and re-run validation.                                                 │  
-  │ › Create a fix task                                                                                              │  
-  │   Open evidence                                                                                                  │  
-  │   Resume conversation                                                                                            │  
+  │ Repair this task?                                                                                                │  
+  │  Create a fix task for the missing rollback note.                                                                │  
+  │                                                                                                                  │  
+  │  › Create fix task                                                                                               │  
+  │    Open evidence                                                                                                 │  
+  │    Resume conversation                                                                                           │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter creates fix · Esc keeps failure visible                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

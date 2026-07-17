@@ -1,30 +1,26 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
-    Prepare the release safely and review the result.                                                                   
+    Dashboard · Runtime tiles                                                                                           
+    Time, tokens, and concurrent agent activity for this goal                                                           
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Advanced · Runtime detail                                                                                           
-    Advanced concurrency view. Opening this does not change scheduling.                                                 
+    Tiles · 4                                                                                                           
                                                                                                                         
-    Needs attention · 3/3                                                                                               
-    ✗ Conflict on the safe publish path                                                                                 
-      Consequence · parallel edits wait until you pause or replan.                                                      
+    ╭ Time ──────────────╮  ╭ Tokens ────────────╮                                                                      
+    │ Elapsed · 12m 40s  │  │ ⇣ 48.2k this goal  │                                                                      
+    │ Active · 1 agent   │  │ Context · 8.5k     │                                                                      
+    ╰────────────────────╯  ╰────────────────────╯                                                                      
                                                                                                                         
-    ● Held work · publish checklist handoff                                                                             
-      Consequence · one worker is blocked until the hold is cleared.                                                    
+    ╭ Concurrency ───────╮  ╭ Queue ─────────────╮                                                                      
+    │ Parallel · 1 / 3   │  │ Pending · 1 task   │                                                                      
+    │ Soft cap · 3       │  │ Send now available │                                                                      
+    ╰────────────────────╯  ╰────────────────────╯                                                                      
                                                                                                                         
-    ○ Quarantine · risky draft branch kept aside                                                                        
-      Consequence · that branch will not merge until review accepts it.                                                 
                                                                                                                         
-    Running cleanly · 2 quiet                                                                                           
-      Throughput · notes work and completed checks stay healthy.                                                        
-      Workers ready · two quiet capacity lines collapsed.                                                               
+    Model · Cortex · always-approve                                                                                   
                                                                                                                         
-    Use pause, replan, or retry from the monitor if the hold is blocking progress.                                      
-                                                                                                                        
-    Esc to Return to mission monitor                                                                                    
+    Telemetry is secondary · Tasks monitor stays the home                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +33,8 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+    Esc to return · dashboard tiles only under Advanced                                                                 
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

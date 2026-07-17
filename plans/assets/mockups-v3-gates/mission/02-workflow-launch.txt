@@ -1,40 +1,40 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
+    Tasks                                                                                                               
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
-                                                                                                                        
-    Code                                                                                                                
-    I can run that as a small mission with three connected tasks.                                                       
-                                                                                                                        
-    ○ Waiting · Ready to launch  0/3                                                                                    
-                                                                                                                        
-    Prepare the release safely and review the result.                                                                   
-    Ready to launch · 0 complete · 3 remaining                                                                          
-                                                                                                                        
-    ✓ Preflight passed. Detailed checks stay collapsed.                                                                 
-    No missing inputs. Starting will run the three planned tasks.                                                       
-                                                                                                                        
-    View preflight evidence                                                                                             
+  ❯ You                                                                                                                 
+    Turn the release work into tracked tasks and walk me through it.                                                    
                                                                                                                         
                                                                                                                         
+  ◆ Cortex                                                                                                                
+    I can run that as three linked tasks under one goal.                                                                
                                                                                                                         
+    ○ Ready · Goal launch  0/3                                                                                          
                                                                                                                         
+    Preflight                                                                                                           
+    ✓ Workspace trusted · auth ready · tools available                                                                  
+    No missing inputs. Start opens Tasks monitoring.                                                                    
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
+    Tasks proposed                                                                                                      
+      1. Review release notes for open risks                                                                            
+      2. Check the safe publish path                                                                                    
+      3. Update the next-step note after fixes                                                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Start this mission?                                                                                              │  
-  │ Start runs the planned tasks and opens compact progress monitoring.                                              │  
-  │ › Start mission                                                                                                  │  
-  │   Cancel · return to conversation                                                                                │  
-  │ Enter to start mission · Esc to cancel · keeps the proposal ready.                                               │  
+  │ Start this goal?                                                                                                 │  
+  │  › Start tasks                                                                                                   │  
+  │    Cancel · keep the proposal ready                                                                              │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter starts · Esc returns to chat                                                                               │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

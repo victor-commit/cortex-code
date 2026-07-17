@@ -1,26 +1,28 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Recovery                                                                                                            
-    Finish the release notes without losing the current work.                                                           
+  ❯ You                                                                                                                 
+    Undo the last edit if the suite went red.                                                                           
                                                                                                                         
-    You · Summarize the remaining release notes and the still-open risks.                                               
                                                                                                                         
-    Code                                                                                                                
+  ◆ Cortex                                                                                                                
+    Last checkpoint restored the retry helper pre-edit.                                                                 
                                                                                                                         
-    The release notes cover the auth race fix, the retry window change, and one open risk…                              
                                                                                                                         
-    Completed earlier · retry window copy accepted for the release branch.                                              
+    Rewind available · choose how far to jump                                                                           
                                                                                                                         
-    ────────────────────────────────────────────────────────                                                            
+    › Checkpoint · before edit                                                                                          
+      retry.rs hash a1b2… · 0m18s ago                                                                                   
+      Checkpoint · after tests green                                                                                    
+      suite pass · 1m02s ago                                                                                            
                                                                                                                         
-    ✓ Restored checkpoint · Before risk-note expansion                                                                  
-    2 files were restored. Unrelated work stays untouched.                                                              
+    › Restore selected checkpoint                                                                                       
+      Keep current workspace                                                                                            
                                                                                                                         
-      notes/release.md                                                                                                  
-      notes/risks.md                                                                                                    
+    Enter restores · Esc leaves files as-is                                                                             
                                                                                                                         
-    Approval for the risks note · Stale · needs re-review                                                               
-    Transcript, draft, queue, and later notes remain available.                                                         
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Checkpoint restore                                                                                               │  
-  │ Redo reapplies the same checkpoint file set.                                                                     │  
-  │ › Redo change                                                                                                    │  
-  │  c for Continue in conversation                                                                                  │  
-  │  Esc to Back · keep restoration                                                                                  │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

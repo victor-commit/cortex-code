@@ -1,22 +1,24 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Recovery                                                                                                            
-    Finish the release notes without losing the current work.                                                           
+  ❯ You                                                                                                                 
+    Continue the audit after credits recover.                                                                           
                                                                                                                         
-    You · Summarize the remaining release notes and the still-open risks.                                               
                                                                                                                         
-    Code                                                                                                                
                                                                                                                         
-    The release notes cover the auth race fix, the retry window change, and one open risk…                              
                                                                                                                         
-    Completed earlier · retry window copy accepted for the release branch.                                              
+    Rate limit · credit floor reached                                                                                   
+    Next slot opens in 0m42s · draft and queue stay saved                                                               
                                                                                                                         
-    ────────────────────────────────────────────────────────                                                            
+    Credits  ████████░░░░░░░░░░░░  40% recovered                                                                        
                                                                                                                         
-    ○ Safe waiting window · retry in 20s remaining                                                                      
-    Your work is saved. Code will retry automatically.                                                                  
-    Transcript, partial reply, draft, and completed work stay readable.                                                 
-    One timer owns this wait. No primary action is required.                                                            
+                                                                                                                        
+    › Wait and retry automatically                                                                                      
+      Switch to xAI model Fast                                                                                             
+      Work offline until reset                                                                                          
+                                                                                                                        
+    Enter waits · Esc keeps the paused queue visible                                                                    
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Automatic rate-limit wait                                                                                        │  
-  │ Code retries once when the safe window ends.                                                                     │  
-  │   Waiting · no primary action while the timer runs                                                               │  
-  │  r for Retry now · optional                                                                                      │  
-  │  Esc to Cancel · stop automatic wait                                                                             │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

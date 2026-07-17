@@ -1,24 +1,23 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Choose the model for the next reply.                                                                                
                                                                                                                         
                                                                                                                         
-    First-run setup                                                                                                     
-    Your first conversation is waiting for this choice.                                                                 
                                                                                                                         
                                                                                                                         
-    Choose a model                                                                                                      
                                                                                                                         
+                                                                                                                        
+    Models                                                                                                              
     Each row says what changes before you apply it.                                                                     
                                                                                                                         
-                                                                                                                        
-      Claude Sonnet 4.5                                                                                                 
-      Current · Balanced speed and depth                                                                                
-                                                                                                                        
-    › Claude Opus 4.8                                                                                                   
-      More depth for complex changes · slower                                                                           
-                                                                                                                        
-      GPT-5.2 Codex                                                                                                     
-      Fast implementation help · best for focused edits                                                                 
-                                                                                                                        
+    › Cortex                                                                                                          
+      Current · balanced depth for everyday coding                                                                      
+      Cortex (high)                                                                                                   
+      More reasoning budget · slower, deeper plans                                                                      
+      xAI model Fast                                                                                                       
+      Quick edits and triage · lighter reasoning                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Selected · Claude Opus 4.8                                                                                       │  
-  │ Switching applies this choice: deeper reasoning for the next reply only.                                         │  
-  │ › Apply model · Esc to Cancel                                                                                    │  
-  │ ↑↓ to Choose · f for Filter models · current choice stays unchanged until Apply                                  │  
-  │ Only the selected model's pending change is explained here.                                                      │  
+  │ Selected · Cortex                                                                                              │  
+  │  Applies to the next reply only · statusline stays Cortex-labeled                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to apply · Esc to cancel · f for Filter models                                                             │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

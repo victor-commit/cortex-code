@@ -82,13 +82,14 @@ fn logo_login_smoke_cells() {
 }
 
 #[test]
-fn f1_f6_inventory_is_seventy_one() {
-    assert_eq!(list_pilots().len(), 71);
+fn f1_f7_inventory_is_eighty_six() {
+    assert_eq!(list_pilots().len(), 86);
     let ids: Vec<&str> = list_pilots().iter().map(|p| p.id).collect();
     for expected in [
         "login",
         "connect-oauth",
         "chat-turn",
+        "onboarding",
         "streaming",
         "empty",
         "toasts",
@@ -120,13 +121,29 @@ fn f1_f6_inventory_is_seventy_one() {
         "theme-gallery-dark",
         "theme-gallery-light",
         "sidebar-queue",
+        // F7 orchestration
+        "mode-switch",
+        "mode-switch-refused",
+        "workflow-launch",
+        "workflow-launch-blocked",
+        "workflow-monitor",
+        "workflow-monitor-failure",
+        "team-board",
+        "reviewer-output",
+        "reviewer-approved",
+        "verification-ladder",
+        "intent-scorer-pass",
+        "intent-scorer-fail",
+        "concurrency-metrics",
+        "tool-envelope",
     ] {
         assert!(ids.contains(&expected), "missing id {expected}");
     }
+    assert_eq!(mockup_harness_v4::GATE_FRAMES.len(), 35);
 }
 
 #[test]
-fn all_f1_f6_screens_reject_copper_brand() {
+fn all_f1_f7_screens_reject_copper_brand() {
     for spec in list_pilots() {
         let canvas = render_pilot(spec.id).unwrap_or_else(|e| panic!("{}: {e}", spec.id));
         let text = canvas.to_text();
@@ -150,11 +167,31 @@ fn all_f1_f6_screens_reject_copper_brand() {
             "how-code residual: {}",
             spec.id
         );
+        assert!(
+            !text.contains("Factory Mission"),
+            "factory residual: {}",
+            spec.id
+        );
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 40, "row count for {}", spec.id);
         let bad_width = lines.iter().any(|l| l.chars().count() != 120);
         assert!(!bad_width, "row width for {}", spec.id);
     }
+}
+
+#[test]
+fn orchestration_uses_tasks_dashboard_plan_language() {
+    let monitor = render_pilot("workflow-monitor").unwrap().to_text();
+    assert!(monitor.contains("Tasks"));
+    assert!(monitor.contains("Running"));
+    assert!(!monitor.contains("Claude Opus"));
+    assert!(!monitor.lines().any(|l| l.trim() == "Mission"));
+    let mode = render_pilot("mode-switch").unwrap().to_text();
+    assert!(mode.contains("Shift+Tab") || mode.contains("plan"));
+    assert!(!mode.contains("How Code should work"));
+    let dash = render_pilot("concurrency-metrics").unwrap().to_text();
+    assert!(dash.contains("Dashboard") || dash.contains("tiles"));
+    assert!(dash.contains(MODEL_LABEL));
 }
 
 #[test]
@@ -285,6 +322,11 @@ fn png_glyph_coverage_sample_batch() {
         "status",
         "sidebar-mcp",
         "theme-gallery-light",
+        "workflow-monitor",
+        "workflow-launch",
+        "mode-switch",
+        "team-board",
+        "onboarding",
     ] {
         let canvas = render_pilot(id).expect(id);
         let bytes = render_png(&canvas).expect("png");

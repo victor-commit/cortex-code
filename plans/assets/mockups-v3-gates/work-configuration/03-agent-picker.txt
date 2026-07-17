@@ -1,24 +1,23 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Pick how Cortex should approach this task.                                                                            
                                                                                                                         
                                                                                                                         
-    Work configuration                                                                                                  
-    Choose how Code should work for this conversation.                                                                  
                                                                                                                         
                                                                                                                         
-    How Code should work                                                                                                
-                                                                                                                        
-    Choose the outcome you want. Your current choice stays active until you apply.                                      
                                                                                                                         
                                                                                                                         
-      Current · Careful edits                                                                                           
-      You approve each project-file edit before it happens.                                                             
+    Agents                                                                                                              
+    Personas and agents · not a Cortex work-style matrix                                                                
                                                                                                                         
-      Available · Quick implementation                                                                                  
-      Focused edits happen now; you review them together at the end.                                                    
-                                                                                                                        
-    › Pending selection · Autonomous changes                                                                            
-      Project-file edits can happen without asking each time.                                                           
-                                                                                                                        
+    › Coding                                                                                                            
+      Default · edit, test, and explain in one loop                                                                     
+      Plan                                                                                                              
+      Read-only planning before any write                                                                               
+      Review                                                                                                            
+      Critique diffs and suggest repairs only                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +29,12 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Pending selection · Autonomous changes                                                                           │  
-  │ Changes access; review the concrete project scope before applying.                                               │  
-  │ › Review access change · Esc to Cancel                                                                           │  
-  │ ↑↓ to Choose · each row explains how Code will work                                                              │  
-  │ No filter · three work-style choices fit on one screen                                                           │  
+  │ Selected · Coding                                                                                                │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter to apply · Esc to cancel · ↑↓ to choose                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

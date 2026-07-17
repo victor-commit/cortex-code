@@ -1,23 +1,24 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Recovery                                                                                                            
-    Finish the release notes without losing the current work.                                                           
                                                                                                                         
-    You · Summarize the remaining release notes and the still-open risks.                                               
+  ❯ You                                                                                                                 
+    Check the retry path before we merge.                                                                               
+    Keep the summary short and list one follow-up test.                                                                 
                                                                                                                         
-    Code                                                                                                                
                                                                                                                         
-    The release notes cover the auth race fix, the retry window change, and one open risk…                              
+  ◆ Cortex                                                                                                                
+    Applied the retry guard and covered the failure path.                                                               
+    Follow-up: add an integration case for rate-limit floors.                                                           
                                                                                                                         
-    Completed earlier · retry window copy accepted for the release branch.                                              
+    Thought for 1s                                                                                                      
+    ◇ expanded thinking kept collapsed in this idle frame                                                               
                                                                                                                         
-    The provider attempt succeeded. Work stayed in this conversation.                                                   
                                                                                                                         
-    Draft, queue, and completed work are still available.                                                               
                                                                                                                         
-    Ready for your next release-note prompt.                                                                            
                                                                                                                         
-    Checkpoint · Before risk-note expansion remains reversible.                                                         
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                  │  
-  │   Keep the risk note short before we publish.                                                                    │  
-  ╰───u for Undo last checkpoint─────────────────────────────────────────────────────────────────────────────────────╯  
-    Enter to send                                                                                                       
+  │ ❯ Add a note about the remaining test hunk…                                                                      │  
+  │   Cortex · always-approve                                                                                      │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

@@ -1,19 +1,16 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-    You · Check the retry path before we merge.                                                                         
-                                                                                                                        
-                                                                                                                        
-    Code                                                                                                                
-                                                                                                                        
-    I can add a project file without changing the rest of your draft.                                                   
+  ❯ You                                                                                                                 
+    Draft a longer request without losing the mode chip.                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                                                                                        
+    Multi-line jewel · draft wraps while mode stays visible                                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Draft · 3 lines · Claude Opus 4.8 · Work mode                                                                    │  
-  │ › Check the retry path in @retry█                                                                                │  
-  │   Then explain the failure path that still needs coverage before the merge;                                      │  
-  │     include a concise test plan with the visible recovery behavior.                                              │  
-  │   Keep the summary short before we merge.                                                                        │  
+  │ ❯ Review the retry helper,                                                                                       │  
+  │   list the remaining risks,                                                                                      │  
+  │   and propose one focused test.                                                                                  │  
+  │   Draft · 3 lines · Cortex · always-approve                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

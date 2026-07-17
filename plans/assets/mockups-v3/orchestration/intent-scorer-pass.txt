@@ -1,32 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
-    Prepare the release safely and review the result.                                                                   
+    Advanced · Verification summary                                                                                     
+    Advisory outcome for goal fit · not a factory score ladder                                                          
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Advanced · Quality report · pass                                                                                    
-    Advisory dimensions only. This report never completes the mission.                                                  
+    ✓ Goal fit looks strong                                                                                             
+    Release prep plan matches the stated safe-publish goal.                                                             
                                                                                                                         
-    Result · Pass · supporting dimensions are healthy                                                                   
+    Signals                                                                                                             
+      ✓ Scope covers notes, path, and follow-up note                                                                    
+      ✓ Risks named before publish advice                                                                               
+      ✓ Rollback language present in the last repair                                                                    
                                                                                                                         
-    ✓ Intent fidelity · full                                                                                            
-      The requested release outcome is present in the result.                                                           
                                                                                                                         
-    ✓ Execution evidence · full                                                                                         
-      Checks and surface evidence were captured for review.                                                             
-                                                                                                                        
-    ● Scope discipline · partial                                                                                        
-      One cleanup note remains, still within the accepted plan.                                                         
-                                                                                                                        
-    ✓ Report honesty · full                                                                                             
-      Summary matches the submitted change set.                                                                         
-                                                                                                                        
-    A passing report still needs validation stages and human completion.                                                
-                                                                                                                        
-    This detail is advisory and cannot mark the mission complete.                                                       
-                                                                                                                        
-    Esc to Return to human completion                                                                                   
+    Continue stays with the plan-approval dock above.                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +25,16 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · advisory only under Advanced                                                                        
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

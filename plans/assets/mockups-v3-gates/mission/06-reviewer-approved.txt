@@ -1,23 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
+    Tasks                                                                                                               
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
+    Plan approved · ready to continue                                                                                   
+    Review · 3 complete · 0 remaining                                                                                   
                                                                                                                         
-    Code                                                                                                                
-    I can run that as a small mission with three connected tasks.                                                       
+    Summary                                                                                                             
+    Release notes, publish path, and next-step note are clear.                                                          
+    No open comments · no held blockers.                                                                                
                                                                                                                         
-    Prepare the release safely and review the result.                                                                   
-    Ready for completion · 3 complete · 0 remaining                                                                     
-                                                                                                                        
-                                                                                                                        
-    Approved                                                                                                            
-    Final validation passed on the post-repair revision                                                                 
-    Affected · Safe publish path                                                                                        
-                                                                                                                        
-    Detailed checks stay collapsed. Human approval still required.                                                      
-                                                                                                                        
+    Completed tasks · 3/3                                                                                               
+      ✓ Review the release notes for open risks                                                                         
+      ✓ Check the safe publish path                                                                                     
+      ✓ Update the next-step note after fixes                                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Approve mission completion?                                                                                      │  
-  │ Only the human approval finishes the mission and restores chat.                                                  │  
-  │ › Approve completion                                                                                             │  
-  │   Request changes                                                                                                │  
-  │   Stay on this review                                                                                            │  
+  │ Continue after approval?                                                                                         │  
+  │  › Continue to chat                                                                                              │  
+  │    Open dashboard telemetry                                                                                      │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter continues · Esc stays on review                                                                            │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

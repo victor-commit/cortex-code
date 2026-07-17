@@ -1,25 +1,23 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    MCP capabilities                                                                                                    
-    Fix the capabilities this conversation needs.                                                                       
+    MCP                                                                                                                 
+    Capability-led connections · transport detail stays folded                                                          
                                                                                                                         
-    Illustrative detour · separate capability branch                                                                    
                                                                                                                         
-    MCP capabilities                                                                                                    
-    Not a continuation of the blocked-model provider connection.                                                        
-    Capabilities that need attention come first. Healthy ones stay collapsed.                                           
+    Capabilities                                                                                                        
                                                                                                                         
-    › Browser automation · Needs setup                                                                                  
-      Missing local tools needed for page checks · Enter to fix setup                                                   
+    › Docs research                                                                                                     
+      Needs sign-in · Open connection                                                                                   
                                                                                                                         
-      Project docs · Sign in needed                                                                                     
-      This workspace library needs approval before use · Enter to sign in                                               
+      Local tools                                                                                                       
+      Ready · search, read, shell                                                                                       
                                                                                                                         
-      ○ 1 ready connection collapsed                                                                                    
-      Code search · Ready                                                                                               
+      Memory notes                                                                                                      
+      Ready · recall + write                                                                                            
                                                                                                                         
-    Connection details and raw tools stay under diagnostics.                                                            
-    Return closes this branch to the conversation, not provider sign-in.                                                
+                                                                                                                        
+    Exception-first · attention rows float above ready peers                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -28,13 +26,15 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    › Fix setup                                                                                                         
-      d for Open diagnostics                                                                                            
-      Esc to return to conversation                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Enter opens selected · Esc returns to conversation                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

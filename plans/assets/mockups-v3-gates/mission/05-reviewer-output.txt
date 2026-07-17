@@ -1,27 +1,19 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
+    Tasks                                                                                                               
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
-                                                                                                                        
-    Mission review                                                                                                      
-    Review outcome ready. Mission card stays compact.                                                                   
-                                                                                                                        
-    Prepare the release safely and review the result.                                                                   
+    Plan review · changes requested                                                                                     
     Review · 2 complete · 1 remaining                                                                                   
                                                                                                                         
-                                                                                                                        
     Changes requested                                                                                                   
-    Next-step note still omits the open risk and rollback order                                                         
+    Next-step note still omits open risk and rollback order                                                             
     Affected · Safe publish path                                                                                        
-    › Create a fix task                                                                                                 
-    Enter to create a fix task                                                                                          
-    Checklist and deeper evidence stay collapsed until you open them.                                                   
                                                                                                                         
-    View validation summary                                                                                             
-                                                                                                                        
-    Esc to Return to mission monitor                                                                                    
+    Comments                                                                                                            
+      1. Name the open risk before marking the path ready.                                                              
+      2. Add rollback steps next to the publish checklist.                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -34,7 +26,15 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
+  │ Next after review                                                                                                │  
+  │  › Create a fix task                                                                                             │  
+  │    Open verification summary                                                                                     │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter creates fix · Esc returns to tasks                                                                         │  
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

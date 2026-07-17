@@ -1,28 +1,30 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Paused conversation                                                                                                 
-    Check the retry path before we merge.                                                                               
-     › You · Check the retry path before we merge.                                                                      
+  ❯ You                                                                                                                 
+    Inspect the retry helper and tighten the shell path.                                                                
                                                                                                                         
                                                                                                                         
-    Code · Pending edit                                                                                                 
+  ◆ Cortex                                                                                                                
                                                                                                                         
-    Pending edit · nothing has been written.                                                                            
+  Edit  crates/agent/src/retry.rs  ·  pending approval                                                                  
                                                                                                                         
-    File: src/net/retry_policy.rs · revision: patch-retry-18                                                            
-    Patch summary +4 -3 · 2 hunks                                                                                       
-    Hunk @@ -42,2 +42,3                                                                                                 
-       42   42 │ -    return retry_after                                                                                
-       43   43 │ -    backoff = backoff + 1                                                                             
-            42 │ +    return retry_after + jitter                                                                       
-            43 │ +    backoff = backoff + jitter                                                                        
-            44 │ +    log_retry_window(jitter)                                                                          
+      @@ -40,6 +40,10 @@ fn ceiling_ms(...)                                                                             
+    -    floor.max(50)                                                                                                  
+    +    floor.max(250)                                                                                                 
+    +    // rate-limit floors never go under 250ms                                                                      
                                                                                                                         
-    Second hunk · hunk.retry-test · @@ -88,2 +89,2 · open staging for lines                                             
                                                                                                                         
-    Why this change: keep retry timing from repeating the same failed window.                                           
+    › Apply edit                                                                                                        
+      Reject                                                                                                            
                                                                                                                         
-    Paused conversation and draft stay unchanged until you decide.                                                      
+    Enter to apply · Esc to reject and keep draft                                                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Pending edit                                                                                                     │  
-  │ › Review changes · open read-only staging detail                                                                 │  
-  │   Apply all · write this exact patch and resume                                                                  │  
-  │   Cancel · write nothing                                                                                         │  
-  │ Enter to review changes · Esc to cancel                                                                          │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

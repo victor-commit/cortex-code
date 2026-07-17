@@ -1,24 +1,25 @@
                                                                                                                         
-                                                                                                                        
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
-     › You · Find where the server applies the rate limit and explain the safe path.                                    
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
-                                                                                                                        
-    Earlier · Updated retry_policy.rs and checked the current session.                                                  
-                                                                                                                        
-    That work is complete. The rate-limit request is still open.                                                        
+  ❯ You                                                                                                                 
+    Check the retry path before we merge.                                                                               
+    Keep the summary short and list one follow-up test.                                                                 
                                                                                                                         
                                                                                                                         
-    Send this request to start the reply in this same turn.                                                             
+  ◆ Cortex                                                                                                                
+    Applied the retry guard and covered the failure path.                                                               
+    Follow-up: add an integration case for rate-limit floors.                                                           
+                                                                                                                        
+    Thought for 1s                                                                                                      
+    ◇ expanded thinking kept collapsed in this idle frame                                                               
                                                                                                                         
                                                                                                                         
-    Checked  ·  retry_policy.rs  ·  current session                                                                     
                                                                                                                         
                                                                                                                         
-    Queued request · waiting for send.                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -31,10 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Reply to Code                                                                                                  │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯ Add a note about the remaining test hunk…                                                                      │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-    Enter to send                                                                                                       
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

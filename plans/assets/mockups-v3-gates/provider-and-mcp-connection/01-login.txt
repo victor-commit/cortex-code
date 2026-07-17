@@ -1,40 +1,40 @@
                                                                                                                         
-                                                                                                                        
-     ██████              ██                                                                                             
-    ██                   ██                                                                                             
-    ██        ████    █████   ████                                                                                      
-    ██       ██  ██  ██  ██  ██████                                                                                     
-    ██       ██  ██  ██  ██  ██                                                                                         
-     ██████   ████    █████   █████                                                                                     
-                                                                                                                        
-                                                                                                                        
-    Connections                                                                                                         
-                                                                                                                        
-    Connect a model provider                                                                                            
-                                                                                                                        
-    Code needs a provider before it can use the models in this project.                                                 
-                                                                                                                        
-    Your blocked model choice and conversation stay paused while you connect.                                           
-                                                                                                                        
-                                                                                                                        
-    This path only unlocks the model provider for the paused choice.                                                    
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄                                                     
+                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀                                                     
+                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀                                                     
+                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀                                                     
+                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀                                                     
+                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀                                                     
+                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                     
+                                                                                                                        
+                                                                                                                        
+                                     Approve in your browser to finish signing in.                                      
+                                                                                                                        
+                                                       BTS4-P4ZF                                                        
+                                                                                                                        
+                                        Make sure your browser shows this code.                                         
+                                                                                                                        
+                                        If it doesn't open, click here to copy.                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                   Copying not working? Click here to show full URL.                                    
+                                                                                                                        
+                                                Waiting for approval...                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
+                                                      ctrl+d  quit                                                      
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Next step                                                                                                        │  
-  │ Choose a provider that can run GPT-5.2 Codex.                                                                    │  
-  │ › Choose a provider                                                                                              │  
-  │   Esc to cancel · return to model choices                                                                        │  
-  │ Cancel does not attempt a connection.                                                                            │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

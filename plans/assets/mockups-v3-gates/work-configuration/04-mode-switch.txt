@@ -1,19 +1,14 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Switch permission mode before the next tool batch.                                                                  
                                                                                                                         
                                                                                                                         
-    Work configuration                                                                                                  
-    Choose a model and how Code should work.                                                                            
                                                                                                                         
                                                                                                                         
-    Review a work-style change                                                                                          
                                                                                                                         
-    Requested: Autonomous changes                                                                                       
                                                                                                                         
-    How Code should work: edit project files without asking each time.                                                  
-                                                                                                                        
-    Scope: this project · until you choose another work style.                                                          
-                                                                                                                        
-    Your transcript and draft stay unchanged while this is pending.                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +25,16 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Pending · Careful edits remains active                                                                           │  
-  │ The requested access applies only after you confirm.                                                             │  
-  │ › Apply access change · Esc to Keep Careful edits                                                                │  
-  │ One confirmation changes the work style; Cancel changes nothing.                                                 │  
-  │ Return to How Code should work to choose another outcome.                                                        │  
+  │ Permission mode · Shift+Tab                                                                                      │  
+  │  Requested · plan                                                                                                │  
+  │  Plan mode drafts a plan and waits for your go-ahead.                                                            │  
+  │  Scope · this session · model stays Cortex                                                                     │  
+  │                                                                                                                  │  
+  │  › Apply plan mode                                                                                               │  
+  │    Keep always-approve                                                                                           │  
+  │                                                                                                                  │  
+  │ Enter applies · Esc keeps always-approve                                                                         │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

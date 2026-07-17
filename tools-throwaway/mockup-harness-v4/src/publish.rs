@@ -1,6 +1,7 @@
 //! Atomic-ish publish of pure Cortex pilot artifacts into existing mockups-v3 roots.
 //!
 //! Staging writes beside the destination, validates glyphs + dimensions, then renames.
+//! Gate storyboards reuse the same pure Cortex renderers into mockups-v3-gates.
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -13,6 +14,53 @@ use crate::screens::{list_pilots, render_pilot, PilotSpec};
 pub const CANONICAL_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3";
 pub const GATE_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3-gates";
 const MANIFEST_NAME: &str = ".renderer-manifest-v1-pure-cortex";
+const GATE_MANIFEST_NAME: &str = ".renderer-manifest-v1-pure-cortex";
+
+/// Ordered pure-Cortex gate storyboards (6 journeys · 35 frames).
+/// Paths keep historical flow folder names; paint is pure Cortex.
+pub const GATE_FRAMES: &[(&str, &str, &str)] = &[
+    // daily-work (6)
+    ("daily-work", "01-home", "home"),
+    ("daily-work", "02-chat-turn", "chat-turn"),
+    ("daily-work", "03-streaming", "streaming"),
+    ("daily-work", "04-tool-running", "tool-running"),
+    ("daily-work", "05-tool-success", "tool-success"),
+    ("daily-work", "06-rich-response", "rich-response"),
+    // input-and-approval (6)
+    ("input-and-approval", "01-composer-multiline", "composer-multiline"),
+    ("input-and-approval", "02-file-mention", "file-mention"),
+    ("input-and-approval", "03-permission-shell", "permission-shell"),
+    ("input-and-approval", "04-diff-edit", "diff-edit"),
+    ("input-and-approval", "05-diff-viewer-staging", "diff-viewer-staging"),
+    ("input-and-approval", "06-chat-turn", "chat-turn"),
+    // work-configuration (6)
+    ("work-configuration", "01-onboarding", "onboarding"),
+    ("work-configuration", "02-model-picker", "model-picker"),
+    ("work-configuration", "03-agent-picker", "agent-picker"),
+    ("work-configuration", "04-mode-switch", "mode-switch"),
+    ("work-configuration", "05-session-picker", "session-picker"),
+    ("work-configuration", "06-timeline", "timeline"),
+    // provider-and-mcp-connection (6)
+    ("provider-and-mcp-connection", "01-login", "login"),
+    ("provider-and-mcp-connection", "02-connect-provider", "connect-provider"),
+    ("provider-and-mcp-connection", "03-connect-method", "connect-method"),
+    ("provider-and-mcp-connection", "04-connect-oauth", "connect-oauth"),
+    ("provider-and-mcp-connection", "05-connect-connected", "connect-connected"),
+    ("provider-and-mcp-connection", "06-mcp", "mcp"),
+    // recovery (5)
+    ("recovery", "01-turn-error", "turn-error"),
+    ("recovery", "02-error-network", "error-network"),
+    ("recovery", "03-rate-limit", "rate-limit"),
+    ("recovery", "04-chat-turn", "chat-turn"),
+    ("recovery", "05-checkpoint-undo", "checkpoint-undo"),
+    // mission journey folder (path stable) → Cortex tasks/dashboard paint (6)
+    ("mission", "01-workflow-launch-blocked", "workflow-launch-blocked"),
+    ("mission", "02-workflow-launch", "workflow-launch"),
+    ("mission", "03-workflow-monitor", "workflow-monitor"),
+    ("mission", "04-workflow-monitor-failure", "workflow-monitor-failure"),
+    ("mission", "05-reviewer-output", "reviewer-output"),
+    ("mission", "06-reviewer-approved", "reviewer-approved"),
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishResult {
@@ -207,6 +255,68 @@ pub fn publish_pilots() -> Result<Vec<PublishResult>, String> {
     Ok(results)
 }
 
+pub fn publish_gate_frame(
+    flow: &str,
+    frame: &str,
+    screen_id: &str,
+) -> Result<PublishResult, String> {
+    let canvas = render_pilot(screen_id)?;
+    publish_gate_canvas(flow, frame, screen_id, &canvas)
+}
+
+fn publish_gate_canvas(
+    flow: &str,
+    frame: &str,
+    screen_id: &str,
+    canvas: &Canvas,
+) -> Result<PublishResult, String> {
+    let text = canvas.to_text();
+    assert_gallery_text(&text)?;
+    let flow_dir = Path::new(GATE_ROOT).join(flow);
+    let txt_path = flow_dir.join(format!("{frame}.txt"));
+    write_atomic(&txt_path, text.as_bytes())?;
+
+    #[cfg(feature = "png")]
+    let (png_path, png_sha) = {
+        let png_bytes = canvas::render_png(canvas)?;
+        if png_bytes.len() < 32 {
+            return Err("PNG encoder returned empty/tiny buffer".to_owned());
+        }
+        if &png_bytes[0..8] != b"\x89PNG\r\n\x1a\n" {
+            return Err("PNG magic missing".to_owned());
+        }
+        let dest = flow_dir.join(format!("{frame}.png"));
+        write_atomic(&dest, &png_bytes)?;
+        (Some(dest), Some(sha256_hex(&png_bytes)))
+    };
+    #[cfg(not(feature = "png"))]
+    let (png_path, png_sha): (Option<PathBuf>, Option<String>) = (None, None);
+
+    Ok(PublishResult {
+        id: frame.to_owned(),
+        category: format!("gates/{flow} → {screen_id}"),
+        txt_path,
+        png_path,
+        txt_sha256: sha256_hex(text.as_bytes()),
+        png_sha256: png_sha,
+    })
+}
+
+pub fn publish_gates() -> Result<Vec<PublishResult>, String> {
+    if GATE_FRAMES.len() != 35 {
+        return Err(format!(
+            "expected 35 gate frames, inventory has {}",
+            GATE_FRAMES.len()
+        ));
+    }
+    let mut results = Vec::new();
+    for (flow, frame, screen_id) in GATE_FRAMES {
+        results.push(publish_gate_frame(flow, frame, screen_id)?);
+    }
+    write_gate_manifest(&results)?;
+    Ok(results)
+}
+
 fn write_manifest(results: &[PublishResult]) -> Result<(), String> {
     let mut body = String::from("mockup-harness-v4-pure-cortex-manifest-v1\n");
     body.push_str("generator=mockup-harness-v4\n");
@@ -222,6 +332,24 @@ fn write_manifest(results: &[PublishResult]) -> Result<(), String> {
         ));
     }
     let path = Path::new(CANONICAL_ROOT).join(MANIFEST_NAME);
+    write_atomic(&path, body.as_bytes())
+}
+
+fn write_gate_manifest(results: &[PublishResult]) -> Result<(), String> {
+    let mut body = String::from("mockup-harness-v4-pure-cortex-gates-manifest-v1\n");
+    body.push_str("generator=mockup-harness-v4\n");
+    body.push_str("identity=pure-cortex-no-copper\n");
+    body.push_str("theme=CortexNight\n");
+    body.push_str(&format!("frame_count={}\n", results.len()));
+    for result in results {
+        body.push_str(&format!(
+            "artifact\t{}\ttxt={}\tpng={}\n",
+            result.category,
+            result.txt_sha256,
+            result.png_sha256.as_deref().unwrap_or("-")
+        ));
+    }
+    let path = Path::new(GATE_ROOT).join(GATE_MANIFEST_NAME);
     write_atomic(&path, body.as_bytes())
 }
 

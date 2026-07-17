@@ -1,27 +1,24 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
+    Tasks                                                                                                               
     Prepare the release safely and review the result.                                                                   
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
-                                                                                                                        
-    Code                                                                                                                
-    I can run that as a small mission with three connected tasks.                                                       
-                                                                                                                        
-    ✗ Needs attention · Preflight  0/3                                                                                  
-                                                                                                                        
-    Prepare the release safely and review the result.                                                                   
-    Preflight · 0 complete · 3 remaining                                                                                
-    Needs attention: Release checklist note is missing                                                                  
-                                                                                                                        
-    One missing input is blocking launch readiness.                                                                     
-    Provide the release checklist note, then preflight reruns automatically.                                            
-    The launch decision stays unavailable until that automatic rerun passes.                                            
-    No manual preflight control is offered.                                                                             
+  ❯ You                                                                                                                 
+    Turn the release work into tracked tasks and walk me through it.                                                    
                                                                                                                         
                                                                                                                         
+  ◆ Cortex                                                                                                                
+    Preflight found one missing step before tasks can run.                                                              
                                                                                                                         
+    ✗ Blocked · Goal launch  0/3                                                                                        
                                                                                                                         
+    Needs attention · 1                                                                                                 
+    › Folder trust is still pending for /projects/demo                                                                  
+      Auth is ready · tools are available                                                                               
+                                                                                                                        
+    Checklist                                                                                                           
+      Add folder trust, then Start tasks again.                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Resolve the missing input                                                                                        │  
-  │ Add the release checklist note, then preflight reruns and unlocks launch.                                        │  
-  │ › Add release checklist                                                                                          │  
-  │   Cancel · return to conversation                                                                                │  
-  │ Enter to add checklist · Esc to cancel · launch stays blocked.                                                   │  
+  │ Complete preflight first                                                                                         │  
+  │  › Open folder trust                                                                                             │  
+  │    Stay on blocked launch                                                                                        │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter opens trust · Esc returns                                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

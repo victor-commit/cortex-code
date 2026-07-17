@@ -1,12 +1,9 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
-    Prepare the release safely and review the result.                                                                   
+    Advanced · Verification stages                                                                                      
+    Self-check progress for the active goal · counts stay compact                                                       
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
-                                                                                                                        
-    Advanced · Validation stages                                                                                        
-    Decision view for the current validation run. Mission counts stay unchanged.                                        
                                                                                                                         
     Origin · failure on the safe publish path                                                                           
                                                                                                                         
@@ -14,22 +11,17 @@
       Format, lint, type check, and build are clean.                                                                    
                                                                                                                         
     ✓ Agent-visible tests · pass                                                                                        
-      The automated cases that stay on this board still pass.                                                           
+      Automated cases that stay on this board still pass.                                                               
                                                                                                                         
     ✗ Held-out checks · needs repair                                                                                    
       One hidden assertion failed on the safe publish path.                                                             
-      Current stage · repair this before review can continue.                                                           
+      Current stage · repair before review continues.                                                                   
                                                                                                                         
     ○ Intent audit · pending                                                                                            
-      Opens after the held-out failure is repaired.                                                                     
-                                                                                                                        
     ○ Process check · pending                                                                                           
-      Final process evidence waits on a clean held-out pass.                                                            
                                                                                                                         
-    Open detailed evidence for the held-out failure                                                                     
-    View tool evidence                                                                                                  
                                                                                                                         
-    Esc to Return to mission failure                                                                                    
+    Enter opens detailed evidence · Esc returns to failure                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +29,12 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · verification stays secondary to the tasks board                                                     
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

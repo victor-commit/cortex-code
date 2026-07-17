@@ -1,17 +1,12 @@
                                                                                                                         
+   master /projects/demo                                                                                               
+                                                                                                                        
+  ❯ You                                                                                                                 
+    Try YOLO mode on this locked workspace.                                                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    You · Continue the paused conversation.                                                                             
                                                                                                                         
-                                                                                                                        
-    Access change not applied                                                                                           
-                                                                                                                        
-    Autonomous changes need approval for this project.                                                                  
-                                                                                                                        
-    You are still using Careful edits, which asks before editing files.                                                 
-                                                                                                                        
-    Your access, transcript and draft are unchanged.                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +25,16 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Not applied · Careful edits remains active                                                                       │  
-  │ Quick implementation keeps the same access and adds review at the end.                                           │  
-  │ › Choose Quick implementation · same access                                                                      │  
-  │   Esc to Return to work                                                                                          │  
-  │ Nothing was applied; Careful edits remains the only applied choice.                                              │  
+  │ Mode change blocked                                                                                              │  
+  │  yolo is off for this folder until trust is raised.                                                              │  
+  │  Active mode stays always-approve.                                                                               │  
+  │                                                                                                                  │  
+  │  › Return to conversation                                                                                        │  
+  │    Open folder trust settings                                                                                    │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter returns · Esc dismisses                                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

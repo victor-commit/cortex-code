@@ -1,40 +1,40 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Connections                                                                                                         
-    Authorize OpenAI                                                                                                    
-                                                                                                                        
-    Browser one-time code · approve on the sign-in page                                                                 
-                                                                                                                        
-    1  Open this sign-in page in your browser                                                                           
-       https://auth.openai.com/device                                                                                   
-                                                                                                                        
-    2  Enter this one-time code                                                                                         
-       WDJB-MJHT                                                                                                        
-       Copy this code · it is not a password or API key                                                                 
-                                                                                                                        
-    ● Waiting for authorization                                                                                         
-      Elapsed 0m 40s · code expires in 14m                                                                              
-                                                                                                                        
-    Code is watching for a successful browser approval.                                                                 
+                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄                                                     
+                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀                                                     
+                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀                                                     
+                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀                                                     
+                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀                                                     
+                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀                                                     
+                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                     
                                                                                                                         
                                                                                                                         
+                                                  Device code sign-in                                                   
+                                                                                                                        
+                                     Approve in your browser to finish signing in.                                      
+                                                                                                                        
+                                                       BTS4-P4ZF                                                        
+                                                                                                                        
+                                        Make sure your browser shows this code.                                         
+                                                                                                                        
+                                                Waiting for approval...                                                 
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+                                       https://accounts.x.ai/device  (copy link)                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Browser sign-in · OpenAI                                                                                         │  
-  │ Waiting · reopen browser stays secondary · cancel stops cleanly                                                  │  
-  │   r for Reopen browser · secondary only                                                                          │  
-  │   Esc to cancel sign-in                                                                                          │  
-  │ Cancel invalidates this attempt and releases any local return.                                                   │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                      ctrl+d  quit                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

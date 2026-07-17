@@ -1,10 +1,11 @@
-//! Pure Cortex F1–F6 screens (auth + conversation + tools + pickers + permissions + views).
+//! Pure Cortex F1–F7 screens (auth + conversation + tools + pickers + permissions + views + orchestration).
 //! Copper brand helpers are forbidden in new paints.
 
 pub mod auth;
 pub mod chat_turn;
 pub mod conversation;
 pub mod login;
+pub mod orchestration;
 pub mod permissions;
 pub mod pickers;
 pub mod tools;
@@ -18,8 +19,8 @@ pub struct PilotSpec {
     pub category: &'static str,
 }
 
-/// Ordered pure Cortex dump inventory for F1–F6 (27 + 17 + 11 + 16 = 71).
-pub const PILOT_SCREENS: [PilotSpec; 71] = [
+/// Ordered pure Cortex dump inventory for F1–F7 (28 + 17 + 11 + 16 + 14 = 86).
+pub const PILOT_SCREENS: [PilotSpec; 86] = [
     // F1 auth (7)
     PilotSpec {
         id: "login",
@@ -49,9 +50,13 @@ pub const PILOT_SCREENS: [PilotSpec; 71] = [
         id: "connect-disconnect",
         category: "auth",
     },
-    // F2 conversation/session toolkit (9)
+    // F2 conversation/session toolkit (10, includes onboarding)
     PilotSpec {
         id: "home",
+        category: "session",
+    },
+    PilotSpec {
+        id: "onboarding",
         category: "session",
     },
     PilotSpec {
@@ -310,6 +315,63 @@ pub const PILOT_SCREENS: [PilotSpec; 71] = [
         id: "sidebar-queue",
         category: "views",
     },
+    // F7 orchestration (14) — painted as Cortex Tasks / Dashboard / plan
+    PilotSpec {
+        id: "mode-switch",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "mode-switch-refused",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "workflow-launch",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "workflow-launch-blocked",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "workflow-monitor",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "workflow-monitor-failure",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "team-board",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "reviewer-output",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "reviewer-approved",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "verification-ladder",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "intent-scorer-pass",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "intent-scorer-fail",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "concurrency-metrics",
+        category: "orchestration",
+    },
+    PilotSpec {
+        id: "tool-envelope",
+        category: "orchestration",
+    },
 ];
 
 pub fn render_pilot(id: &str) -> Result<Canvas, String> {
@@ -324,6 +386,7 @@ pub fn render_pilot(id: &str) -> Result<Canvas, String> {
         | "connect-disconnect" => auth::render(id),
         // Conversation
         "home"
+        | "onboarding"
         | "chat-turn"
         | "chat-long-scroll"
         | "streaming"
@@ -391,6 +454,21 @@ pub fn render_pilot(id: &str) -> Result<Canvas, String> {
         | "sidebar-subagents"
         | "sidebar-mcp"
         | "sidebar-queue" => views::render(id),
+        // Orchestration / Tasks / Dashboard
+        "mode-switch"
+        | "mode-switch-refused"
+        | "workflow-launch"
+        | "workflow-launch-blocked"
+        | "workflow-monitor"
+        | "workflow-monitor-failure"
+        | "team-board"
+        | "reviewer-output"
+        | "reviewer-approved"
+        | "verification-ladder"
+        | "intent-scorer-pass"
+        | "intent-scorer-fail"
+        | "concurrency-metrics"
+        | "tool-envelope" => orchestration::render(id),
         other => Err(format!("unknown pure-Cortex pilot id: {other}")),
     }
 }
@@ -405,8 +483,8 @@ mod tests {
     use crate::chrome::components::reject_copper_residual;
 
     #[test]
-    fn f1_f6_inventory_count_and_render() {
-        assert_eq!(list_pilots().len(), 71);
+    fn f1_f7_inventory_count_and_render() {
+        assert_eq!(list_pilots().len(), 86);
         for spec in list_pilots() {
             let canvas =
                 render_pilot(spec.id).unwrap_or_else(|e| panic!("{}: {e}", spec.id));

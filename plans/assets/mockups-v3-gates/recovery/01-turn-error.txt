@@ -1,24 +1,26 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Recovery                                                                                                            
-    Finish the release notes without losing the current work.                                                           
+  ❯ You                                                                                                                 
+    Explain the flush root race in one short note.                                                                      
                                                                                                                         
-    You · Summarize the remaining release notes and the still-open risks.                                               
                                                                                                                         
-    Code                                                                                                                
+  ◆ Cortex                                                                                                                
+    Two writers can skip the watched counter when the                                                                   
+    snapshot freezes mid-batch…                                                                                         
                                                                                                                         
-    The release notes cover the auth race fix, the retry window change, and one open risk…                              
                                                                                                                         
-    Completed earlier · retry window copy accepted for the release branch.                                              
+    Turn failed · provider closed the stream early                                                                      
+    Partial answer kept above · draft stays in the jewel                                                                
                                                                                                                         
-    ────────────────────────────────────────────────────────                                                            
                                                                                                                         
-    ✗ The reply stopped before it finished                                                                              
-    The partial reply was kept                                                                                          
-    Draft, transcript, and completed work stay readable.                                                                
-    Inspect the connection problem when the provider path looks broken.                                                 
-    Retry starts a new reply and replaces the partial text.                                                             
-    Continue keeps the partial reply and restores the composer.                                                         
+    › Retry turn                                                                                                        
+      Keep partial and continue                                                                                         
+      Inspect network evidence                                                                                          
+                                                                                                                        
+    Enter retries · Esc leaves the partial answer visible                                                               
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -30,11 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Recover the interrupted turn                                                                                     │  
-  │ Pick whether to replace or keep the partial reply.                                                               │  
-  │ › Retry reply                                                                                                    │  
-  │  c for Continue from partial reply                                                                               │  
-  │  Esc to Cancel · keep failure record                                                                             │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

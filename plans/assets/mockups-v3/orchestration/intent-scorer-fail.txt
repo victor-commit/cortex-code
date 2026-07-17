@@ -1,32 +1,20 @@
                                                                                                                         
+   master /projects/demo                                                                                               
                                                                                                                         
-    Mission                                                                                                             
-    Prepare the release safely and review the result.                                                                   
+    Advanced · Verification summary                                                                                     
+    Advisory outcome suggests a repair on goal fit                                                                      
                                                                                                                         
-    You · Turn the release work into a mission and walk me through it.                                                  
                                                                                                                         
-    Advanced · Quality report · needs repair                                                                            
-    Advisory only. A failing report routes to repair, not completion.                                                   
+    ✗ Goal fit needs repair                                                                                             
+    Next-step note still omits the open risk and rollback order.                                                        
                                                                                                                         
-    Result · Fail · one dimension blocks a safe completion claim                                                        
+    Signals                                                                                                             
+      ✓ Scope mostly covers the release path                                                                            
+      ✗ Risk language is incomplete in the latest note                                                                  
+      ○ Rollback sequence pending the fix task                                                                          
                                                                                                                         
-    ✓ Intent fidelity · full                                                                                            
-      Requested outcome is still present.                                                                               
                                                                                                                         
-    ✗ Scope discipline · failed                                                                                         
-      Publish-path scope still omits the open risk and rollback order.                                                  
-      Failed dimension · Scope discipline                                                                               
-                                                                                                                        
-    ● Report honesty · partial                                                                                          
-      Summary notes the issue but does not resolve it.                                                                  
-                                                                                                                        
-    Suggested fix task · Repair the safe publish path checks                                                            
-                                                                                                                        
-    This report never completes the mission. Create a fix task to continue.                                             
-                                                                                                                        
-    › Create a fix task                                                                                                 
-                                                                                                                        
-    Esc to Return to review outcome                                                                                     
+    Primary repair stays Create fix task on the review dock.                                                            
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +25,16 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Esc to return · repair on the plan-review surface                                                                   
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

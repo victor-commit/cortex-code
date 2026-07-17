@@ -1,10 +1,11 @@
-//! Public pure-Cortex dump CLI (F1–F6 auth + conversation + tools + pickers + permissions + views).
+//! Public pure-Cortex dump CLI (F1–F7 auth…orchestration + 35 gate frames).
 //!
 //! Commands:
-//!   --list                 list implemented IDs
-//!   --publish-pilots       render + publish all F1–F6 IDs into mockups-v3
-//!   --publish <id>         publish one id
-//!   --publish-batch <name> publish one batch (auth|conversation|tools|pickers|permissions|views|f4-f6)
+//!   --list                          list implemented IDs
+//!   --publish-pilots                publish all 86 IDs into mockups-v3
+//!   --publish <id>                  publish one id
+//!   --publish-batch <name>          publish one batch
+//!   --publish-gates                 publish all 35 gate frames into mockups-v3-gates
 
 use std::process::ExitCode;
 
@@ -17,7 +18,7 @@ fn main() -> ExitCode {
     if args == ["--list"] {
         for pilot in mockup_harness_v4::list_pilots() {
             println!(
-                "{}\t{}\timplemented\tf1-f6\tpure-cortex-shell",
+                "{}\t{}\timplemented\tf1-f7\tpure-cortex-shell",
                 pilot.category, pilot.id
             );
         }
@@ -39,6 +40,26 @@ fn main() -> ExitCode {
             }
             Err(error) => {
                 eprintln!("publish-pilots failed: {error}");
+                ExitCode::from(3)
+            }
+        };
+    }
+    if args == ["--publish-gates"] {
+        return match mockup_harness_v4::publish_gates() {
+            Ok(results) => {
+                println!("published {} gate frames", results.len());
+                for result in results {
+                    println!(
+                        "gate {} txt={} png={}",
+                        result.category,
+                        result.txt_sha256,
+                        result.png_sha256.as_deref().unwrap_or("-")
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("publish-gates failed: {error}");
                 ExitCode::from(3)
             }
         };
@@ -89,6 +110,7 @@ fn main() -> ExitCode {
                 matches!(
                     id,
                     "home"
+                        | "onboarding"
                         | "chat-turn"
                         | "chat-long-scroll"
                         | "streaming"
@@ -174,6 +196,26 @@ fn main() -> ExitCode {
                         | "sidebar-queue"
                 )
             }),
+            "orchestration" | "f7" => Box::new(|id| {
+                matches!(
+                    id,
+                    "mode-switch"
+                        | "mode-switch-refused"
+                        | "workflow-launch"
+                        | "workflow-launch-blocked"
+                        | "workflow-monitor"
+                        | "workflow-monitor-failure"
+                        | "team-board"
+                        | "reviewer-output"
+                        | "reviewer-approved"
+                        | "verification-ladder"
+                        | "intent-scorer-pass"
+                        | "intent-scorer-fail"
+                        | "concurrency-metrics"
+                        | "tool-envelope"
+                        | "onboarding"
+                )
+            }),
             "f4-f6" => Box::new(|id| {
                 matches!(
                     id,
@@ -225,7 +267,7 @@ fn main() -> ExitCode {
             }),
             other => {
                 eprintln!(
-                    "unknown batch: {other} (auth|conversation|tools|pickers|permissions|views|f4-f6)"
+                    "unknown batch: {other} (auth|conversation|tools|pickers|permissions|views|orchestration|f4-f6|f7)"
                 );
                 return ExitCode::from(2);
             }
@@ -263,10 +305,11 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "mockup-harness-v4 (pure Cortex dump F1-F6)\n\
+        "mockup-harness-v4 (pure Cortex dump F1-F7 + gates)\n\
          --list\n\
          --publish-pilots\n\
+         --publish-gates\n\
          --publish <id>\n\
-         --publish-batch <auth|conversation|tools|pickers|permissions|views|f4-f6>\n"
+         --publish-batch <auth|conversation|tools|pickers|permissions|views|orchestration|f4-f6|f7>\n"
     );
 }

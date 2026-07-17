@@ -3,14 +3,15 @@
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
     paint_assistant, paint_braille_logo, paint_default_prompt, paint_default_putty,
-    paint_demo_top_bar, paint_turn_status_busy, paint_user_turn, reject_copper_residual,
-    MODEL_LABEL, PROMPT_ARROW,
+    paint_demo_top_bar, paint_dock_frame, paint_turn_status_busy, paint_user_turn,
+    reject_copper_residual, MODEL_LABEL, PROMPT_ARROW,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme};
 
 pub fn render(id: &str) -> Result<Canvas, String> {
     match id {
         "home" => home(),
+        "onboarding" => onboarding(),
         "chat-turn" => chat_turn(),
         "chat-long-scroll" => chat_long_scroll(),
         "streaming" => streaming(),
@@ -21,6 +22,73 @@ pub fn render(id: &str) -> Result<Canvas, String> {
         "toasts" => toasts(),
         other => Err(format!("unknown conversation pure-Cortex id: {other}")),
     }
+}
+
+fn onboarding() -> Result<Canvas, String> {
+    let mut canvas = Canvas::new(Theme::CortexNight);
+    paint_demo_top_bar(&mut canvas)?;
+    paint_braille_logo(&mut canvas, 4)?;
+    canvas.write_centered(
+        13,
+        "Welcome to Cortex",
+        TextStyle::bold(ColorToken::Bright),
+    )?;
+    canvas.write_centered(
+        15,
+        "Set up your first conversation",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+    canvas.write(
+        18,
+        4,
+        "Choose the model Cortex will use when you begin.",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        19,
+        4,
+        &format!("Recommended: {MODEL_LABEL} · balanced everyday coding."),
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    canvas.write(
+        21,
+        4,
+        "You can change it later. Sign-in can wait until you need cloud tools.",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    canvas.write(
+        23,
+        4,
+        "Permission mode: always-approve · Shift+Tab cycles later.",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+    paint_dock_frame(
+        &mut canvas,
+        28,
+        9,
+        &format!("{MODEL_LABEL} · recommended starting model"),
+        "Enter continues · s skips · m models · Esc back",
+    )?;
+    canvas.write(
+        30,
+        5,
+        "› Continue",
+        TextStyle::bold(ColorToken::Accent),
+    )?;
+    canvas.write(
+        31,
+        5,
+        "  Skip with this safe default",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        32,
+        5,
+        "  Review other models",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    paint_default_putty(&mut canvas)?;
+    finish(canvas)
 }
 
 fn home() -> Result<Canvas, String> {
@@ -396,6 +464,7 @@ mod tests {
     fn conversation_batch_pure_cortex() {
         for id in [
             "home",
+            "onboarding",
             "chat-turn",
             "chat-long-scroll",
             "streaming",

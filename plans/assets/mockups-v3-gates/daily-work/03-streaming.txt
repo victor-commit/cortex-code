@@ -1,19 +1,15 @@
                                                                                                                         
-                                                                                                                        
-    Current conversation                                                                                                
-    Find where the server applies the rate limit and explain the safe path.                                             
-     › You · Find where the server applies the rate limit and explain the safe path.                                    
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
-    Code                                                                                                                
+  ❯ You                                                                                                                 
+    Explain the race in the flush root briefly.                                                                         
                                                                                                                         
-    The refactor moves token checks into one shared session guard.                                                      
                                                                                                                         
-    That keeps sign-in, refresh, and sign-out on the same safety rule.                                                  
-                                                                                                                        
-    ● Writing reply · 24s · 2 sections received · Esc to stop reply                                                     
-                                                                                                                        
-    When this reply is complete, Code will automatically search project files.                                          
+  ◆ Cortex                                                                                                                
+    Two writers can skip the watched counter when the                                                                   
+    snapshot freezes mid-batch. Guard with a sequence…                                                                  
+    █                                                                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,12 +25,16 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ● Responding · 24s · Esc to stop                                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ⠧ Responding… 1.4s                                                                                0m04s ⇣2.1k [stop]  
+                                                                                                                        
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ › Type a follow-up, it will wait until this reply finishes                                                       │  
-  │   Claude Opus 4.8 · Work mode                                                                                    │  
+  │ ❯                                                                                                                │  
+  │   Cortex · always-approve                                                                                      │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-  ~/project · main · Claude Opus 4.8                                                                                    
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

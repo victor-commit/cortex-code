@@ -1,40 +1,40 @@
                                                                                                                         
-                                                                                                                        
-     ██████              ██                                                                                             
-    ██                   ██                                                                                             
-    ██        ████    █████   ████                                                                                      
-    ██       ██  ██  ██  ██  ██████                                                                                     
-    ██       ██  ██  ██  ██  ██                                                                                         
-     ██████   ████    █████   █████                                                                                     
+   master /projects/demo                                                                                               
                                                                                                                         
                                                                                                                         
+                                                     ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄                                                     
+                                                     ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀                                                     
+                                                     ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀                                                     
+                                                     ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀                                                     
+                                                     ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀                                                     
+                                                     ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀                                                     
+                                                     ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀                                                     
+                                                                                                                        
+                                                                                                                        
+                                                 Welcome to Cortex                                                  
+                                                                                                                        
+                                             Set up your first conversation                                             
+                                                                                                                        
+                                                                                                                        
+    Choose the model Cortex will use when you begin.                                                                      
+    Recommended: Cortex · balanced everyday coding.                                                                   
+                                                                                                                        
+    You can change it later. Sign-in can wait until you need cloud tools.                                               
+                                                                                                                        
+    Permission mode: always-approve · Shift+Tab cycles later.                                                           
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-    Set up your first conversation                                                                                      
-                                                                                                                        
-    Choose the model Code will use when you begin.                                                                      
-    Recommended: Claude Sonnet 4.5 · balanced everyday coding.                                                          
-                                                                                                                        
-    You can change it later. You do not need to connect an account yet.                                                 
-                                                                                                                        
-    How Code should work: Careful edits, which asks before changing files.                                              
-                                                                                                                        
-    Continue uses the safe recommendation in the dock.                                                                  
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Claude Sonnet 4.5 · recommended starting model                                                                   │  
-  │ › Continue                                                                                                       │  
-  │   Skip with this safe default                                                                                    │  
-  │   Review other models                                                                                            │  
-  │ Enter to continue · s to skip · m for models · Esc to go back                                                    │  
+  │ Cortex · recommended starting model                                                                            │  
+  │  › Continue                                                                                                      │  
+  │    Skip with this safe default                                                                                   │  
+  │    Review other models                                                                                           │  
+  │                                                                                                                  │  
+  │                                                                                                                  │  
+  │ Enter continues · s skips · m models · Esc back                                                                  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
-  ~/project · main · Claude Sonnet 4.5                                                                                  
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      

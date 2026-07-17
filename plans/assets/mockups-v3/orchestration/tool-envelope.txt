@@ -1,32 +1,26 @@
                                                                                                                         
-                                                                                                                        
-    Mission                                                                                                             
-    Prepare the release safely and review the result.                                                                   
-                                                                                                                        
-    You · Turn the release work into a mission and walk me through it.                                                  
+   master /projects/demo                                                                                               
                                                                                                                         
     Advanced · Tool evidence                                                                                            
-    Focused diagnostics for the selected tool call. Secrets stay redacted.                                              
+    Focused tool payload with truncation and redaction marks                                                            
                                                                                                                         
-    Origin · validation on the safe publish path                                                                        
                                                                                                                         
-    ✓ Success · list publish checklist                                                                                  
-      Payload · 12 checklist rows · truncated after 400 bytes …                                                         
-      Credential fields · [redacted]                                                                                    
+    Shell · cargo test publish -- --nocapture                                                                           
+    Exit · 1 · 4.2s · truncated at 12k / 48k bytes                                                                      
                                                                                                                         
-    ✗ Execution error · verify safe publish path                                                                        
-      Outcome · command failed with a missing path marker.                                                              
-      Payload · error body truncated · secrets redacted.                                                                
+    Excerpt                                                                                                             
+      running 14 tests                                                                                                  
+      test path::safe_publish ... ok                                                                                    
+      test path::rollback_note ... FAILED                                                                               
+      assertion left missing steps[]                                                                                    
+      … truncated …                                                                                                     
                                                                                                                         
-    ○ Refusal · ship without human approval                                                                             
-      Outcome · refused · the tool did not run.                                                                         
-      Reason · risky action needs explicit permission first.                                                            
-      Payload · none · refusal carries no success body.                                                                 
+    Redacted                                                                                                            
+      env CORTEX_DEPLOYMENT_KEY=••••••••                                                                                  
+      path /home/user/.cortex/auth.json (hidden)                                                                          
                                                                                                                         
-    Raw JSON, transport fields, and secret values stay out of this view.                                                
                                                                                                                         
-    Esc to Return to validation stages                                                                                  
-                                                                                                                        
+    Page 1 of 3 · contiguous exact-byte windows                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +31,10 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ~/project · main · Claude Opus 4.8                                                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+    Left/Right pages · Esc returns · no raw secret dump                                                                 
+                                                                                                                        
+ Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
