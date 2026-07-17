@@ -1,16 +1,16 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
                                                                                                                         
-  ❯ You                                                                                                                 
-    Draft a longer request without losing the mode chip.                                                                
-                                                                                                                        
+  ❯ Draft a longer request without losing the mode chip.                                                                
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Multi-line jewel · draft wraps while mode stays visible                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯ Review the retry helper,                                                                                       │  
+  │ ❯ Review the retry helper,                                                     Cortex (high) · always-approve  │  
   │   list the remaining risks,                                                                                      │  
   │   and propose one focused test.                                                                                  │  
-  │   Draft · 3 lines · Cortex · always-approve                                                                    │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

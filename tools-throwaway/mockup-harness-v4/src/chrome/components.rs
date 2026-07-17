@@ -698,6 +698,20 @@ pub fn reject_structure_residual(text: &str) -> Result<(), String> {
     if text.contains("Draft ·") {
         return Err("pure-structure residual refused: Draft·N invent".to_owned());
     }
+    // Gallery/meta monologue invents (pure-structure-law hard ban #7).
+    for monologue in [
+        "Multi-line jewel",
+        "expanded thinking kept collapsed",
+        "statusline promises",
+        "putty lectures",
+        "jump with timeline rail",
+    ] {
+        if text.contains(monologue) {
+            return Err(format!(
+                "pure-structure residual refused: gallery monologue {monologue:?}"
+            ));
+        }
+    }
     // Zero-padded minute form for sub-minute timers (e.g. 0m04s).
     if text.split_whitespace().any(|tok| {
         tok.len() >= 4

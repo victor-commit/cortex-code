@@ -1,16 +1,16 @@
-                                                                                                                        
-   master /projects/demo                                                                                               
-                                                                                                                        
-                                                                                                                        
-  ❯ You                                                                                                                 
-    Compress the long thinking from the last answer.                                                                    
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    ◇ Thought for 12s · Enter to expand                                                                                 
+  ❯ Compress the long thinking from the last answer.                                                                    
                                                                                                                         
-    Pinned fixture ids and rebuilt the group counter                                                                    
-    before re-running the flaky suite.                                                                                  
+  ◆ Thought for 12s                                                                                                     
+    ◇ Enter to expand                                                                                                   
+                                                                                                                        
+  Summary                                                                                                               
+  Pinned fixture ids and rebuilt the group counter before re-running the suite.                                         
+  Stale membership no longer survives across workers after the temp key clear.                                          
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯                                                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯                                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

@@ -1,23 +1,21 @@
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
-   master /projects/demo                                                                                               
+  ❯ Explain the race in the flush root briefly.                                                               8:19 AM   
                                                                                                                         
+  ◆ Thought for 1.4s                                                                                                    
                                                                                                                         
-  ❯ You                                                                                                                 
-    Explain the race in the flush root briefly.                                                                         
+  Race structure                                                                                                        
+  Two writers can skip the watched counter when the snapshot freezes mid-batch.                                         
+  A sequence gate re-checks membership before the flush root publishes.                                                 
                                                                                                                         
+  Guard                                                                                                                 
+  - freeze the related sequence before the write                                                                        
+  - recompute the counter only after both writers quiesce                                                               
+  - surface a short elapsed timer while the stream is live                                                              
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Two writers can skip the watched counter when the                                                                   
-    snapshot freezes mid-batch. Guard with a sequence…                                                                  
-    █                                                                                                                   
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  ────────────────────────                                                                                              
+  The partial answer stream keeps the same heading ladder as the final turn.                                            
+  █                                                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -29,12 +27,14 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ⠧ Responding… 1.4s                                                                                0m04s ⇣2.1k [stop]  
+                                                                                                                        
+                                                                                                                        
+  ⠧ Responding… 1.4s                                                                                 4.0s ⇣2.1k [stop]  
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯                                                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯                                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

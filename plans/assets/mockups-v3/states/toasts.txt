@@ -1,13 +1,13 @@
-                                                                                                                        
-   master /projects/demo                                                                                               
-                                                                                                                        
-                                                                                                                        
-  ❯ You                                                                                                                 
-    Save the export and maybe fire a toast.                                                                             
+  ~/projects/demo                                                                                          9.5K / 500K  
                                                                                                                         
                                                                                                                         
-  ◆ Cortex                                                                                                                
-    Export packed. Showing confirmations above the prompt.                                                              
+  ❯ Save the export and maybe fire a toast.                                                                             
+                                                                                                                        
+  ◆ Thought for 0.8s                                                                                                    
+                                                                                                                        
+  Export                                                                                                                
+  Export packed. Confirmations stack above the prompt jewel.                                                            
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -32,9 +32,9 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯                                                                                                                │  
-  │   Cortex · always-approve                                                                                      │  
+  │ ❯                                                                              Cortex (high) · always-approve  │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+ Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      

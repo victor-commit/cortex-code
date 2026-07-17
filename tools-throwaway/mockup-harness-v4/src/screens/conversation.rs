@@ -1,10 +1,15 @@
 //! Pure conversation + shell states (F2).
+//!
+//! Pure-structure M1: shared chrome primitives + densified bodies matching the
+//! official busy-chat DNA (`library/pure-structure-law.md`).
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
-    paint_assistant, paint_braille_logo, paint_default_prompt, paint_default_putty,
-    paint_demo_top_bar, paint_dock_frame, paint_turn_status_busy, paint_user_turn,
-    reject_copper_residual, MODEL_LABEL, PROMPT_ARROW,
+    default_model_chip, format_turn_timer, paint_assistant, paint_braille_logo,
+    paint_default_prompt, paint_default_putty, paint_demo_top_bar, paint_dock_frame,
+    paint_md_primary_header, paint_md_secondary_header, paint_thought_line,
+    paint_turn_status_busy, paint_user_turn, paint_user_turn_with_timestamp,
+    reject_copper_residual, reject_structure_residual, MODEL_LABEL, PROMPT_ARROW,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme};
 
@@ -26,6 +31,8 @@ pub fn render(id: &str) -> Result<Canvas, String> {
 
 fn onboarding() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
+    // Pre-auth / first-run: authenticated demo top is still fine for post-login
+    // empty shells; onboarding keeps demo cwd+budget for product continuity.
     paint_demo_top_bar(&mut canvas)?;
     paint_braille_logo(&mut canvas, 4)?;
     canvas.write_centered(
@@ -120,31 +127,37 @@ fn home() -> Result<Canvas, String> {
     finish(canvas)
 }
 
+/// Dense idle completed turn: bare user wash, Thought, green/blue ladder body.
 fn chat_turn() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_demo_top_bar(&mut canvas)?;
-    paint_user_turn(
+    paint_user_turn_with_timestamp(
         &mut canvas,
-        4,
+        3,
         &[
             "Check the retry path before we merge.",
             "Keep the summary short and list one follow-up test.",
         ],
+        Some("8:19 AM"),
     )?;
+    paint_thought_line(&mut canvas, 6, "1.2s")?;
+    paint_md_primary_header(&mut canvas, 8, "Retry guard")?;
     paint_assistant(
         &mut canvas,
         9,
         &[
-            "Applied the retry guard and covered the failure path.",
-            "Follow-up: add an integration case for rate-limit floors.",
+            "Applied the retry guard and covered the failure path in the flush root.",
+            "The watcher now freezes the related sequence before the mid-batch skip.",
         ],
     )?;
-    canvas.write(13, 4, "Thought for 1s", TextStyle::plain(ColorToken::Accent))?;
-    canvas.write(
-        14,
-        4,
-        "◇ expanded thinking kept collapsed in this idle frame",
-        TextStyle::plain(ColorToken::Muted),
+    paint_md_secondary_header(&mut canvas, 12, "Follow-up")?;
+    paint_assistant(
+        &mut canvas,
+        13,
+        &[
+            "- add an integration case for rate-limit floors",
+            "- keep the suite assertion on membership rebuild",
+        ],
     )?;
     paint_default_prompt(&mut canvas, 33, "Add a note about the remaining test hunk…")?;
     paint_default_putty(&mut canvas)?;
@@ -155,74 +168,135 @@ fn chat_turn() -> Result<Canvas, String> {
     if !text.contains(MODEL_LABEL) {
         return Err("missing Cortex model chrome".to_owned());
     }
+    if !text.contains(&default_model_chip()) && !text.contains("Cortex (high)") {
+        return Err("missing right-aligned effort chip".to_owned());
+    }
     finish(canvas)
 }
 
 fn chat_long_scroll() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_demo_top_bar(&mut canvas)?;
-    // Earlier turns compressed at top.
-    canvas.write(3, 2, "❯ You", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(4, 4, "Earlier: sketch the cache invalidation plan.", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(5, 2, "◆ Cortex", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(6, 4, "Outlined a two-phase write-through plan.", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(8, 2, "❯ You", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(9, 4, "Then tight-loop the HTTP client retries.", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(10, 2, "◆ Cortex", TextStyle::plain(ColorToken::Dim))?;
+    // Dim earlier turns use the same bare-user + assistant body form (no nameplates).
     canvas.write(
-        11,
-        4,
-        "Added jittered backoff and a ceiling helper.",
+        2,
+        2,
+        "❯ Earlier: sketch the cache invalidation plan.",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+    canvas.write(
+        3,
+        2,
+        "Outlined a two-phase write-through plan with a flush root.",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+    canvas.write(
+        5,
+        2,
+        "❯ Then tight-loop the HTTP client retries.",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+    canvas.write(
+        6,
+        2,
+        "Added jittered backoff and a ceiling helper on 429 floors.",
         TextStyle::plain(ColorToken::Dim),
     )?;
     // Recent turns full wash near composer.
     paint_user_turn(
         &mut canvas,
-        14,
+        9,
         &["Ship it. Summarize what landed and what's left."],
     )?;
+    paint_thought_line(&mut canvas, 11, "2.4s")?;
+    paint_md_primary_header(&mut canvas, 13, "What landed")?;
+    paint_assistant(
+        &mut canvas,
+        14,
+        &[
+            "Retry path is guarded; flush root is deterministic under concurrent writers.",
+            "Jittered backoff covers 429 floors; write-through plan keeps membership cold.",
+        ],
+    )?;
+    paint_md_secondary_header(&mut canvas, 17, "Still open")?;
     paint_assistant(
         &mut canvas,
         18,
         &[
-            "Retry path is guarded; flush root is deterministic.",
-            "Left: integration case for 429 floors + docs note.",
+            "- integration case for 429 floors",
+            "- short docs note on write-through phases",
         ],
     )?;
     canvas.write(
-        23,
-        4,
-        "↑ 4 earlier turns · jump with timeline rail",
-        TextStyle::plain(ColorToken::Muted),
+        21,
+        2,
+        "────────────────────────",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+    paint_assistant(
+        &mut canvas,
+        22,
+        &["4 earlier turns above · ↑ to scroll"],
     )?;
     paint_default_prompt(&mut canvas, 33, "")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
 }
 
+/// Busy streaming DNA: top budget, bare user, Thought, dense ladder, turn-status, jewel.
 fn streaming() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
     paint_demo_top_bar(&mut canvas)?;
-    paint_user_turn(
+    paint_user_turn_with_timestamp(
         &mut canvas,
-        4,
+        2,
         &["Explain the race in the flush root briefly."],
+        Some("8:19 AM"),
     )?;
-    canvas.write(8, 2, "◆ Cortex", TextStyle::accent())?;
+    paint_thought_line(&mut canvas, 4, "1.4s")?;
+    paint_md_primary_header(&mut canvas, 6, "Race structure")?;
+    paint_assistant(
+        &mut canvas,
+        7,
+        &[
+            "Two writers can skip the watched counter when the snapshot freezes mid-batch.",
+            "A sequence gate re-checks membership before the flush root publishes.",
+        ],
+    )?;
+    paint_md_secondary_header(&mut canvas, 10, "Guard")?;
+    paint_assistant(
+        &mut canvas,
+        11,
+        &[
+            "- freeze the related sequence before the write",
+            "- recompute the counter only after both writers quiesce",
+            "- surface a short elapsed timer while the stream is live",
+        ],
+    )?;
     canvas.write(
-        9,
-        4,
-        "Two writers can skip the watched counter when the",
-        TextStyle::plain(ColorToken::Text),
+        15,
+        2,
+        "────────────────────────",
+        TextStyle::plain(ColorToken::Dim),
     )?;
-    canvas.write(
-        10,
-        4,
-        "snapshot freezes mid-batch. Guard with a sequence…",
-        TextStyle::plain(ColorToken::Text),
+    paint_assistant(
+        &mut canvas,
+        16,
+        &[
+            "The partial answer stream keeps the same heading ladder as the final turn.",
+            "█",
+        ],
     )?;
-    canvas.write(11, 4, "█", TextStyle::bold(ColorToken::Accent))?;
-    paint_turn_status_busy(&mut canvas, 31, "Responding… 1.4s", "4.0s", "2.1k")?;
+    // Re-style the caret so it still reads as live stream caret.
+    canvas.write(17, 2, "█", TextStyle::bold(ColorToken::Accent))?;
+    let phase = format!("Responding… {}", format_turn_timer(1.4));
+    paint_turn_status_busy(
+        &mut canvas,
+        31,
+        &phase,
+        &format_turn_timer(4.0),
+        "2.1k",
+    )?;
     paint_default_prompt(&mut canvas, 33, "")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)
@@ -233,45 +307,46 @@ fn reasoning() -> Result<Canvas, String> {
     paint_demo_top_bar(&mut canvas)?;
     paint_user_turn(
         &mut canvas,
-        4,
+        3,
         &["Why did the flaky suite pass only after shred?"],
     )?;
-    canvas.write(8, 2, "◆ Cortex", TextStyle::accent())?;
+    paint_thought_line(&mut canvas, 5, "12s")?;
+    // Expanded thinking body (diamonds on thought steps, not as Cortex nameplate).
     canvas.write(
-        9,
-        4,
-        "Thought for 12s",
-        TextStyle::bold(ColorToken::Accent),
-    )?;
-    canvas.write(
-        10,
+        6,
         4,
         "◇ The failed worker reused a stale group counter.",
         TextStyle::plain(ColorToken::Accent),
     )?;
     canvas.write(
-        11,
+        7,
         4,
         "◇ Force-clearing temp keys resets membership.",
         TextStyle::plain(ColorToken::Accent),
     )?;
     canvas.write(
-        12,
+        8,
         4,
         "◇ Plan: pin fixture ids and assert counter rebuild.",
         TextStyle::plain(ColorToken::Accent),
     )?;
-    canvas.write(
-        14,
-        4,
-        "The suite flattened once the group counter rebuilt",
-        TextStyle::plain(ColorToken::Text),
+    paint_md_primary_header(&mut canvas, 10, "Root cause")?;
+    paint_assistant(
+        &mut canvas,
+        11,
+        &[
+            "The suite flattened once the group counter rebuilt from empty membership.",
+            "Pin that rebuild as an explicit assert before re-running the flaky suite.",
+        ],
     )?;
-    canvas.write(
+    paint_md_secondary_header(&mut canvas, 14, "Fix")?;
+    paint_assistant(
+        &mut canvas,
         15,
-        4,
-        "from empty membership. Pin that as an explicit assert.",
-        TextStyle::plain(ColorToken::Text),
+        &[
+            "- shred temp keys that own stale membership",
+            "- pin fixture ids so counters cannot drift across workers",
+        ],
     )?;
     paint_default_prompt(&mut canvas, 33, "")?;
     paint_default_putty(&mut canvas)?;
@@ -283,27 +358,25 @@ fn reasoning_collapsed() -> Result<Canvas, String> {
     paint_demo_top_bar(&mut canvas)?;
     paint_user_turn(
         &mut canvas,
-        4,
+        3,
         &["Compress the long thinking from the last answer."],
     )?;
-    canvas.write(8, 2, "◆ Cortex", TextStyle::accent())?;
+    // Collapsed Thought only — no nameplate, no monologue about "kept collapsed".
+    paint_thought_line(&mut canvas, 5, "12s")?;
     canvas.write(
+        6,
+        4,
+        "◇ Enter to expand",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    paint_md_primary_header(&mut canvas, 8, "Summary")?;
+    paint_assistant(
+        &mut canvas,
         9,
-        4,
-        "◇ Thought for 12s · Enter to expand",
-        TextStyle::plain(ColorToken::Accent),
-    )?;
-    canvas.write(
-        11,
-        4,
-        "Pinned fixture ids and rebuilt the group counter",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        12,
-        4,
-        "before re-running the flaky suite.",
-        TextStyle::plain(ColorToken::Text),
+        &[
+            "Pinned fixture ids and rebuilt the group counter before re-running the suite.",
+            "Stale membership no longer survives across workers after the temp key clear.",
+        ],
     )?;
     paint_default_prompt(&mut canvas, 33, "")?;
     paint_default_putty(&mut canvas)?;
@@ -315,40 +388,51 @@ fn rich_response() -> Result<Canvas, String> {
     paint_demo_top_bar(&mut canvas)?;
     paint_user_turn(
         &mut canvas,
-        3,
+        2,
         &["Document the recovery procedure with steps and a sample."],
     )?;
-    canvas.write(6, 2, "◆ Cortex", TextStyle::accent())?;
-    canvas.write(7, 4, "Recovery procedure", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        9,
-        4,
-        "1. Stop the worker with [stop] or Ctrl+c.",
-        TextStyle::plain(ColorToken::Text),
+    paint_thought_line(&mut canvas, 4, "3.1s")?;
+    paint_md_primary_header(&mut canvas, 6, "Recovery procedure")?;
+    paint_assistant(
+        &mut canvas,
+        7,
+        &["Use the ordered steps below. Stop live work first; only then clear stale keys."],
     )?;
-    canvas.write(
+    paint_md_secondary_header(&mut canvas, 9, "Steps")?;
+    paint_assistant(
+        &mut canvas,
         10,
-        4,
-        "2. Clear temp keys that hold stale membership.",
-        TextStyle::plain(ColorToken::Text),
+        &[
+            "1. Stop the worker with [stop] or Ctrl+c.",
+            "2. Clear temp keys that hold stale membership.",
+            "3. Re-run the suite and confirm the counter rebuilds.",
+            "4. Record the restored budget before the next turn.",
+        ],
     )?;
     canvas.write(
-        11,
-        4,
-        "3. Re-run the suite and confirm the counter rebuilds.",
-        TextStyle::plain(ColorToken::Text),
+        15,
+        2,
+        "────────────────────────",
+        TextStyle::plain(ColorToken::Dim),
     )?;
+    paint_md_secondary_header(&mut canvas, 16, "Sample commands")?;
     // Code block bg surface.
     let code_style = TextStyle::on(ColorToken::Text, ColorToken::CodeBg);
-    canvas.fill_row_bg(13, 4, 78, code_style)?;
-    canvas.fill_row_bg(14, 4, 78, code_style)?;
-    canvas.fill_row_bg(15, 4, 78, code_style)?;
-    canvas.write(13, 6, "cargo test --test flush_root_retry", code_style)?;
-    canvas.write(14, 6, "# expect: membership rebuilt · 0 flaky", code_style)?;
-    canvas.write(15, 6, "cargo test --test rate_limit_floors", code_style)?;
+    canvas.fill_row_bg(17, 2, 80, code_style)?;
+    canvas.fill_row_bg(18, 2, 80, code_style)?;
+    canvas.fill_row_bg(19, 2, 80, code_style)?;
+    canvas.write(17, 4, "cargo test --test flush_root_retry", code_style)?;
+    canvas.write(18, 4, "# expect: membership rebuilt · 0 flaky", code_style)?;
+    canvas.write(19, 4, "cargo test --test rate_limit_floors", code_style)?;
+    paint_assistant(
+        &mut canvas,
+        21,
+        &["See also: docs/recovery.md for the long form."],
+    )?;
+    // Tint the cross-ref as Info-blue secondary trail.
     canvas.write(
-        17,
-        4,
+        21,
+        2,
         "See also: docs/recovery.md for the long form.",
         TextStyle::plain(ColorToken::Info),
     )?;
@@ -388,13 +472,15 @@ fn toasts() -> Result<Canvas, String> {
     paint_demo_top_bar(&mut canvas)?;
     paint_user_turn(
         &mut canvas,
-        4,
+        3,
         &["Save the export and maybe fire a toast."],
     )?;
+    paint_thought_line(&mut canvas, 5, "0.8s")?;
+    paint_md_primary_header(&mut canvas, 7, "Export")?;
     paint_assistant(
         &mut canvas,
         8,
-        &["Export packed. Showing confirmations above the prompt."],
+        &["Export packed. Confirmations stack above the prompt jewel."],
     )?;
     // Toast stack floating above prompt jewel.
     canvas.write(
@@ -451,43 +537,127 @@ fn toasts() -> Result<Canvas, String> {
 }
 
 fn finish(canvas: Canvas) -> Result<Canvas, String> {
-    reject_copper_residual(&canvas.to_text())?;
+    let text = canvas.to_text();
+    reject_copper_residual(&text)?;
+    reject_structure_residual(&text)?;
     Ok(canvas)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chrome::components::{MODEL_LABEL, PROMPT_ARROW};
+    use crate::chrome::components::{default_model_chip, MODEL_LABEL, PROMPT_ARROW};
+
+    const CONVERSATION_IDS: &[&str] = &[
+        "home",
+        "onboarding",
+        "chat-turn",
+        "chat-long-scroll",
+        "streaming",
+        "reasoning",
+        "reasoning-collapsed",
+        "rich-response",
+        "empty",
+        "toasts",
+    ];
 
     #[test]
-    fn conversation_batch_pure_cortex() {
-        for id in [
-            "home",
-            "onboarding",
-            "chat-turn",
-            "chat-long-scroll",
-            "streaming",
-            "reasoning",
-            "reasoning-collapsed",
-            "rich-response",
-            "empty",
-            "toasts",
-        ] {
+    fn conversation_batch_pure_structure() {
+        for id in CONVERSATION_IDS {
             let canvas = render(id).unwrap_or_else(|e| panic!("{id}: {e}"));
             let text = canvas.to_text();
             reject_copper_residual(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+            reject_structure_residual(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
             assert_eq!(text.lines().count(), 40, "{id}");
             assert!(!text.contains("Claude Opus"), "{id}");
             assert!(!text.contains("Ask Code"), "{id}");
-            if id == "chat-turn" {
+            assert!(!text.contains("❯ You"), "{id} nameplate");
+            assert!(!text.contains("◆ Cortex"), "{id} nameplate");
+            assert!(!text.contains("expanded thinking kept collapsed"), "{id}");
+            // Authenticated top chrome carries context budget form.
+            assert!(
+                text.contains("9.5K / 500K") || text.contains("8.5K / 1.0M"),
+                "{id} missing context budget"
+            );
+            if *id == "chat-turn" {
                 assert!(text.contains(PROMPT_ARROW));
                 assert!(text.contains(MODEL_LABEL));
                 assert!(text.contains("always-approve"));
+                assert!(
+                    text.contains("Cortex (high)") || text.contains(&default_model_chip())
+                );
+                assert!(text.contains("◆ Thought for"));
+                assert!(text.contains("Retry guard") || text.contains("Follow-up"));
             }
-            if id == "streaming" {
+            if *id == "streaming" {
                 assert!(text.contains("[stop]"));
+                assert!(text.contains("◆ Thought for"));
+                assert!(text.contains("Race structure") || text.contains("Guard"));
+                assert!(!text.split_whitespace().any(|tok| {
+                    tok.len() >= 4
+                        && tok.starts_with("0m")
+                        && tok.ends_with('s')
+                        && tok[2..tok.len() - 1].chars().all(|c| c.is_ascii_digit())
+                }));
+                assert!(text.contains("Shift+Tab:mode | Ctrl+c:cancel"));
+            }
+            if *id == "rich-response" {
+                assert!(text.contains("Recovery procedure"));
+                assert!(text.contains("Steps") || text.contains("Sample"));
+                assert!(text.contains("◆ Thought for"));
+            }
+            if matches!(
+                *id,
+                "chat-turn"
+                    | "streaming"
+                    | "chat-long-scroll"
+                    | "rich-response"
+                    | "reasoning"
+                    | "reasoning-collapsed"
+                    | "toasts"
+                    | "home"
+                    | "empty"
+            ) {
+                // Idle/authenticated jewel still present where a prompt is drawn.
+                if text.contains('╭') {
+                    assert!(
+                        text.contains("always-approve") || text.contains(MODEL_LABEL),
+                        "{id} jewel missing model"
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn streaming_dna_checklist_product_form() {
+        let text = render("streaming").unwrap().to_text();
+        assert!(text.contains("~/projects/demo") || text.contains("projects/demo"));
+        assert!(text.contains("9.5K / 500K"));
+        assert!(text.contains("❯ Explain the race in the flush root briefly."));
+        assert!(!text.contains("❯ You"));
+        assert!(!text.contains("◆ Cortex"));
+        assert!(text.contains("◆ Thought for"));
+        assert!(text.contains("[stop]"));
+        assert!(
+            text.contains("Cortex (high)") || text.contains(&default_model_chip())
+        );
+        assert!(text.contains('|'), "putty must use | separators");
+        // Density: non-sparse body — green/blue ladder copy present.
+        let body_lines = text
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty()
+                    && !t.starts_with('╭')
+                    && !t.starts_with('╰')
+                    && !t.starts_with('│')
+                    && !t.contains("Shift+Tab")
+            })
+            .count();
+        assert!(
+            body_lines >= 12,
+            "streaming body too sparse: {body_lines} non-empty content-ish rows"
+        );
     }
 }

@@ -6,7 +6,8 @@
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
     paint_default_putty, paint_dock_frame, paint_picker_row, paint_picker_row_compact,
-    paint_prompt_jewel_multiline, paint_quiet_origin, reject_copper_residual, MODEL_LABEL,
+    paint_prompt_jewel_multiline, paint_quiet_origin, reject_copper_residual,
+    reject_structure_residual, MODEL_LABEL,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme};
 
@@ -845,7 +846,9 @@ fn composer_multiline() -> Result<Canvas, String> {
 }
 
 fn finish(canvas: Canvas) -> Result<Canvas, String> {
-    reject_copper_residual(&canvas.to_text())?;
+    let text = canvas.to_text();
+    reject_copper_residual(&text)?;
+    reject_structure_residual(&text)?;
     Ok(canvas)
 }
 

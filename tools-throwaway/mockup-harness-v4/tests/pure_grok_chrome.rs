@@ -358,3 +358,129 @@ fn png_glyph_coverage_sample_batch() {
         assert_eq!((width, height), (1200, 840), "{id} png size");
     }
 }
+
+/// VAL-V3-STRUCT-005 / CROSS-025: conversation family shares shell chrome without nameplates.
+#[test]
+fn conversation_family_pure_structure_shell() {
+    use mockup_harness_v4::chrome::components::{
+        default_model_chip, reject_structure_residual, DEFAULT_PUTTY,
+    };
+    let ids = [
+        "home",
+        "onboarding",
+        "chat-turn",
+        "chat-long-scroll",
+        "streaming",
+        "reasoning",
+        "reasoning-collapsed",
+        "rich-response",
+        "empty",
+        "toasts",
+        "composer-multiline",
+    ];
+    for id in ids {
+        let text = render_pilot(id)
+            .unwrap_or_else(|e| panic!("{id}: {e}"))
+            .to_text();
+        reject_structure_residual(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert!(!text.contains("❯ You"), "{id}");
+        assert!(!text.contains("◆ Cortex"), "{id}");
+        assert!(!text.contains("Multi-line jewel"), "{id}");
+        assert!(!text.contains("expanded thinking kept collapsed"), "{id}");
+        assert!(
+            text.contains("9.5K / 500K"),
+            "{id} missing authenticated context budget"
+        );
+        assert!(
+            text.contains('|') || DEFAULT_PUTTY.contains('|'),
+            "{id} putty separator"
+        );
+        if matches!(id, "streaming" | "chat-turn" | "rich-response") {
+            assert!(
+                text.contains("◆ Thought for") || id == "chat-turn",
+                "{id} expected Thought line"
+            );
+            // Dense body: some product ladder language present.
+            let dense = text.contains("Race structure")
+                || text.contains("Retry guard")
+                || text.contains("Recovery procedure")
+                || text.contains("Follow-up")
+                || text.contains("Guard")
+                || text.contains("Steps");
+            assert!(dense, "{id} body missing dense heading ladder cues");
+        }
+        if matches!(id, "streaming" | "composer-multiline" | "chat-turn" | "home" | "empty") {
+            assert!(
+                text.contains("Cortex (high)")
+                    || text.contains(&default_model_chip())
+                    || text.contains("always-approve"),
+                "{id} missing right jewel chip form"
+            );
+        }
+        if id == "streaming" {
+            assert!(text.contains("[stop]"));
+            assert!(!text.split_whitespace().any(|tok| {
+                tok.len() >= 4
+                    && tok.starts_with("0m")
+                    && tok.ends_with('s')
+                    && tok[2..tok.len() - 1].chars().all(|c| c.is_ascii_digit())
+            }));
+        }
+        if id == "composer-multiline" {
+            assert!(!text.contains("Draft ·"));
+            assert!(text.contains("Cortex (high)"));
+        }
+    }
+}
+
+/// Published gallery scan (when artifacts exist) for conversation pure-structure bans.
+#[test]
+fn published_conversation_set_structure_bans() {
+    use mockup_harness_v4::chrome::components::reject_structure_residual;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plans/assets/mockups-v3");
+    if !root.exists() {
+        return;
+    }
+    let pairs: &[(&str, &str)] = &[
+        ("session", "home"),
+        ("session", "onboarding"),
+        ("session", "chat-turn"),
+        ("session", "chat-long-scroll"),
+        ("session", "streaming"),
+        ("session", "reasoning"),
+        ("session", "reasoning-collapsed"),
+        ("session", "rich-response"),
+        ("states", "empty"),
+        ("states", "toasts"),
+        ("input", "composer-multiline"),
+    ];
+    for (cat, id) in pairs {
+        let path = root.join(cat).join(format!("{id}.txt"));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        reject_structure_residual(&text)
+            .unwrap_or_else(|e| panic!("published {cat}/{id}: {e}"));
+        assert!(!text.contains("❯ You"), "published {cat}/{id}");
+        assert!(!text.contains("◆ Cortex"), "published {cat}/{id}");
+        assert!(
+            text.contains("9.5K / 500K")
+                || text.contains("8.5K / 1.0M")
+                || text.contains("K / "),
+            "published {cat}/{id} missing context budget form"
+        );
+        if matches!(
+            *id,
+            "streaming" | "chat-turn" | "rich-response" | "composer-multiline"
+        ) {
+            assert!(!text.contains("Multi-line jewel"), "published {id}");
+            assert!(!text.contains("Draft ·"), "published {id}");
+            assert!(!text.contains("0m04s") && !text.contains("0m12s"), "published {id}");
+        }
+    }
+}
