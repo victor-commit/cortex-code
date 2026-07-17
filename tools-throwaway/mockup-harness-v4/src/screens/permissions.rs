@@ -649,7 +649,7 @@ mod tests {
         assert!(interrupt.contains("Cortex"));
         // busy paint still available as unit helper
         let mut c = Canvas::new(Theme::CortexNight);
-        paint_turn_status_busy(&mut c, 30, "Responding", "0m01s", "1k").unwrap();
+        paint_turn_status_busy(&mut c, 30, "Responding", "1.0s", "1k").unwrap();
         assert!(c.to_text().contains("[stop]"));
     }
 }

@@ -829,12 +829,6 @@ fn composer_multiline() -> Result<Canvas, String> {
         "Draft a longer request without losing the mode chip.",
         "",
     )?;
-    canvas.write(
-        12,
-        4,
-        "Multi-line jewel · draft wraps while mode stays visible",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
     paint_prompt_jewel_multiline(
         &mut canvas,
         28,
@@ -890,9 +884,18 @@ mod tests {
                 assert!(text.contains(MODEL_LABEL), "{id} missing model");
             }
             if id == "composer-multiline" {
-                assert!(text.contains("Draft · 3 lines"), "{id}");
+                // Right-aligned effort chip on draft row — no invented Draft·N meta.
+                assert!(
+                    text.contains("Cortex (high)") && text.contains("always-approve"),
+                    "{id} missing right jewel chip"
+                );
+                assert!(!text.contains("Draft ·"), "{id} Draft·N invent");
             }
             assert!(text.contains("Shift+Tab:mode"), "{id} putty");
+            assert!(
+                text.contains('|') || text.contains("  "),
+                "{id} putty must use product | / multi-space separators"
+            );
         }
     }
 }

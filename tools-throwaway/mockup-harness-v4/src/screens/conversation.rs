@@ -222,7 +222,7 @@ fn streaming() -> Result<Canvas, String> {
         TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(11, 4, "█", TextStyle::bold(ColorToken::Accent))?;
-    paint_turn_status_busy(&mut canvas, 31, "Responding… 1.4s", "0m04s", "2.1k")?;
+    paint_turn_status_busy(&mut canvas, 31, "Responding… 1.4s", "4.0s", "2.1k")?;
     paint_default_prompt(&mut canvas, 33, "")?;
     paint_default_putty(&mut canvas)?;
     finish(canvas)

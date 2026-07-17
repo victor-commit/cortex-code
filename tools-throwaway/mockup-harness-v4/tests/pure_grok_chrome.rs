@@ -2,9 +2,8 @@
 
 use mockup_harness_v4::chrome::canvas::Canvas;
 use mockup_harness_v4::chrome::components::{
-    paint_braille_logo, paint_prompt_jewel, paint_putty_footer, paint_top_branch_bar,
-    paint_turn_status_busy, reject_copper_residual, DEVICE_CODE, MODEL_LABEL, PROMPT_ARROW,
-    BRAILLE_LOGO,
+    paint_braille_logo, paint_prompt_jewel, paint_top_branch_bar, paint_turn_status_busy,
+    reject_copper_residual, DEVICE_CODE, MODEL_LABEL, PROMPT_ARROW, BRAILLE_LOGO,
 };
 use mockup_harness_v4::chrome::tokens::{
     glyph_allowed, glyph_rendering, palette, validate_glyphs, ColorToken, FORBIDDEN_COPPER_ACCENT,
@@ -246,7 +245,8 @@ fn busy_frames_expose_stop_and_putty() {
 #[test]
 fn turn_status_right_edge_is_clean_stop() {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_turn_status_busy(&mut canvas, 30, "Run command 0.2s · 0 queued", "0m12s", "4.8k")
+    // Product form under 60s is "12s", never "0m12s".
+    paint_turn_status_busy(&mut canvas, 30, "Run command 0.2s · 0 queued", "12s", "4.8k")
         .unwrap();
     let line = canvas
         .to_text()
@@ -255,9 +255,10 @@ fn turn_status_right_edge_is_clean_stop() {
         .expect("row 30")
         .to_string();
     assert!(
-        line.contains("0m12s ⇣4.8k [stop]"),
+        line.contains("12s ⇣4.8k [stop]"),
         "expected clean timer + tokens + stop, got: {line:?}"
     );
+    assert!(!line.contains("0m12s"));
     assert!(!line.contains("[s[stop]"));
     // Column math is Unicode scalar count, not UTF-8 bytes (braille + ⇣ are multi-byte).
     let stop_col = line
@@ -282,7 +283,13 @@ fn turn_status_exposes_stop_control() {
 
 #[test]
 fn prompt_jewel_and_putty_present() {
+    use mockup_harness_v4::chrome::components::{
+        default_model_chip, format_turn_timer, paint_default_putty, paint_demo_top_bar,
+        paint_user_turn, reject_structure_residual, DEFAULT_PUTTY,
+    };
     let mut canvas = Canvas::new(Theme::CortexNight);
+    paint_demo_top_bar(&mut canvas).unwrap();
+    paint_user_turn(&mut canvas, 4, &["Check timeout paths."]).unwrap();
     paint_prompt_jewel(
         &mut canvas,
         33,
@@ -291,17 +298,27 @@ fn prompt_jewel_and_putty_present() {
         "always-approve",
     )
     .unwrap();
-    paint_putty_footer(
-        &mut canvas,
-        "Shift+Tab:mode · Ctrl+c:cancel · Ctrl+.:shortcuts",
-    )
-    .unwrap();
+    paint_default_putty(&mut canvas).unwrap();
     let text = canvas.to_text();
+    reject_structure_residual(&text).unwrap();
     assert!(text.contains(PROMPT_ARROW));
     assert!(text.contains(MODEL_LABEL));
-    assert!(text.contains("Shift+Tab:mode"));
+    assert!(text.contains("Cortex (high) · always-approve") || text.contains(&default_model_chip()));
+    assert!(text.contains("9.5K / 500K"));
+    assert!(text.contains("❯ Check timeout paths."));
+    assert!(!text.contains("❯ You"));
+    assert!(!text.contains("◆ Cortex"));
+    assert!(DEFAULT_PUTTY.contains('|'));
+    assert!(text.contains("Shift+Tab:mode | Ctrl+c:cancel"));
     assert!(text.contains('╭'));
     assert!(text.contains('╰'));
+    // Draft-row chip placement: model on same line as draft.
+    let draft_row = text.lines().nth(34).unwrap();
+    assert!(draft_row.contains("draft here"));
+    assert!(draft_row.contains("always-approve"));
+    assert_eq!(format_turn_timer(4.0), "4.0s");
+    assert_eq!(format_turn_timer(15.0), "15s");
+    assert_eq!(format_turn_timer(80.0), "1m20s");
 }
 
 #[cfg(feature = "png")]

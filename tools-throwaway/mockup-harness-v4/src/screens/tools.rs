@@ -98,7 +98,7 @@ fn tool_running() -> Result<Canvas, String> {
         &mut canvas,
         31,
         "Run command 0.2s · 0 queued",
-        "0m12s",
+        "12s",
         "4.8k",
     )?;
     paint_default_prompt(&mut canvas, 33, "")?;
