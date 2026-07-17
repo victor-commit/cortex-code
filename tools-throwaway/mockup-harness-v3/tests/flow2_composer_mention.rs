@@ -2,6 +2,11 @@ use std::{path::Path, process::Command};
 
 use mockup_harness_v3::{audit::audit_screen, scenario::replay_case};
 
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 fn harness() -> Command {
     Command::new(env!("CARGO_BIN_EXE_mockup-harness-v3"))
 }
@@ -215,11 +220,31 @@ fn public_single_screen_selectors_publish_the_two_flow2_canonical_pairs() {
             .arg(screen)
             .output()
             .expect("the public canonical selector must run");
-        assert!(
-            output.status.success(),
-            "{screen} must publish after renderer preflight:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        assert!(output.status.success(), "{screen} must publish after renderer preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+    }
+    }
+    }
         for extension in ["txt", "png"] {
             assert!(
                 Path::new(&format!(

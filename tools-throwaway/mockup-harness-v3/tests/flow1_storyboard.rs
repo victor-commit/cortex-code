@@ -152,11 +152,25 @@ fn daily_work_storyboard_reconciles_all_six_manifest_transitions() {
             "pure refuse diagnostic missing: {stderr}"
         );
     } else {
-        assert!(
-            output.status.success(),
-            "daily work must publish only after all six canonical screens preflight:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        assert!(output.status.success(), "daily work must publish only after all six canonical screens preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+    }
+    }
         let manifest = String::from_utf8(output.stdout).expect("flow metadata must be UTF-8");
         assert!(manifest.contains("\"flow\":\"daily-work\""));
         assert!(manifest.contains("\"screen_id\":\"rich-response\""));

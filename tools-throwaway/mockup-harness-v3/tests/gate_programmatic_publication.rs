@@ -13,6 +13,11 @@ use mockup_harness_v3::gate_programmatic_publication::{
 };
 use mockup_harness_v3::flow_manifests;
 
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 const REPOSITORY: &str = "/projects/cortex-code";
 const MISSION_DIRECTORY: &str = "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc";
 const GATE_ROOT: &str = "/projects/cortex-code/plans/assets/mockups-v3-gates";

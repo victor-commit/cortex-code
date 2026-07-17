@@ -382,11 +382,25 @@ fn recovery_gate_publication_emits_five_ordered_aliases() {
         assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
         return;
     }
-    assert!(
-        output.status.success(),
-        "recovery must publish only after all five frames preflight:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        assert!(output.status.success(), "recovery must publish only after all five frames preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+    }
+    }
     let manifest = String::from_utf8(output.stdout).expect("flow metadata must be UTF-8");
     assert!(manifest.contains("\"flow\":\"recovery\""));
     assert!(manifest.contains("\"screen_id\":\"turn-error\""));

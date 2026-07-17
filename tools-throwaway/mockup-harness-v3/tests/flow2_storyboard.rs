@@ -266,11 +266,17 @@ fn public_storyboard_audits_bind_the_exact_flow2_fixture_and_same_turn_identity(
         .args(["--audit-json", "--flow", "input-and-approval"])
         .output()
         .expect("the public Flow 2 audit selector must run");
-    assert!(
-        output.status.success(),
-        "public Flow 2 audit failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        assert!(
+            output.status.success(),
+            "public Flow 2 audit failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let json = String::from_utf8(output.stdout).expect("audit JSON must be UTF-8");
     assert_eq!(
         json.matches("\"document_type\":\"typed-render-audit\"")
@@ -364,11 +370,31 @@ fn public_flow_publishes_six_byte_identical_canonical_aliases() {
         );
         return;
     }
-    assert!(
-        output.status.success(),
-        "input and approval must publish after preflight:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        if pure_mode() {
+        assert!(!output.status.success(), "pure-mode hybrid public publish must refuse");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("pure Cortex") || stderr.contains("pure-cortex"), "{stderr}");
+    } else {
+        assert!(output.status.success(), "input and approval must publish after preflight:\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+    }
+    }
+    }
     let manifest = String::from_utf8(output.stdout).expect("flow metadata must be UTF-8");
     assert!(manifest.contains("\"flow\":\"input-and-approval\""));
     assert!(manifest.contains("\"action\":\"Submit the prepared prompt\""));

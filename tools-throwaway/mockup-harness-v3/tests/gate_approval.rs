@@ -238,6 +238,11 @@ fn immutable_request_refuses_content_mutation() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
         let mut permissions = fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o444);
         fs::set_permissions(&path, permissions).unwrap();

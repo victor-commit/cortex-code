@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+
+fn pure_mode() -> bool {
+    mockup_harness_v3::renderer::pure_cortex_gallery_active()
+}
+
 static FIXTURE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 struct Fixture {
