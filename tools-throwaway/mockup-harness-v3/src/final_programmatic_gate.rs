@@ -44,7 +44,8 @@ const GATE_GALLERY: &str = "/projects/cortex-code/plans/assets/mockups-v3-gates"
 /// Pure-structure tools added STRUCT-007..008 and CROSS-026 (493 + 3 = 496).
 /// Pure-structure views/orch/pickers added STRUCT-009..011 and CROSS-027 (496 + 4 = 500).
 /// Pure-structure M4 seal added CROSS-028 invent ban + CROSS-029 fidelity recheck (500 + 2 = 502).
-pub const CONTRACT_ASSERTION_COUNT: usize = 502;
+/// Mission Control parallel pack added MC-001..003 + CROSS-030 (502 + 4 = 506).
+pub const CONTRACT_ASSERTION_COUNT: usize = 506;
 const DEFAULT_MISSION: &str = "/root/.factory/missions/7060a79b-ccfb-445c-9e82-ee4504b320dc";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
