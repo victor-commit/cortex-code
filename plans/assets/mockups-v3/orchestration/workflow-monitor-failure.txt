@@ -1,40 +1,40 @@
-  ~/projects/demo                                                                                          9.5K / 500K  
+  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · 9.5K / 500K  
                                                                                                                         
-  Tasks                                                                                                                 
-  Background work for this session · failures first                                                                     
+  ● RUNNING  ████████░░░░  17/42 features · 2 live · 1 failed                                                           
                                                                                                                         
-  ✗ 1 failed · 1 complete · 1 queued                                                                                    
+  Workers 3/4 · 1 failed                                   Features 17/42                                               
+  › #21 ● note-open-risks                       4m12s        ✓ publish-checklist                                        
+      v3-flow-worker                                         ✓ staging-rollback                                         
+      Execute cargo test note -- --nocapture               › ● note-open-risks             #21                          
+                                                             ✗ safe-publish-path           #22                          
+    #22 ✗ safe-publish-path                     1m40s        ● window-os-actions          #23                           
+      v3-flow-worker                                         ○ github-actions-ci                                        
+      Failed · staging checklist missing rollback            ○ e2e-test-suite                                           
                                                                                                                         
-  ▾ Subagents 1                                                                                                         
-    › ✗ Review · safe publish path                                                                                      
-      Failed · staging checklist missing the rollback step                                                              
+    #23 ● window-os-actions                     55s        Progress Log               1-8 of 24                         
+      v3-flow-worker                                       8h ago Worker #21 started [note-open-risks]                  
+      Execute npx playwright test window                   7h ago Worker #22 started [safe-publish-path]                
+                                                           7h ago Worker #23 started [window-os-actions]                
+  pool free 1 · queued 2                                   6m ago Worker #22 failed [safe-publish-path]                 
+                                                           5m ago Handoff kept pool RUNNING                             
+                                                           4m ago Worker #21 still streaming                            
+                                                           3m ago Worker #23 still streaming                            
+                                                           1m ago Pool remains 2 live · 1 free                          
                                                                                                                         
-  ▾ Tasks 1                                                                                                             
-      ✓ Task Review release notes for open risks                                                                        
-      Finished · 48s                                                                                                    
+  Focus  #21  note-open-risks                                                                                           
+  skill v3-flow-worker · milestone v3-mission-control-parallel                                                          
+  Preconditions                                                                                                         
+    mission-control-parallel-design.md present · harness-v4 builds                                                      
+    Factory MC ref available                                                                                            
+  Expected Behavior                                                                                                     
+    Multi-worker home with Parallel 3/4 and Features multi-● badges                                                     
+    Failure is per-worker; siblings keep running under RUNNING                                                          
                                                                                                                         
-  ▾ Watchers 1                                                                                                          
-      ○ Monitor next-step note after fixes                                                                              
-      Queued · waiting on failed review                                                                                 
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Repair this item?                                                                                                │  
-  │  Create a follow-up for the missing rollback note.                                                               │  
-  │                                                                                                                  │  
-  │  › Create fix task                                                                                               │  
-  │    Open evidence                                                                                                 │  
-  │    Resume conversation                                                                                           │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter creates fix · Esc keeps failure visible                                                                    │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
+  Stream  #21  note-open-risks                              Time 4m12s                                                  
+  Execute  cargo test note -- --nocapture                                                                               
+  Read  src/screens/orchestration.rs (214 lines)                                                                        
+  Read  library/mission-control-parallel-design.md (98 lines)                                                           
+  .: Running multi-worker fixture paint first                                                                           
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
+ F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    

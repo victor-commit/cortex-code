@@ -903,6 +903,9 @@ pub fn reject_structure_residual(text: &str) -> Result<(), String> {
         }
     }
     // Mission Control invent under Cortex labels (pure-structure-law hard ban #8).
+    // MC parallel pack (2026-07-21) may paint Factory "Progress Log" (capital L)
+    // and `.: Mission Control` brand; those are NOT invent residuals.
+    // Still banned: lowercase "Progress log", "Tasks monitor", Owner kanban, etc.
     for invent in [
         "Tasks monitor",
         "Goals board",

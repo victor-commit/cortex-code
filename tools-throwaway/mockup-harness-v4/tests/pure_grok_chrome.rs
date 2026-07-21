@@ -180,9 +180,10 @@ fn all_f1_f7_screens_reject_copper_brand() {
 
 #[test]
 fn orchestration_uses_tasks_dashboard_plan_language() {
+    // MC parallel pack owns workflow-monitor (VAL-V3-MC-001).
     let monitor = render_pilot("workflow-monitor").unwrap().to_text();
-    assert!(monitor.contains("Tasks"));
-    assert!(monitor.contains("Subagents") || monitor.contains("Watchers"));
+    assert!(monitor.contains(".: Mission Control"));
+    assert!(monitor.contains("Workers (live)") || monitor.contains("Parallel 3/4"));
     assert!(!monitor.contains("Claude Opus"));
     assert!(!monitor.lines().any(|l| l.trim() == "Mission"));
     assert!(!monitor.contains("Tasks monitor"));
@@ -681,7 +682,7 @@ fn published_permission_set_structure_language_bans() {
     }
 }
 
-/// VAL-V3-STRUCT-009: tasks_pane / Dashboard analogues (ban Mission Control invent).
+/// VAL-V3-STRUCT-009 + VAL-V3-MC-001/003: orch family structure bans with MC pack home.
 #[test]
 fn orchestration_family_tasks_dashboard_analogues() {
     use mockup_harness_v4::chrome::components::reject_structure_residual;
@@ -730,17 +731,41 @@ fn orchestration_family_tasks_dashboard_analogues() {
             text.contains("9.5K / 500K") || text.contains("K / "),
             "{id} inherits M1 auth budget chrome"
         );
-        assert!(
-            text.contains("Shift+Tab:mode | Ctrl+c:cancel") || text.contains("Shift+Tab"),
-            "{id} putty / mode chrome"
-        );
+        let is_mc = matches!(id, "workflow-monitor" | "workflow-monitor-failure");
+        if is_mc {
+            assert!(
+                text.contains("F Features") || text.contains("Esc chat"),
+                "{id} MC footer keys"
+            );
+        } else {
+            assert!(
+                text.contains("Shift+Tab:mode | Ctrl+c:cancel") || text.contains("Shift+Tab"),
+                "{id} putty / mode chrome"
+            );
+        }
     }
 
+    // MC parallel home (supersedes tasks_pane-only language on these IDs).
     let mon = render_pilot("workflow-monitor").unwrap().to_text();
-    assert!(mon.contains("Subagents"), "monitor needs Subagents group");
-    assert!(mon.contains("Watchers"), "monitor needs Watchers group");
-    assert!(mon.contains("Task ") || mon.contains("▾ Tasks"), "Task tag");
-    assert!(mon.contains("Monitor "), "Monitor tag");
+    assert!(mon.contains(".: Mission Control"), "MC brand");
+    assert!(mon.contains("Parallel 3/4"), "default pool 3/4");
+    assert!(
+        mon.contains("Workers (live)") || mon.contains("Workers 3/4"),
+        "Workers pane"
+    );
+    assert!(mon.contains("#21") && mon.contains("#22") && mon.contains("#23"));
+    assert!(mon.contains("Progress Log"));
+    assert!(!mon.contains("Tasks monitor"));
+
+    let fail = render_pilot("workflow-monitor-failure").unwrap().to_text();
+    assert!(fail.contains(".: Mission Control"));
+    assert!(fail.contains("● RUNNING"), "run stays RUNNING after fail");
+    assert!(fail.contains('✗'), "failed worker mark");
+    assert!(fail.contains("#21") && fail.contains("#23"), "siblings live");
+    assert!(
+        fail.contains("Workers") && fail.contains("1 failed"),
+        "failure pane names failed slot"
+    );
 
     let board = render_pilot("team-board").unwrap().to_text();
     assert!(board.contains("Dashboard"), "board is Dashboard analogue");
@@ -822,8 +847,15 @@ fn published_orchestration_set_structure_language_bans() {
     let mon = root.join("workflow-monitor.txt");
     if mon.exists() {
         let text = std::fs::read_to_string(&mon).unwrap();
-        assert!(text.contains("Subagents") || text.contains("Watchers"));
+        // After MC parallel publish: Mission Control home (not tasks_pane).
+        assert!(
+            text.contains(".: Mission Control")
+                || text.contains("Subagents")
+                || text.contains("Watchers"),
+            "published monitor is MC home or legacy tasks pane"
+        );
         assert!(!text.contains("Active work ·"));
+        assert!(!text.contains("Tasks monitor"));
     }
     let board = root.join("team-board.txt");
     if board.exists() {
