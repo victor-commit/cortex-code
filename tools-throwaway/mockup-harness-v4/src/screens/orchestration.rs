@@ -2,21 +2,21 @@
 //!
 //! Most IDs stay tasks_pane / Dashboard analogues (pure-structure).
 //! Mission Control parallel pack (user-locked 2026-07-21) owns:
-//!   `workflow-monitor`, `workflow-monitor-failure`
+//!   `workflow-monitor`, `workflow-monitor-failure`,
+//!   `concurrency-metrics`, `workflow-launch`, `workflow-launch-blocked`,
+//!   `team-board`
 //! Authority: mission `library/mission-control-parallel-design.md` +
 //! Factory ref `/tmp/factory-mission-control-ref.png`. Brand `.: Mission Control`
-//! under CortexNight with default pool 3 live / max 4. Sibling IDs
-//! (launch/pool/board) remain for the parallel pack sibling feature.
+//! under CortexNight with default pool 3 live / max 4.
 //!
 //! Source: `/tmp/grok-build-ref` tasks_pane + dashboard, pure-structure-law,
-//! and MC parallel design supersession on owned home/failure IDs.
+//! and MC parallel design supersession on owned pack IDs.
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
-    paint_assistant, paint_default_putty, paint_demo_top_bar, paint_detail_footer,
-    paint_detail_header, paint_dock_frame, paint_quiet_origin, paint_user_turn,
-    reject_copper_residual, reject_structure_residual, DEMO_CWD, DEMO_CTX_TOTAL, DEMO_CTX_USED,
-    MODEL_LABEL, PROMPT_ARROW,
+    paint_default_putty, paint_demo_top_bar, paint_detail_footer, paint_detail_header,
+    paint_dock_frame, paint_quiet_origin, reject_copper_residual, reject_structure_residual,
+    DEMO_CWD, DEMO_CTX_TOTAL, DEMO_CTX_USED,
 };
 use crate::chrome::tokens::{ColorToken, TextStyle, Theme, CANVAS_COLUMNS};
 
@@ -140,145 +140,258 @@ fn mode_switch_refused() -> Result<Canvas, String> {
     finish(canvas)
 }
 
-/// Closest Cortex: launch linked subagents/tasks from a short plan (not Mission Control worksheet).
+/// MC parallel launch (VAL-V3-MC-002): assign next queued feature into a free pool slot.
 fn workflow_launch() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    pane_title(
-        &mut canvas,
-        "Tasks",
-        "Prep linked background work for this session",
-    )?;
-    paint_user_turn(
-        &mut canvas,
-        5,
-        &["Turn the release work into tracked tasks and walk me through it."],
-    )?;
-    paint_assistant(
-        &mut canvas,
-        7,
-        &["I can open three linked items under Tasks:"],
+    paint_mc_top_bar(&mut canvas)?;
+
+    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
+    canvas.write(
+        2,
+        13,
+        "████████░░░░",
+        TextStyle::plain(ColorToken::Running),
     )?;
     canvas.write(
-        9,
         2,
-        "○ Ready · 3 proposed",
+        27,
+        "18/42 features · 3 live · 1 free slot",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+
+    canvas.write(
+        4,
+        2,
+        "Assign into free slot",
+        TextStyle::bold(ColorToken::Bright),
+    )?;
+    canvas.write(
+        5,
+        2,
+        "Pool 3/4 live · free slot #24 ready · queue depth 2",
         TextStyle::plain(ColorToken::Muted),
     )?;
-    canvas.write(11, 2, "▾ Subagents 1", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        12,
-        4,
-        "○ Review · release notes open risks",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(14, 2, "▾ Tasks 1", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        15,
-        4,
-        "○ Task Verify staging and rollback notes",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(17, 2, "▾ Watchers 1", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        18,
-        4,
-        "○ Monitor next-step note after fixes",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        20,
-        2,
-        "✓ Workspace trusted · auth ready · tools available",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-    paint_dock_frame(
-        &mut canvas,
-        28,
-        9,
-        "Start these items?",
-        "Enter starts · Esc returns to chat",
-    )?;
-    canvas.write(
-        30,
-        5,
-        "› Start tasks",
-        TextStyle::bold(ColorToken::Accent),
-    )?;
-    canvas.write(
-        31,
-        5,
-        "  Cancel · keep this plan ready",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    paint_default_putty(&mut canvas)?;
-    finish(canvas)
-}
 
-fn workflow_launch_blocked() -> Result<Canvas, String> {
-    let mut canvas = Canvas::new(Theme::CortexNight);
-    pane_title(
-        &mut canvas,
-        "Tasks",
-        "Prep linked background work for this session",
-    )?;
-    paint_user_turn(
-        &mut canvas,
-        5,
-        &["Turn the release work into tracked tasks and walk me through it."],
-    )?;
-    paint_assistant(
-        &mut canvas,
-        7,
-        &["Preflight found one missing step before tasks can run."],
+    canvas.write(7, 2, "Workers (live) 3/4", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        8,
+        2,
+        "  #21 ● note-open-risks     4m12s",
+        TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         9,
         2,
-        "✗ Blocked · folder trust pending",
-        TextStyle::plain(ColorToken::Bad),
+        "  #22 ● safe-publish-path   1m40s",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        10,
+        2,
+        "  #23 ● window-os-actions     55s",
+        TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         11,
         2,
-        "› Folder trust is still pending for /projects/demo",
-        TextStyle::bold(ColorToken::Warn),
+        "  #24 ○ free slot",
+        TextStyle::plain(ColorToken::Ok),
+    )?;
+
+    canvas.write(13, 2, "Queued features", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        14,
+        2,
+        "› ○ github-actions-ci",
+        TextStyle::bold(ColorToken::Accent),
     )?;
     canvas.write(
-        12,
+        15,
         4,
-        "Auth is ready · tools are available",
+        "skill v3-flow-worker · preconditions met · ready to assign",
         TextStyle::plain(ColorToken::Muted),
     )?;
-    canvas.write(14, 2, "▸ Subagents 0", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(15, 2, "▸ Tasks 0", TextStyle::plain(ColorToken::Dim))?;
-    canvas.write(16, 2, "▸ Watchers 0", TextStyle::plain(ColorToken::Dim))?;
     canvas.write(
-        18,
+        16,
         2,
-        "Add folder trust, then start the proposed items again.",
-        TextStyle::plain(ColorToken::Secondary),
+        "  ○ e2e-test-suite",
+        TextStyle::plain(ColorToken::Muted),
     )?;
+    canvas.write(
+        17,
+        4,
+        "skill v3-flow-worker · waits behind github-actions-ci",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+
+    canvas.write(19, 2, "Effect", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        20,
+        2,
+        "Assign github-actions-ci into free slot #24. Pool becomes Parallel 4/4.",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        21,
+        2,
+        "Queue depth drops to 1. Sibling workers keep running.",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+
     paint_dock_frame(
         &mut canvas,
         28,
         9,
-        "Complete preflight first",
-        "Enter opens trust · Esc returns",
+        "Assign queued feature into free slot?",
+        "Enter assigns · Esc returns to Mission Control",
     )?;
     canvas.write(
         30,
         5,
-        "› Open folder trust",
+        "› Assign into free slot",
         TextStyle::bold(ColorToken::Accent),
     )?;
     canvas.write(
         31,
         5,
-        "  Stay on blocked launch",
+        "  Keep queued · stay on monitor",
         TextStyle::plain(ColorToken::Text),
     )?;
-    paint_default_putty(&mut canvas)?;
-    finish(canvas)
+    paint_mc_footer(&mut canvas)?;
+    finish_mc(canvas)
+}
+
+/// MC parallel launch blocked (VAL-V3-MC-002): pool full or precondition block.
+fn workflow_launch_blocked() -> Result<Canvas, String> {
+    let mut canvas = Canvas::new(Theme::CortexNight);
+    paint_mc_top_bar_parallel(&mut canvas, "4/4")?;
+
+    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
+    canvas.write(
+        2,
+        13,
+        "██████████░░",
+        TextStyle::plain(ColorToken::Running),
+    )?;
+    canvas.write(
+        2,
+        27,
+        "20/42 features · pool full · 2 queued",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+
+    canvas.write(
+        4,
+        2,
+        "Launch blocked",
+        TextStyle::bold(ColorToken::Bright),
+    )?;
+    canvas.write(
+        5,
+        2,
+        "✗ Pool full 4/4 · no free slot for the next queued feature",
+        TextStyle::bold(ColorToken::Bad),
+    )?;
+    canvas.write(
+        6,
+        2,
+        "  One queued item also fails precondition (see below).",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+
+    canvas.write(8, 2, "Workers (live) 4/4", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        9,
+        2,
+        "  #21 ● note-open-risks     4m12s",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        10,
+        2,
+        "  #22 ● safe-publish-path   1m40s",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        11,
+        2,
+        "  #23 ● window-os-actions     55s",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        12,
+        2,
+        "  #24 ● github-actions-ci   1m05s",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        13,
+        2,
+        "  pool free 0 · max 4 · Parallel 4/4",
+        TextStyle::plain(ColorToken::Warn),
+    )?;
+
+    canvas.write(15, 2, "Queued · blocked", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        16,
+        2,
+        "› ○ e2e-test-suite",
+        TextStyle::bold(ColorToken::Warn),
+    )?;
+    canvas.write(
+        17,
+        4,
+        "Blocked · pool full · waits for any free slot",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        18,
+        2,
+        "  ○ chrome-a11y-scan",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    canvas.write(
+        19,
+        4,
+        "Blocked · precondition: Factory MC ref missing",
+        TextStyle::plain(ColorToken::Bad),
+    )?;
+
+    canvas.write(21, 2, "What happens next", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        22,
+        2,
+        "Free a slot (wait or intervene) or fix the missing precondition.",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        23,
+        2,
+        "Assign stays unavailable until pool free is at least 1 and preflight clears.",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+
+    paint_dock_frame(
+        &mut canvas,
+        28,
+        9,
+        "Cannot assign · pool full",
+        "Enter opens pool · Esc returns to Mission Control",
+    )?;
+    canvas.write(
+        30,
+        5,
+        "› Open pool board",
+        TextStyle::bold(ColorToken::Accent),
+    )?;
+    canvas.write(
+        31,
+        5,
+        "  Fix precondition on chrome-a11y-scan",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    paint_mc_footer(&mut canvas)?;
+    finish_mc_flexible(canvas, Some("4/4"))
 }
 
 /// MC parallel home (VAL-V3-MC-001): 3 live / max 4, multi-● Features rail.
@@ -511,7 +624,7 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
         )?;
     }
 
-    // Focus detail (selected worker/feature) — Factory Active Feature + Active Worker blend.
+    // Focus detail (selected worker/feature) - Factory Active Feature + Active Worker blend.
     canvas.write(
         23,
         2,
@@ -605,9 +718,61 @@ fn paint_mc_top_bar(canvas: &mut Canvas) -> Result<(), String> {
     Ok(())
 }
 
+
+fn paint_mc_top_bar_parallel(canvas: &mut Canvas, parallel: &str) -> Result<(), String> {
+    let brand = ".: Mission Control";
+    canvas.write(0, 2, brand, TextStyle::bold(ColorToken::Path))?;
+    let after_brand = 2 + brand.chars().count() as u16 + 2;
+    canvas.write(
+        0,
+        after_brand,
+        DEMO_CWD,
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    let metrics = format!(
+        "Time 32m12s · In 3.8K · Out 1.3M · Parallel {parallel} · {DEMO_CTX_USED} / {DEMO_CTX_TOTAL}"
+    );
+    let col = CANVAS_COLUMNS.saturating_sub(metrics.chars().count() as u16 + 2);
+    canvas.write(0, col, &metrics, TextStyle::plain(ColorToken::Muted))?;
+    Ok(())
+}
+
+fn finish_mc_flexible(canvas: Canvas, parallel: Option<&str>) -> Result<Canvas, String> {
+    let text = canvas.to_text();
+    reject_copper_residual(&text)?;
+    reject_structure_residual(&text)?;
+    if !text.contains(".: Mission Control") {
+        return Err("MC paint missing .: Mission Control brand".to_owned());
+    }
+    let parallel_label = parallel.unwrap_or("3/4");
+    let needle = format!("Parallel {parallel_label}");
+    if !text.contains(&needle) {
+        return Err(format!("MC paint missing {needle} pool metric"));
+    }
+    if text.contains("Tasks monitor") || text.contains("Goals board") || text.contains("Owner ·")
+    {
+        return Err("MC paint residual: banned invent chrome".to_owned());
+    }
+    if text.contains("0m")
+        && text.split_whitespace().any(|tok| {
+            tok.len() >= 4
+                && tok.starts_with("0m")
+                && tok.ends_with('s')
+                && tok[2..tok.len() - 1].chars().all(|c| c.is_ascii_digit())
+        })
+    {
+        return Err("MC paint residual: 0mNNs timer".to_owned());
+    }
+    if text.contains("Claude") || text.contains("Cortex Code") {
+        return Err("MC paint residual: Claude/Cortex wording".to_owned());
+    }
+    Ok(canvas)
+}
+
+
 fn paint_mc_footer(canvas: &mut Canvas) -> Result<(), String> {
     // Factory-like key row; putty-compatible middot separators (not exclusive
-    // Shift+Tab product putty — CROSS-028 allows non-putty MC footers).
+    // Shift+Tab product putty - CROSS-028 allows non-putty MC footers).
     canvas.write(
         39,
         1,
@@ -678,94 +843,137 @@ fn finish_mc(canvas: Canvas) -> Result<Canvas, String> {
     Ok(canvas)
 }
 
-/// Cortex Agent Dashboard: state-sorted agent rows + diamonds + dispatch ❯.
-/// Not an Owner kanban / Goals board invent.
+/// MC parallel assignment board (VAL-V3-MC-002): feature↔worker map, NOT Owner Goals kanban.
 fn team_board() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    pane_title(
-        &mut canvas,
-        "Cortex · Dashboard - 3 agents · 1 awaiting",
-        "State-sorted sessions · subagents stay under parent",
-    )?;
+    paint_mc_top_bar(&mut canvas)?;
 
-    // Needs input first (filled diamond / ●)
+    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
     canvas.write(
-        5,
         2,
-        "› ◆ reviewer · safe publish path     Awaiting your input            2m",
-        TextStyle::bold(ColorToken::Warn),
-    )?;
-    canvas.write(
-        6,
-        4,
-        "Pending: approve rollback wording · branch master worktree",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    // Working (diamond row markers from product dashboard)
-    canvas.write(
-        8,
-        2,
-        "  ◆ implementer · next-step note      Running: cargo test          12m",
+        13,
+        "████████░░░░",
         TextStyle::plain(ColorToken::Running),
     )?;
     canvas.write(
-        9,
+        2,
+        27,
+        "18/42 features · assignment board",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+
+    canvas.write(
         4,
-        "Last tool · $ cargo test note -- --nocapture",
+        2,
+        "Parallel assignment board",
+        TextStyle::bold(ColorToken::Bright),
+    )?;
+    canvas.write(
+        5,
+        2,
+        "Feature · worker · state · skill · dependency  (assignment map)",
         TextStyle::plain(ColorToken::Muted),
     )?;
 
-    // Idle / completed (hollow diamond)
+    // Column headers.
     canvas.write(
-        11,
+        7,
         2,
-        "  ◇ notes · release open risks        idle · completed             48m",
+        "Feature                    Worker   State      Skill              Depends",
+        TextStyle::bold(ColorToken::Bright),
+    )?;
+    canvas.write(
+        8,
+        2,
+        "─────────────────────────────────────────────────────────────────────────",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+
+    // Blocked / needs attention first.
+    canvas.write(
+        9,
+        2,
+        "› e2e-test-suite           -        ○ blocked  v3-flow-worker     pool free",
+        TextStyle::bold(ColorToken::Warn),
+    )?;
+    canvas.write(
+        10,
+        4,
+        "Waits on free slot · queued behind Parallel 3/4",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+
+    // Running assignments with worker badges.
+    canvas.write(
+        12,
+        2,
+        "  note-open-risks          #21      ● running  v3-flow-worker     -",
+        TextStyle::plain(ColorToken::Running),
+    )?;
+    canvas.write(
+        13,
+        2,
+        "  safe-publish-path        #22      ● running  v3-flow-worker     note-open",
+        TextStyle::plain(ColorToken::Running),
+    )?;
+    canvas.write(
+        14,
+        2,
+        "  window-os-actions        #23      ● running  v3-flow-worker     -",
+        TextStyle::plain(ColorToken::Running),
+    )?;
+
+    // Queued / free.
+    canvas.write(
+        16,
+        2,
+        "  github-actions-ci        -        ○ queued   v3-flow-worker     e2e-test",
         TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
-        12,
-        4,
-        "✓ notes reviewed · no open blockers",
+        17,
+        2,
+        "  (free slot)              #24      ○ free     -                  -",
         TextStyle::plain(ColorToken::Ok),
     )?;
 
-    // Dispatch jewel (product `❯` prompt)
-    let box_top = 28u16;
-    let left = 2u16;
-    let right = 117u16;
-    let width = (right - left + 1) as usize;
-    let top = format!("╭{}╮", "─".repeat(width - 2));
-    let bottom = format!("╰{}╯", "─".repeat(width - 2));
-    canvas.write(box_top, left, &top, TextStyle::plain(ColorToken::Border))?;
-    canvas.write(box_top + 2, left, &bottom, TextStyle::plain(ColorToken::Border))?;
+    // Done.
     canvas.write(
-        box_top + 1,
-        left,
-        "│",
-        TextStyle::plain(ColorToken::Border),
+        19,
+        2,
+        "  publish-checklist        #18      ✓ done     v3-flow-worker     -",
+        TextStyle::plain(ColorToken::Ok),
     )?;
     canvas.write(
-        box_top + 1,
-        right,
-        "│",
-        TextStyle::plain(ColorToken::Border),
+        20,
+        2,
+        "  staging-rollback         #19      ✓ done     v3-flow-worker     publish",
+        TextStyle::plain(ColorToken::Ok),
     )?;
-    let dispatch = format!("{PROMPT_ARROW} Dispatch a new agent");
+
+    canvas.write(22, 2, "Pool summary", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
-        box_top + 1,
-        left + 2,
-        &dispatch,
+        23,
+        2,
+        "Slots 3/4 live · free 1 · queue depth 2 · Parallel 3/4",
         TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
-        32,
+        24,
         2,
-        "↑/↓ select · Enter open · Esc back · Ctrl+\\ toggle",
+        "Policy · implementers parallel · validators serial",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+
+    canvas.write(
+        26,
+        2,
+        "A Assign selected · W Workers · P Pool · Esc Mission Control",
         TextStyle::plain(ColorToken::Dim),
     )?;
-    paint_default_putty(&mut canvas)?;
-    finish(canvas)
+
+    paint_mc_footer(&mut canvas)?;
+    finish_mc(canvas)
 }
 
 fn reviewer_output() -> Result<Canvas, String> {
@@ -1073,68 +1281,129 @@ fn intent_scorer_fail() -> Result<Canvas, String> {
     finish(canvas)
 }
 
-/// Closest Cortex Dashboard active-agent density (not Mission runtime invent).
+/// MC parallel pool board (VAL-V3-MC-002): slots, Parallel N/max, queue depth, policy.
 fn concurrency_metrics() -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    pane_title(
-        &mut canvas,
-        "Cortex · Dashboard - 3 agents · 1 awaiting",
-        "Runtime summary beside the agent list",
-    )?;
+    paint_mc_top_bar(&mut canvas)?;
+
+    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
     canvas.write(
-        5,
         2,
-        "◆ reviewer · safe publish path     Awaiting your input            2m",
-        TextStyle::bold(ColorToken::Warn),
-    )?;
-    canvas.write(
-        6,
-        2,
-        "◆ implementer · next-step note      Running: cargo test          12m",
+        13,
+        "████████░░░░",
         TextStyle::plain(ColorToken::Running),
     )?;
     canvas.write(
-        7,
         2,
-        "◇ notes · release open risks        idle · completed             48m",
+        27,
+        "18/42 features · pool detail",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+
+    canvas.write(4, 2, "Pool board", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        5,
+        2,
+        "Slots · Parallel 3/4 · queue depth 2 · max concurrency 4",
         TextStyle::plain(ColorToken::Muted),
     )?;
-    canvas.write(10, 2, "Summary", TextStyle::bold(ColorToken::Bright))?;
+
+    // Exception-first: free capacity and queued pressure before healthy throughput.
+    canvas.write(7, 2, "Capacity", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        8,
+        2,
+        "› Free slots 1 / 4",
+        TextStyle::bold(ColorToken::Ok),
+    )?;
+    canvas.write(
+        9,
+        4,
+        "One assign ready · Assign opens workflow-launch",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    canvas.write(
+        10,
+        2,
+        "  Queue depth 2",
+        TextStyle::plain(ColorToken::Warn),
+    )?;
     canvas.write(
         11,
         4,
-        "Elapsed · 12m40s · tokens ⇣ 48.2k this goal",
-        TextStyle::plain(ColorToken::Text),
+        "github-actions-ci · e2e-test-suite waiting on free slot",
+        TextStyle::plain(ColorToken::Muted),
     )?;
     canvas.write(
         12,
-        4,
-        "Active · 1 agent · parallel rooms 1 / 3",
-        TextStyle::plain(ColorToken::Muted),
+        2,
+        "  Live workers 3 / max 4",
+        TextStyle::plain(ColorToken::Running),
     )?;
     canvas.write(
         13,
         4,
-        &format!("Model · {MODEL_LABEL} · always-approve"),
-        TextStyle::plain(ColorToken::Secondary),
+        "#21 #22 #23 occupied · Parallel 3/4",
+        TextStyle::plain(ColorToken::Muted),
     )?;
+
+    canvas.write(15, 2, "Policy", TextStyle::bold(ColorToken::Bright))?;
     canvas.write(
         16,
         2,
-        &format!("{PROMPT_ARROW} Dispatch a new agent"),
+        "  implementers-parallel · validators-serial",
         TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
-        18,
+        17,
+        4,
+        "Implementer features share pool slots; validators run one-at-a-time.",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+
+    canvas.write(19, 2, "Slot map", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        20,
         2,
-        "Enter open agent · Esc returns to Tasks",
+        "  #21 ● note-open-risks     4m12s  v3-flow-worker",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        21,
+        2,
+        "  #22 ● safe-publish-path   1m40s  v3-flow-worker",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        22,
+        2,
+        "  #23 ● window-os-actions     55s  v3-flow-worker",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(
+        23,
+        2,
+        "  #24 ○ free",
+        TextStyle::plain(ColorToken::Ok),
+    )?;
+
+    canvas.write(25, 2, "Throughput (secondary)", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(
+        26,
+        2,
+        "  Completed 18 · remaining 24 · elapsed 32m12s · no quarantine holds",
         TextStyle::plain(ColorToken::Dim),
     )?;
-    paint_detail_footer(
-        &mut canvas,
-        "Esc to return · dashboard summary only under Advanced",
+
+    canvas.write(
+        28,
+        2,
+        "A Assign free slot · Esc Mission Control · read-only pool metrics",
+        TextStyle::plain(ColorToken::Dim),
     )?;
-    finish(canvas)
+
+    paint_mc_footer(&mut canvas)?;
+    finish_mc(canvas)
 }
 
 /// Tool evidence Latin form: `$ cmd`, never hybrid `Shell ·` invent.
@@ -1253,6 +1522,15 @@ fn finish(canvas: Canvas) -> Result<Canvas, String> {
 mod tests {
     use super::*;
 
+    const MC_PACK: &[&str] = &[
+        "workflow-monitor",
+        "workflow-monitor-failure",
+        "concurrency-metrics",
+        "workflow-launch",
+        "workflow-launch-blocked",
+        "team-board",
+    ];
+
     #[test]
     fn orchestration_batch_pure_cortex() {
         for id in [
@@ -1278,13 +1556,16 @@ mod tests {
             assert!(!text.contains("How Code should work"), "{id}");
             assert!(!text.contains("Cortex Code"), "{id}");
             assert!(!text.contains("Factory Mission"), "{id}");
-            let is_mc = matches!(id, "workflow-monitor" | "workflow-monitor-failure");
+            let is_mc = MC_PACK.contains(&id);
             if is_mc {
                 assert!(
                     text.contains(".: Mission Control"),
                     "{id} missing MC brand"
                 );
-                assert!(text.contains("Parallel 3/4"), "{id} missing pool metric");
+                assert!(
+                    text.contains("Parallel 3/4") || text.contains("Parallel 4/4"),
+                    "{id} missing pool metric"
+                );
             } else {
                 assert!(
                     text.contains("Cortex")
@@ -1353,7 +1634,6 @@ mod tests {
         assert!(mon.contains("#21"));
         assert!(mon.contains("#22"));
         assert!(mon.contains("#23"));
-        // ≥2 simultaneous live workers (fixture has 3).
         let live_marks = mon.matches("●").count();
         assert!(
             live_marks >= 2,
@@ -1384,14 +1664,12 @@ mod tests {
             .to_text();
         assert!(fail.contains(".: Mission Control"));
         assert!(fail.contains("Parallel 3/4"));
-        // Overall run remains RUNNING (not whole-mission kill).
         assert!(
             fail.contains("● RUNNING"),
             "run must stay RUNNING after per-worker fail"
         );
         assert!(fail.contains("✗"));
         assert!(fail.contains("#22"));
-        // At least one other worker still live.
         assert!(
             fail.contains("#21") && fail.contains("#23"),
             "sibling workers must remain visible"
@@ -1409,7 +1687,6 @@ mod tests {
         );
         assert!(fail.contains("failed") || fail.contains("Failed"));
         assert!(!fail.contains("Tasks monitor"));
-        // Not a single-worker-only chrome.
         let worker_ids = ["#21", "#22", "#23"]
             .iter()
             .filter(|id| fail.contains(*id))
@@ -1417,9 +1694,147 @@ mod tests {
         assert!(worker_ids >= 2, "need multi-worker presence after fail");
     }
 
+    /// VAL-V3-MC-002: pool metrics surface.
+    #[test]
+    fn mc_concurrency_metrics_shows_pool_board() {
+        let m = render("concurrency-metrics")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .to_text();
+        assert!(m.contains(".: Mission Control"));
+        assert!(m.contains("Parallel 3/4"));
+        assert!(m.contains("Pool board") || m.contains("pool"));
+        assert!(m.contains("queue depth") || m.contains("Queue depth"));
+        assert!(m.contains("Free slots") || m.contains("free"));
+        assert!(m.contains("max") || m.contains("4"));
+        assert!(
+            m.contains("validators-serial") || m.contains("validators serial"),
+            "policy hint validators-serial"
+        );
+        assert!(
+            m.contains("implementers-parallel") || m.contains("implementers parallel"),
+            "policy hint implementers-parallel"
+        );
+        assert!(m.contains("#21") && m.contains("#22") && m.contains("#23"));
+        assert!(!m.contains("Goals board"));
+        assert!(!m.contains("Owner ·"));
+        assert!(!m.contains("Tasks monitor"));
+    }
+
+    /// VAL-V3-MC-002: launch assigns queued feature into free slot.
+    #[test]
+    fn mc_workflow_launch_assigns_free_slot() {
+        let t = render("workflow-launch")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .to_text();
+        assert!(t.contains(".: Mission Control"));
+        assert!(t.contains("Parallel 3/4"));
+        assert!(
+            t.contains("Assign into free slot") || t.contains("Assign queued feature"),
+            "must show assign-into-free-slot language"
+        );
+        assert!(t.contains("free slot") || t.contains("#24"));
+        assert!(t.contains("queue depth") || t.contains("Queued"));
+        assert!(t.contains("› Assign") || t.contains("Assign into free slot"));
+        // Distinct from blocked.
+        assert!(!t.contains("Pool full 4/4") || t.contains("3/4"));
+        assert!(!t.contains("Goals board"));
+        assert!(!t.contains("Tasks monitor"));
+    }
+
+    /// VAL-V3-MC-002: launch-blocked is distinct pool-full / precondition state.
+    #[test]
+    fn mc_workflow_launch_blocked_pool_or_precondition() {
+        let t = render("workflow-launch-blocked")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .to_text();
+        assert!(t.contains(".: Mission Control"));
+        assert!(t.contains("Parallel 4/4") || t.contains("pool full") || t.contains("Pool full"));
+        assert!(
+            t.contains("Pool full") || t.contains("pool full") || t.contains("Launch blocked"),
+            "must show pool-full / blocked language"
+        );
+        assert!(
+            t.contains("precondition") || t.contains("Blocked"),
+            "precondition or blocked signal"
+        );
+        // Distinct from ready launch.
+        assert!(
+            !t.contains("› Assign into free slot"),
+            "blocked must not offer ready assign as primary"
+        );
+        assert!(t.contains("› Open pool") || t.contains("Open pool board") || t.contains("Fix precondition"));
+        assert!(!t.contains("Goals board"));
+    }
+
+    /// VAL-V3-MC-002: team-board is assignment board, not Owner Goals kanban.
+    #[test]
+    fn mc_team_board_is_assignment_not_goals_kanban() {
+        let t = render("team-board")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .to_text();
+        assert!(t.contains(".: Mission Control"));
+        assert!(t.contains("Parallel 3/4"));
+        assert!(
+            t.contains("assignment") || t.contains("Assignment"),
+            "assignment board title/copy"
+        );
+        assert!(t.contains("#21") && t.contains("#22") && t.contains("#23"));
+        assert!(t.contains("Worker") || t.contains("worker"));
+        assert!(t.contains("Feature") || t.contains("feature"));
+        // Forbidden Owner Goals kanban invent.
+        assert!(!t.contains("Goals board"));
+        assert!(!t.contains("Owner ·"));
+        assert!(!t.contains("Owner Goals"));
+        assert!(!t.contains("kanban"));
+        assert!(!t.contains("Tasks monitor"));
+        // Blocked / needs attention before healthy rows.
+        let blocked_pos = t.find("blocked").or_else(|| t.find("Blocked"));
+        let running_pos = t.find("running").or_else(|| t.find("● running"));
+        if let (Some(b), Some(r)) = (blocked_pos, running_pos) {
+            assert!(b < r, "blocked rows should appear before running rows");
+        }
+    }
+
+    /// VAL-V3-CROSS-030: entire MC pack shares shell brand + pool language.
+    #[test]
+    fn mc_pack_shell_consistency() {
+        for id in MC_PACK {
+            let t = render(id)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+                .to_text();
+            assert!(
+                t.contains(".: Mission Control"),
+                "{id} missing MC brand"
+            );
+            assert!(
+                t.contains("Parallel 3/4") || t.contains("Parallel 4/4"),
+                "{id} missing Parallel N/max"
+            );
+            assert!(
+                t.contains("9.5K / 500K") || t.contains("K / "),
+                "{id} missing CortexNight context budget"
+            );
+            assert!(!t.contains("Cortex Code"), "{id}");
+            assert!(!t.contains("Code needs"), "{id}");
+            assert!(!t.contains("Tasks monitor"), "{id}");
+            assert!(!t.contains("Goals board"), "{id}");
+            assert_eq!(t.lines().count(), 40, "{id}");
+        }
+        // Launch and blocked are distinct states.
+        let launch = render("workflow-launch").unwrap().to_text();
+        let blocked = render("workflow-launch-blocked").unwrap().to_text();
+        assert_ne!(launch, blocked, "launch and blocked must differ");
+        assert!(
+            launch.contains("Assign") && blocked.contains("blocked")
+                || blocked.contains("Pool full")
+                || blocked.contains("pool full"),
+            "distinct launch vs blocked signals"
+        );
+    }
+
     #[test]
     fn tasks_pane_and_dashboard_language_visible() {
-        // MC pack owns monitor home; sibling board/envelope keep dashboard/tool language.
+        // MC pack owns monitor + pool/launch/board; residual IDs keep tool language.
         let mon = render("workflow-monitor").unwrap().to_text();
         assert!(mon.contains(".: Mission Control"));
         assert!(mon.contains("Workers (live)"));
@@ -1427,9 +1842,8 @@ mod tests {
         assert!(!mon.contains("i intervene"));
 
         let board = render("team-board").unwrap().to_text();
-        assert!(board.contains("Dashboard"));
-        assert!(board.contains("Dispatch a new agent") || board.contains(&PROMPT_ARROW.to_string()));
-        assert!(board.contains("◆") || board.contains("◇"));
+        assert!(board.contains(".: Mission Control"));
+        assert!(board.contains("assignment") || board.contains("Assignment"));
         assert!(!board.contains("Goals board"));
         assert!(!board.contains("Owner ·"));
 

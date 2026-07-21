@@ -190,9 +190,16 @@ fn orchestration_uses_tasks_dashboard_plan_language() {
     let mode = render_pilot("mode-switch").unwrap().to_text();
     assert!(mode.contains("Shift+Tab") || mode.contains("plan"));
     assert!(!mode.contains("How Code should work"));
+    // MC pack owns concurrency-metrics as pool board (VAL-V3-MC-002).
     let dash = render_pilot("concurrency-metrics").unwrap().to_text();
-    assert!(dash.contains("Dashboard"));
-    assert!(dash.contains(MODEL_LABEL));
+    assert!(
+        dash.contains(".: Mission Control") || dash.contains("Dashboard"),
+        "pool board is MC pack or legacy Dashboard"
+    );
+    assert!(
+        dash.contains("Parallel 3/4") || dash.contains("Pool board") || dash.contains(MODEL_LABEL),
+        "pool Parallel metric or model label"
+    );
 }
 
 #[test]
@@ -731,11 +738,25 @@ fn orchestration_family_tasks_dashboard_analogues() {
             text.contains("9.5K / 500K") || text.contains("K / "),
             "{id} inherits M1 auth budget chrome"
         );
-        let is_mc = matches!(id, "workflow-monitor" | "workflow-monitor-failure");
+        let is_mc = matches!(
+            id,
+            "workflow-monitor"
+                | "workflow-monitor-failure"
+                | "concurrency-metrics"
+                | "workflow-launch"
+                | "workflow-launch-blocked"
+                | "team-board"
+        );
         if is_mc {
             assert!(
-                text.contains("F Features") || text.contains("Esc chat"),
-                "{id} MC footer keys"
+                text.contains("F Features")
+                    || text.contains("Esc chat")
+                    || text.contains(".: Mission Control"),
+                "{id} MC footer keys / brand"
+            );
+            assert!(
+                text.contains("Parallel 3/4") || text.contains("Parallel 4/4"),
+                "{id} Parallel N/max"
             );
         } else {
             assert!(
@@ -767,24 +788,44 @@ fn orchestration_family_tasks_dashboard_analogues() {
         "failure pane names failed slot"
     );
 
+    // MC parallel assignment board (VAL-V3-MC-002) — not Owner Goals kanban.
     let board = render_pilot("team-board").unwrap().to_text();
-    assert!(board.contains("Dashboard"), "board is Dashboard analogue");
     assert!(
-        board.contains("Dispatch a new agent") || board.contains('❯'),
-        "dashboard dispatch ❯"
+        board.contains(".: Mission Control") || board.contains("assignment"),
+        "board is MC assignment surface"
     );
     assert!(
-        board.contains('◆') || board.contains('◇'),
-        "dashboard diamonds"
+        board.contains("#21") && board.contains("#22") && board.contains("#23"),
+        "board maps workers"
+    );
+    assert!(!board.contains("Goals board"));
+    assert!(!board.contains("Owner ·"));
+
+    let pool = render_pilot("concurrency-metrics").unwrap().to_text();
+    assert!(pool.contains(".: Mission Control"));
+    assert!(pool.contains("Parallel 3/4"));
+    assert!(
+        pool.contains("queue depth") || pool.contains("Queue depth"),
+        "pool queue depth"
+    );
+
+    let launch = render_pilot("workflow-launch").unwrap().to_text();
+    assert!(launch.contains(".: Mission Control"));
+    assert!(
+        launch.contains("Assign into free slot") || launch.contains("free slot"),
+        "launch assigns free slot"
+    );
+
+    let blocked = render_pilot("workflow-launch-blocked").unwrap().to_text();
+    assert!(blocked.contains(".: Mission Control"));
+    assert!(
+        blocked.contains("Pool full") || blocked.contains("pool full") || blocked.contains("blocked"),
+        "blocked is pool-full / precondition"
     );
 
     let env = render_pilot("tool-envelope").unwrap().to_text();
     assert!(env.contains("$ cargo test publish"), "tool-envelope $ form");
     assert!(!env.contains("Shell ·"), "tool-envelope Shell invent");
-
-    let launch = render_pilot("workflow-launch").unwrap().to_text();
-    assert!(launch.contains("Subagents") || launch.contains("Tasks"));
-    assert!(!launch.contains("Tasks monitoring"));
 }
 
 /// Published orchestration set bans invent chrome when gallery exists.
@@ -860,8 +901,33 @@ fn published_orchestration_set_structure_language_bans() {
     let board = root.join("team-board.txt");
     if board.exists() {
         let text = std::fs::read_to_string(&board).unwrap();
-        assert!(text.contains("Dashboard"));
+        assert!(
+            text.contains(".: Mission Control")
+                || text.contains("assignment")
+                || text.contains("Dashboard"),
+            "published board is MC assignment or legacy Dashboard"
+        );
         assert!(!text.contains("Goals board"));
+        assert!(!text.contains("Owner ·"));
+    }
+    for id in [
+        "concurrency-metrics",
+        "workflow-launch",
+        "workflow-launch-blocked",
+    ] {
+        let path = root.join(format!("{id}.txt"));
+        if !path.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(".: Mission Control"),
+            "published {id} MC brand"
+        );
+        assert!(
+            text.contains("Parallel 3/4") || text.contains("Parallel 4/4"),
+            "published {id} Parallel metric"
+        );
     }
     let env = root.join("tool-envelope.txt");
     if env.exists() {

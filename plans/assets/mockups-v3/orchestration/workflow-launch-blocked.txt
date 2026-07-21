@@ -1,40 +1,40 @@
-  ~/projects/demo                                                                                          9.5K / 500K  
+  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 4/4 · 9.5K / 500K  
                                                                                                                         
-  Tasks                                                                                                                 
-  Prep linked background work for this session                                                                          
+  ● RUNNING  ██████████░░  20/42 features · pool full · 2 queued                                                        
                                                                                                                         
-  ❯ Turn the release work into tracked tasks and walk me through it.                                                    
+  Launch blocked                                                                                                        
+  ✗ Pool full 4/4 · no free slot for the next queued feature                                                            
+    One queued item also fails precondition (see below).                                                                
                                                                                                                         
-  Preflight found one missing step before tasks can run.                                                                
+  Workers (live) 4/4                                                                                                    
+    #21 ● note-open-risks     4m12s                                                                                     
+    #22 ● safe-publish-path   1m40s                                                                                     
+    #23 ● window-os-actions     55s                                                                                     
+    #24 ● github-actions-ci   1m05s                                                                                     
+    pool free 0 · max 4 · Parallel 4/4                                                                                  
                                                                                                                         
-  ✗ Blocked · folder trust pending                                                                                      
+  Queued · blocked                                                                                                      
+  › ○ e2e-test-suite                                                                                                    
+    Blocked · pool full · waits for any free slot                                                                       
+    ○ chrome-a11y-scan                                                                                                  
+    Blocked · precondition: Factory MC ref missing                                                                      
                                                                                                                         
-  › Folder trust is still pending for /projects/demo                                                                    
-    Auth is ready · tools are available                                                                                 
-                                                                                                                        
-  ▸ Subagents 0                                                                                                         
-  ▸ Tasks 0                                                                                                             
-  ▸ Watchers 0                                                                                                          
-                                                                                                                        
-  Add folder trust, then start the proposed items again.                                                                
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  What happens next                                                                                                     
+  Free a slot (wait or intervene) or fix the missing precondition.                                                      
+  Assign stays unavailable until pool free is at least 1 and preflight clears.                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Complete preflight first                                                                                         │  
-  │  › Open folder trust                                                                                             │  
-  │    Stay on blocked launch                                                                                        │  
+  │ Cannot assign · pool full                                                                                        │  
+  │  › Open pool board                                                                                               │  
+  │    Fix precondition on chrome-a11y-scan                                                                          │  
   │                                                                                                                  │  
   │                                                                                                                  │  
   │                                                                                                                  │  
-  │ Enter opens trust · Esc returns                                                                                  │  
+  │ Enter opens pool · Esc returns to Mission Control                                                                │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
+ F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    

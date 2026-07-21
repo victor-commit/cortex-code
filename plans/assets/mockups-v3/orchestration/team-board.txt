@@ -1,40 +1,40 @@
-  ~/projects/demo                                                                                          9.5K / 500K  
+  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · 9.5K / 500K  
                                                                                                                         
-  Cortex · Dashboard - 3 agents · 1 awaiting                                                                        
-  State-sorted sessions · subagents stay under parent                                                                   
+  ● RUNNING  ████████░░░░  18/42 features · assignment board                                                            
                                                                                                                         
-  › ◆ reviewer · safe publish path     Awaiting your input            2m                                                
-    Pending: approve rollback wording · branch master worktree                                                          
+  Parallel assignment board                                                                                             
+  Feature · worker · state · skill · dependency  (assignment map)                                                       
                                                                                                                         
-    ◆ implementer · next-step note      Running: cargo test          12m                                                
-    Last tool · $ cargo test note -- --nocapture                                                                        
+  Feature                    Worker   State      Skill              Depends                                             
+  ─────────────────────────────────────────────────────────────────────────                                             
+  › e2e-test-suite           -        ○ blocked  v3-flow-worker     pool free                                           
+    Waits on free slot · queued behind Parallel 3/4                                                                     
                                                                                                                         
-    ◇ notes · release open risks        idle · completed             48m                                                
-    ✓ notes reviewed · no open blockers                                                                                 
+    note-open-risks          #21      ● running  v3-flow-worker     -                                                   
+    safe-publish-path        #22      ● running  v3-flow-worker     note-open                                           
+    window-os-actions        #23      ● running  v3-flow-worker     -                                                   
                                                                                                                         
+    github-actions-ci        -        ○ queued   v3-flow-worker     e2e-test                                            
+    (free slot)              #24      ○ free     -                  -                                                   
                                                                                                                         
+    publish-checklist        #18      ✓ done     v3-flow-worker     -                                                   
+    staging-rollback         #19      ✓ done     v3-flow-worker     publish                                             
                                                                                                                         
+  Pool summary                                                                                                          
+  Slots 3/4 live · free 1 · queue depth 2 · Parallel 3/4                                                                
+  Policy · implementers parallel · validators serial                                                                    
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ ❯ Dispatch a new agent                                                                                           │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
-                                                                                                                        
-  ↑/↓ select · Enter open · Esc back · Ctrl+\ toggle                                                                    
+  A Assign selected · W Workers · P Pool · Esc Mission Control                                                          
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    

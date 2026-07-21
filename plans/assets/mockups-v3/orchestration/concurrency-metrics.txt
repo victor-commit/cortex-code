@@ -1,40 +1,40 @@
-  ~/projects/demo                                                                                          9.5K / 500K  
+  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · 9.5K / 500K  
                                                                                                                         
-  Cortex · Dashboard - 3 agents · 1 awaiting                                                                        
-  Runtime summary beside the agent list                                                                                 
+  ● RUNNING  ████████░░░░  18/42 features · pool detail                                                                 
                                                                                                                         
-  ◆ reviewer · safe publish path     Awaiting your input            2m                                                  
-  ◆ implementer · next-step note      Running: cargo test          12m                                                  
-  ◇ notes · release open risks        idle · completed             48m                                                  
+  Pool board                                                                                                            
+  Slots · Parallel 3/4 · queue depth 2 · max concurrency 4                                                              
                                                                                                                         
+  Capacity                                                                                                              
+  › Free slots 1 / 4                                                                                                    
+    One assign ready · Assign opens workflow-launch                                                                     
+    Queue depth 2                                                                                                       
+    github-actions-ci · e2e-test-suite waiting on free slot                                                             
+    Live workers 3 / max 4                                                                                              
+    #21 #22 #23 occupied · Parallel 3/4                                                                                 
                                                                                                                         
-  Summary                                                                                                               
-    Elapsed · 12m40s · tokens ⇣ 48.2k this goal                                                                         
-    Active · 1 agent · parallel rooms 1 / 3                                                                             
-    Model · Cortex · always-approve                                                                                   
+  Policy                                                                                                                
+    implementers-parallel · validators-serial                                                                           
+    Implementer features share pool slots; validators run one-at-a-time.                                                
                                                                                                                         
+  Slot map                                                                                                              
+    #21 ● note-open-risks     4m12s  v3-flow-worker                                                                     
+    #22 ● safe-publish-path   1m40s  v3-flow-worker                                                                     
+    #23 ● window-os-actions     55s  v3-flow-worker                                                                     
+    #24 ○ free                                                                                                          
                                                                                                                         
-  ❯ Dispatch a new agent                                                                                                
+  Throughput (secondary)                                                                                                
+    Completed 18 · remaining 24 · elapsed 32m12s · no quarantine holds                                                  
                                                                                                                         
-  Enter open agent · Esc returns to Tasks                                                                               
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  A Assign free slot · Esc Mission Control · read-only pool metrics                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-    Esc to return · dashboard summary only under Advanced                                                               
                                                                                                                         
- Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    

@@ -1,25 +1,25 @@
-  ~/projects/demo                                                                                          9.5K / 500K  
+  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · 9.5K / 500K  
                                                                                                                         
-  Tasks                                                                                                                 
-  Prep linked background work for this session                                                                          
+  ● RUNNING  ████████░░░░  18/42 features · 3 live · 1 free slot                                                        
                                                                                                                         
-  ❯ Turn the release work into tracked tasks and walk me through it.                                                    
+  Assign into free slot                                                                                                 
+  Pool 3/4 live · free slot #24 ready · queue depth 2                                                                   
                                                                                                                         
-  I can open three linked items under Tasks:                                                                            
+  Workers (live) 3/4                                                                                                    
+    #21 ● note-open-risks     4m12s                                                                                     
+    #22 ● safe-publish-path   1m40s                                                                                     
+    #23 ● window-os-actions     55s                                                                                     
+    #24 ○ free slot                                                                                                     
                                                                                                                         
-  ○ Ready · 3 proposed                                                                                                  
+  Queued features                                                                                                       
+  › ○ github-actions-ci                                                                                                 
+    skill v3-flow-worker · preconditions met · ready to assign                                                          
+    ○ e2e-test-suite                                                                                                    
+    skill v3-flow-worker · waits behind github-actions-ci                                                               
                                                                                                                         
-  ▾ Subagents 1                                                                                                         
-    ○ Review · release notes open risks                                                                                 
-                                                                                                                        
-  ▾ Tasks 1                                                                                                             
-    ○ Task Verify staging and rollback notes                                                                            
-                                                                                                                        
-  ▾ Watchers 1                                                                                                          
-    ○ Monitor next-step note after fixes                                                                                
-                                                                                                                        
-  ✓ Workspace trusted · auth ready · tools available                                                                    
-                                                                                                                        
+  Effect                                                                                                                
+  Assign github-actions-ci into free slot #24. Pool becomes Parallel 4/4.                                               
+  Queue depth drops to 1. Sibling workers keep running.                                                                 
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -27,14 +27,14 @@
                                                                                                                         
                                                                                                                         
   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Start these items?                                                                                               │  
-  │  › Start tasks                                                                                                   │  
-  │    Cancel · keep this plan ready                                                                                 │  
+  │ Assign queued feature into free slot?                                                                            │  
+  │  › Assign into free slot                                                                                         │  
+  │    Keep queued · stay on monitor                                                                                 │  
   │                                                                                                                  │  
   │                                                                                                                  │  
   │                                                                                                                  │  
-  │ Enter starts · Esc returns to chat                                                                               │  
+  │ Enter assigns · Esc returns to Mission Control                                                                   │  
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- Shift+Tab:mode | Ctrl+c:cancel | Ctrl+.:shortcuts                                                                      
+ F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    
