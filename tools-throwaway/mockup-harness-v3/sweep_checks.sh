@@ -485,13 +485,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Subgate: contract-assertion-inventory (all 506 IDs enumerated)
+# Subgate: contract-assertion-inventory (all 510 IDs enumerated)
 # Includes HARNESS-038/039/040 monospaced PNG baseline registration family.
 # Pure Cortex dump expanded inventory to 486; pure-structure shell reached 493;
 # pure-structure tools add STRUCT-007..008 and CROSS-026 (493 + 3 = 496);
 # pure-structure views/orch/pickers add STRUCT-009..011 and CROSS-027 (496 + 4 = 500);
 # pure-structure M4 seal adds CROSS-028 invent ban + CROSS-029 fidelity recheck (500 + 2 = 502).
 # Mission Control parallel pack adds MC-001..003 + CROSS-030 (502 + 4 = 506).
+# MC V2 premium pack adds MC-004..006 + CROSS-031 (506 + 4 = 510).
 # ---------------------------------------------------------------------------
 contract_log="$WORKDIR/contract.txt"
 if python3 - "$MISSION_DIR/validation-contract.md" >"$contract_log" <<'PY'
@@ -499,20 +500,20 @@ import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 ids = re.findall(r"^### (VAL-V3-[A-Z0-9-]+):", text, re.M)
-if len(ids) != 506:
-    print(f"expected 506 VAL-V3 assertions, found {len(ids)}")
+if len(ids) != 510:
+    print(f"expected 510 VAL-V3 assertions, found {len(ids)}")
     raise SystemExit(1)
-if len(set(ids)) != 506:
+if len(set(ids)) != 510:
     print("duplicate assertion IDs in validation-contract.md")
     raise SystemExit(1)
-print("contract-assertion-inventory: OK count=506")
+print("contract-assertion-inventory: OK count=510")
 for i in ids:
     print(i)
 PY
 then
-  record_subgate "contract-assertion-inventory" "pass" "$(sha_of "$contract_log")" "validation-contract enumerates exact 506 assertions"
+  record_subgate "contract-assertion-inventory" "pass" "$(sha_of "$contract_log")" "validation-contract enumerates exact 510 assertions"
 else
-  record_subgate "contract-assertion-inventory" "fail" "$(sha_of "$contract_log" 2>/dev/null || echo missing)" "assertion inventory is not exactly 506 unique IDs"
+  record_subgate "contract-assertion-inventory" "fail" "$(sha_of "$contract_log" 2>/dev/null || echo missing)" "assertion inventory is not exactly 510 unique IDs"
 fi
 
 # ---------------------------------------------------------------------------
