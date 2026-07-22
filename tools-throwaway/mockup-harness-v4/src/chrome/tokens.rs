@@ -21,10 +21,12 @@ pub const PNG_HEIGHT: u32 = CANVAS_ROWS as u32 * CELL_HEIGHT;
 
 /// Expanded Cortex glyph set. Pure dump allows diamonds, prompt arrow, braille,
 /// powerline branch, and other product chrome beyond the old Cortex closed set.
+/// MC V2 premium adds Factory slot cells / mini ticks / selection bar glyphs.
 pub const ALLOWED_GLYPHS: &str = concat!(
     "● ○ ✓ ✗ › → ↑ ↓ ─ │ ╭ ╮ ╰ ╯ █ ░ · ⎿ ▸ ▾ … ",
     "❯ ◆ ◇ ◈ ◉ ◎ • ⧉ ↗ ⇣ ❙ ",
     "⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ ",
+    "▮ ▯ ▰ ▱ ▌ ▐ ",
     " "
 );
 
@@ -55,6 +57,8 @@ pub enum GlyphRendering {
     SyntheticPromptArrow,
     SyntheticDiamond,
     SyntheticBrailleDot,
+    /// Factory MC slot / progress / selection bar blocks (▮ ▯ ▰ ▱ ▌ ▐).
+    SyntheticBlock,
 }
 
 /// Deterministic strategy when DejaVu coverage is incomplete for product chrome.
@@ -65,6 +69,8 @@ pub fn glyph_rendering(glyph: char) -> Option<GlyphRendering> {
         Some(GlyphRendering::SyntheticPromptArrow)
     } else if matches!(glyph, '◆' | '◇' | '◈') {
         Some(GlyphRendering::SyntheticDiamond)
+    } else if matches!(glyph, '▮' | '▯' | '▰' | '▱' | '▌' | '▐') {
+        Some(GlyphRendering::SyntheticBlock)
     } else if is_braille(glyph) {
         // Prefer emb font if present; synthetic dots as fail-safe.
         Some(GlyphRendering::SyntheticBrailleDot)
@@ -317,7 +323,10 @@ mod tests {
 
     #[test]
     fn expanded_glyphs_cover_prompt_diamonds_stop_putty() {
-        for c in ['❯', '◆', '◇', '◈', '◉', '◎', '•', '✓', '✗', '⇣', '', '⧉', '↗'] {
+        for c in [
+            '❯', '◆', '◇', '◈', '◉', '◎', '•', '✓', '✗', '⇣', '', '⧉', '↗', '▮', '▯',
+            '▰', '▱', '▌', '▐',
+        ] {
             assert!(glyph_allowed(c), "expected {c} allowed");
         }
         // Braille block used by logo / spinner.

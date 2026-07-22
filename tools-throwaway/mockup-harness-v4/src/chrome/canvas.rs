@@ -189,6 +189,10 @@ pub fn render_png(canvas: &Canvas) -> Result<Vec<u8>, String> {
                 draw_synthetic_diamond(&mut image, cell_x, cell_y, fg_pixel, cell.glyph == '◇');
                 continue;
             }
+            Some(GlyphRendering::SyntheticBlock) => {
+                draw_synthetic_block(&mut image, cell_x, cell_y, fg_pixel, cell.glyph);
+                continue;
+            }
             Some(GlyphRendering::SyntheticBrailleDot) => {
                 // Prefer emb font when present; fall back to center dot.
                 let font = if cell.style.bold { &bold } else { &regular };
@@ -362,6 +366,54 @@ fn draw_synthetic_diamond(
                 put(image, x, y_dn);
             }
         }
+    }
+}
+
+/// Factory MC blocks: filled/hollow slot cells, mini progress ticks, left selection bar.
+#[cfg(feature = "png")]
+fn draw_synthetic_block(
+    image: &mut image::RgbImage,
+    cell_x: u32,
+    cell_y: u32,
+    foreground: image::Rgb<u8>,
+    glyph: char,
+) {
+    let put = |image: &mut image::RgbImage, x: u32, y: u32| {
+        if x < image.width() && y < image.height() {
+            image.put_pixel(x, y, foreground);
+        }
+    };
+    let fill_rect = |image: &mut image::RgbImage, x0: u32, y0: u32, x1: u32, y1: u32| {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                put(image, x, y);
+            }
+        }
+    };
+    let outline = |image: &mut image::RgbImage, x0: u32, y0: u32, x1: u32, y1: u32| {
+        for x in x0..=x1 {
+            put(image, x, y0);
+            put(image, x, y1);
+        }
+        for y in y0..=y1 {
+            put(image, x0, y);
+            put(image, x1, y);
+        }
+    };
+    match glyph {
+        // Filled slot cell ▮
+        '▮' => fill_rect(image, cell_x + 2, cell_y + 4, cell_x + 7, cell_y + 16),
+        // Hollow slot cell ▯
+        '▯' => outline(image, cell_x + 2, cell_y + 4, cell_x + 7, cell_y + 16),
+        // Filled mini tick ▰ (short bar)
+        '▰' => fill_rect(image, cell_x + 1, cell_y + 7, cell_x + 8, cell_y + 13),
+        // Hollow mini tick ▱
+        '▱' => outline(image, cell_x + 1, cell_y + 7, cell_x + 8, cell_y + 13),
+        // Left half selection bar ▌
+        '▌' => fill_rect(image, cell_x, cell_y + 2, cell_x + 4, cell_y + 18),
+        // Right half pane edge ▐
+        '▐' => fill_rect(image, cell_x + 5, cell_y + 2, cell_x + 9, cell_y + 18),
+        _ => fill_rect(image, cell_x + 2, cell_y + 5, cell_x + 7, cell_y + 15),
     }
 }
 

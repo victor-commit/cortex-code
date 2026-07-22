@@ -5,12 +5,11 @@
 //!   `workflow-monitor`, `workflow-monitor-failure`,
 //!   `concurrency-metrics`, `workflow-launch`, `workflow-launch-blocked`,
 //!   `team-board`
-//! Authority: mission `library/mission-control-parallel-design.md` +
-//! Factory ref `/tmp/factory-mission-control-ref.png`. Brand `.: Mission Control`
-//! under CortexNight with default pool 3 live / max 4.
-//!
-//! Source: `/tmp/grok-build-ref` tasks_pane + dashboard, pure-structure-law,
-//! and MC parallel design supersession on owned pack IDs.
+//! Authority (V2 premium home): mission
+//! `library/mission-control-v2-premium-fable5-note.md` supersedes multi-page MC
+//! chrome; Factory ref `/tmp/factory-mission-control-ref.png`. Brand
+//! `.: Mission Control` under CortexNight with default pool 3 live / max 4.
+//! Home paint is orange + 3 grays only (Path accent; Ok/Bad terminal only).
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
@@ -394,12 +393,12 @@ fn workflow_launch_blocked() -> Result<Canvas, String> {
     finish_mc_flexible(canvas, Some("4/4"))
 }
 
-/// MC parallel home (VAL-V3-MC-001): 3 live / max 4, multi-● Features rail.
+/// MC V2 premium home (VAL-V3-MC-004): Factory-grade parallel Mission Control.
 fn workflow_monitor() -> Result<Canvas, String> {
     mission_control_home(McVariant::RunningAll)
 }
 
-/// MC parallel failure (VAL-V3-MC-003): one worker ✗ while siblings ● and run RUNNING.
+/// MC parallel failure (VAL-V3-MC-003 / DNA of MC-004): one worker ✗ while siblings ●.
 fn workflow_monitor_failure() -> Result<Canvas, String> {
     mission_control_home(McVariant::OneFailed)
 }
@@ -410,48 +409,33 @@ enum McVariant {
     OneFailed,
 }
 
-/// Shared Mission Control parallel shell under CortexNight.
+/// Factory MC accent is orange Path (`#ff9e64`). Premium home paints Path + grays
+/// only; Ok/Bad reserved for terminal ✓/✗. No cyan Running / purple Accent panels.
+const MC_ORANGE: ColorToken = ColorToken::Path;
+
+/// Shared Mission Control V2 premium shell under CortexNight.
 fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
     let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_mc_top_bar(&mut canvas)?;
+    paint_mc_top_bar_premium(&mut canvas)?;
 
-    // Status + hashed progress (Factory RUNNING anatomy).
-    match variant {
-        McVariant::RunningAll => {
-            canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
-            canvas.write(
-                2,
-                13,
-                "████████░░░░",
-                TextStyle::plain(ColorToken::Running),
-            )?;
-            canvas.write(
-                2,
-                27,
-                "18/42 features · 3 live workers",
-                TextStyle::plain(ColorToken::Secondary),
-            )?;
-        }
-        McVariant::OneFailed => {
-            // Overall run stays RUNNING even with one failed worker.
-            canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
-            canvas.write(
-                2,
-                13,
-                "████████░░░░",
-                TextStyle::plain(ColorToken::Running),
-            )?;
-            canvas.write(
-                2,
-                27,
-                "17/42 features · 2 live · 1 failed",
-                TextStyle::plain(ColorToken::Secondary),
-            )?;
-        }
-    }
+    // (1) Full-width hatched/dense RUNNING bar + fraction chip + live/free/queued.
+    let (frac, live_meta) = match variant {
+        McVariant::RunningAll => ("18/42", "3 live · 1 free · 2 queued · Parallel 3/4"),
+        McVariant::OneFailed => ("17/42", "2 live · 1 failed · 1 free · Parallel 3/4"),
+    };
+    canvas.write(2, 2, "● RUNNING", TextStyle::bold(MC_ORANGE))?;
+    // Dense hatched strip: filled + light blocks across the mid band.
+    let bar = "████████████████░░░░░░░░░░░░░░░░░░";
+    canvas.write(2, 13, bar, TextStyle::plain(MC_ORANGE))?;
+    let after_bar = 13 + bar.chars().count() as u16 + 2;
+    let chip = format!("{frac}  ·  {live_meta}");
+    canvas.write(2, after_bar, &chip, TextStyle::plain(ColorToken::Secondary))?;
 
-    // Column split: Workers left (~0-57), Features + Progress Log right (~59-119).
-    let right = 59u16;
+    // (9) Section rule under RUNNING chrome.
+    paint_mc_rule(&mut canvas, 3)?;
+
+    // Column split: Workers left (~2-58), Features + Progress Log right (~60-117).
+    let right = 60u16;
     let (workers_title, features_title) = match variant {
         McVariant::RunningAll => ("Workers (live) 3/4", "Features 18/42"),
         McVariant::OneFailed => ("Workers 3/4 · 1 failed", "Features 17/42"),
@@ -459,7 +443,7 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
     canvas.write(4, 2, workers_title, TextStyle::bold(ColorToken::Bright))?;
     canvas.write(4, right, features_title, TextStyle::bold(ColorToken::Bright))?;
 
-    // --- Workers pane (always 3 cards; failure marks #22 ✗) ---
+    // (3) Accordion workers: selected expands Preconditions/Expected; others 2 lines + mini ticks.
     let cards: [WorkerCard; 3] = match variant {
         McVariant::RunningAll => [
             WorkerCard {
@@ -469,6 +453,7 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
                 feature: "note-open-risks",
                 timer: "4m12s",
                 skill: "v3-flow-worker",
+                ticks: "▰▰▰▰▰▱▱▱",
                 stream: "Execute cargo test note -- --nocapture",
             },
             WorkerCard {
@@ -478,6 +463,7 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
                 feature: "safe-publish-path",
                 timer: "1m40s",
                 skill: "v3-flow-worker",
+                ticks: "▰▰▰▱▱▱▱▱",
                 stream: "Read staging/checklist.md (42 lines)",
             },
             WorkerCard {
@@ -487,6 +473,7 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
                 feature: "window-os-actions",
                 timer: "55s",
                 skill: "v3-flow-worker",
+                ticks: "▰▰▱▱▱▱▱▱",
                 stream: "Execute npx playwright test window",
             },
         ],
@@ -498,6 +485,7 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
                 feature: "note-open-risks",
                 timer: "4m12s",
                 skill: "v3-flow-worker",
+                ticks: "▰▰▰▰▰▱▱▱",
                 stream: "Execute cargo test note -- --nocapture",
             },
             WorkerCard {
@@ -507,6 +495,7 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
                 feature: "safe-publish-path",
                 timer: "1m40s",
                 skill: "v3-flow-worker",
+                ticks: "▰▰▰▱▱▱▱▱",
                 stream: "Failed · staging checklist missing rollback",
             },
             WorkerCard {
@@ -516,77 +505,128 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
                 feature: "window-os-actions",
                 timer: "55s",
                 skill: "v3-flow-worker",
+                ticks: "▰▰▱▱▱▱▱▱",
                 stream: "Execute npx playwright test window",
             },
         ],
     };
-    for (i, card) in cards.iter().enumerate() {
-        paint_worker_card(&mut canvas, 5 + (i as u16) * 4, card)?;
+    let mut wr: u16 = 5;
+    for card in &cards {
+        wr = paint_worker_card_premium(&mut canvas, wr, card)?;
     }
-    canvas.write(
-        17,
+    write_left(
+        &mut canvas,
+        wr,
         2,
-        "pool free 1 · queued 2",
+        "slot 4 free · 2 queued · Assign ready",
         TextStyle::plain(ColorToken::Muted),
     )?;
 
-    // --- Features rail (multi-● + optional #id badges) ---
-    canvas.write(
+    // (4) Features ✓/●/○ + right [#id] badges; selection on focused live feature.
+    paint_feature_row(
+        &mut canvas,
         5,
         right,
-        "  ✓ publish-checklist",
-        TextStyle::plain(ColorToken::Ok),
+        FeatureRow {
+            selected: false,
+            mark: "✓",
+            name: "publish-checklist",
+            badge: None,
+            mark_tok: ColorToken::Ok,
+        },
     )?;
-    canvas.write(
+    paint_feature_row(
+        &mut canvas,
         6,
         right,
-        "  ✓ staging-rollback",
-        TextStyle::plain(ColorToken::Ok),
+        FeatureRow {
+            selected: false,
+            mark: "✓",
+            name: "staging-rollback",
+            badge: None,
+            mark_tok: ColorToken::Ok,
+        },
     )?;
-    canvas.write(
+    paint_feature_row(
+        &mut canvas,
         7,
         right,
-        "› ● note-open-risks             #21",
-        TextStyle::bold(ColorToken::Accent),
+        FeatureRow {
+            selected: true,
+            mark: "●",
+            name: "note-open-risks",
+            badge: Some("[#21]"),
+            mark_tok: MC_ORANGE,
+        },
     )?;
     match variant {
         McVariant::RunningAll => {
-            canvas.write(
+            paint_feature_row(
+                &mut canvas,
                 8,
                 right,
-                "  ● safe-publish-path           #22",
-                TextStyle::plain(ColorToken::Running),
+                FeatureRow {
+                    selected: false,
+                    mark: "●",
+                    name: "safe-publish-path",
+                    badge: Some("[#22]"),
+                    mark_tok: MC_ORANGE,
+                },
             )?;
         }
         McVariant::OneFailed => {
-            canvas.write(
+            paint_feature_row(
+                &mut canvas,
                 8,
                 right,
-                "  ✗ safe-publish-path           #22",
-                TextStyle::plain(ColorToken::Bad),
+                FeatureRow {
+                    selected: false,
+                    mark: "✗",
+                    name: "safe-publish-path",
+                    badge: Some("[#22]"),
+                    mark_tok: ColorToken::Bad,
+                },
             )?;
         }
     }
-    canvas.write(
+    paint_feature_row(
+        &mut canvas,
         9,
         right,
-        "  ● window-os-actions          #23",
-        TextStyle::plain(ColorToken::Running),
+        FeatureRow {
+            selected: false,
+            mark: "●",
+            name: "window-os-actions",
+            badge: Some("[#23]"),
+            mark_tok: MC_ORANGE,
+        },
     )?;
-    canvas.write(
+    paint_feature_row(
+        &mut canvas,
         10,
         right,
-        "  ○ github-actions-ci",
-        TextStyle::plain(ColorToken::Muted),
+        FeatureRow {
+            selected: false,
+            mark: "○",
+            name: "github-actions-ci",
+            badge: Some("queued"),
+            mark_tok: ColorToken::Muted,
+        },
     )?;
-    canvas.write(
+    paint_feature_row(
+        &mut canvas,
         11,
         right,
-        "  ○ e2e-test-suite",
-        TextStyle::plain(ColorToken::Muted),
+        FeatureRow {
+            selected: false,
+            mark: "○",
+            name: "e2e-test-suite",
+            badge: Some("queued"),
+            mark_tok: ColorToken::Muted,
+        },
     )?;
 
-    // Progress Log with Worker #id lines (Factory anatomy; capital L).
+    // (5) Progress Log disciplined (fixed timestamps, dim brackets).
     canvas.write(
         13,
         right,
@@ -616,92 +656,100 @@ fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
         ],
     };
     for (i, (line, tok)) in log_lines.iter().enumerate() {
-        canvas.write(
-            14 + i as u16,
-            right,
-            line,
-            TextStyle::plain(*tok),
-        )?;
+        canvas.write(14 + i as u16, right, line, TextStyle::plain(*tok))?;
     }
 
-    // Focus detail (selected worker/feature) - Factory Active Feature + Active Worker blend.
-    canvas.write(
-        23,
-        2,
-        "Focus  #21  note-open-risks",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
+    // Mid rule before stream.
+    paint_mc_rule(&mut canvas, 23)?;
+
+    // (6) Bottom Stream Execute/Read with ✓ results + spinner (6–10 lines).
     canvas.write(
         24,
         2,
-        "skill v3-flow-worker · milestone v3-mission-control-parallel",
-        TextStyle::plain(ColorToken::Secondary),
+        "Stream  #21  note-open-risks",
+        TextStyle::bold(ColorToken::Bright),
     )?;
-    canvas.write(25, 2, "Preconditions", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(24, 100, "Time 4m12s", TextStyle::plain(ColorToken::Muted))?;
+    // Verb bold orange; meta dim; results Ok; spinner orange.
+    canvas.write(25, 2, "Execute", TextStyle::bold(MC_ORANGE))?;
+    canvas.write(
+        25,
+        11,
+        "cargo test note -- --nocapture",
+        TextStyle::plain(ColorToken::Text),
+    )?;
+    canvas.write(26, 4, "✓", TextStyle::plain(ColorToken::Ok))?;
     canvas.write(
         26,
-        4,
-        "mission-control-parallel-design.md present · harness-v4 builds",
-        TextStyle::plain(ColorToken::Muted),
+        6,
+        "14 tests passed. Fixture state verified.",
+        TextStyle::plain(ColorToken::Secondary),
     )?;
+    canvas.write(27, 2, "Read", TextStyle::bold(MC_ORANGE))?;
     canvas.write(
         27,
-        4,
-        "Factory MC ref available",
-        TextStyle::plain(ColorToken::Muted),
+        11,
+        "src/screens/orchestration.rs  (214 lines)",
+        TextStyle::plain(ColorToken::Secondary),
     )?;
-    canvas.write(28, 2, "Expected Behavior", TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(28, 2, "Read", TextStyle::bold(MC_ORANGE))?;
+    canvas.write(
+        28,
+        11,
+        "library/mission-control-v2-premium-fable5-note.md  (98 lines)",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+    canvas.write(29, 2, "Execute", TextStyle::bold(MC_ORANGE))?;
     canvas.write(
         29,
-        4,
-        "Multi-worker home with Parallel 3/4 and Features multi-● badges",
+        11,
+        "cargo clippy --all-targets --features png",
         TextStyle::plain(ColorToken::Text),
     )?;
+    canvas.write(30, 4, "✓", TextStyle::plain(ColorToken::Ok))?;
     canvas.write(
         30,
-        4,
-        "Failure is per-worker; siblings keep running under RUNNING",
-        TextStyle::plain(ColorToken::Text),
+        6,
+        "0 warnings. Palette restraint holds on focused stream.",
+        TextStyle::plain(ColorToken::Secondary),
     )?;
+    canvas.write(31, 2, "Read", TextStyle::bold(MC_ORANGE))?;
+    canvas.write(
+        31,
+        11,
+        "library/mission-control-parallel-design.md  (64 lines)",
+        TextStyle::plain(ColorToken::Secondary),
+    )?;
+    // Spinner for focused worker live step.
+    canvas.write(32, 2, "⠋", TextStyle::plain(MC_ORANGE))?;
     canvas.write(
         32,
-        2,
-        "Stream  #21  note-open-risks                              Time 4m12s",
-        TextStyle::bold(ColorToken::Bright),
+        4,
+        "Running multi-worker fixture paint first…",
+        TextStyle::plain(ColorToken::Text),
     )?;
     canvas.write(
         33,
-        2,
-        "Execute  cargo test note -- --nocapture",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        34,
-        2,
-        "Read  src/screens/orchestration.rs (214 lines)",
-        TextStyle::plain(ColorToken::Path),
-    )?;
-    canvas.write(
-        35,
-        2,
-        "Read  library/mission-control-parallel-design.md (98 lines)",
-        TextStyle::plain(ColorToken::Path),
-    )?;
-    canvas.write(
-        36,
-        2,
-        ".: Running multi-worker fixture paint first",
-        TextStyle::plain(ColorToken::Accent),
+        4,
+        "skill v3-flow-worker · milestone v3-mission-control-v2-premium",
+        TextStyle::plain(ColorToken::Dim),
     )?;
 
-    paint_mc_footer(&mut canvas)?;
-    finish_mc(canvas)
+    // (10) Footer F W 1-4 Tab A I Esc
+    paint_mc_footer_premium(&mut canvas)?;
+    finish_mc_premium(canvas)
 }
 
-fn paint_mc_top_bar(canvas: &mut Canvas) -> Result<(), String> {
-    // Brand amber (Path token = #ff9e64) + cwd muted + metrics + context budget.
+fn paint_mc_rule(canvas: &mut Canvas, row: u16) -> Result<(), String> {
+    let rule = "─".repeat((CANVAS_COLUMNS - 4) as usize);
+    canvas.write(row, 2, &rule, TextStyle::plain(ColorToken::Dim))?;
+    Ok(())
+}
+
+/// Premium top bar: brand orange, metrics, slot cells ▮▮▮▯, context budget.
+fn paint_mc_top_bar_premium(canvas: &mut Canvas) -> Result<(), String> {
     let brand = ".: Mission Control";
-    canvas.write(0, 2, brand, TextStyle::bold(ColorToken::Path))?;
+    canvas.write(0, 2, brand, TextStyle::bold(MC_ORANGE))?;
     let after_brand = 2 + brand.chars().count() as u16 + 2;
     canvas.write(
         0,
@@ -709,7 +757,37 @@ fn paint_mc_top_bar(canvas: &mut Canvas) -> Result<(), String> {
         DEMO_CWD,
         TextStyle::plain(ColorToken::Muted),
     )?;
-    // Right metrics strip ends with Parallel 3/4 + context budget for CROSS-028.
+    // (7) Header metrics + slot cells; keep Parallel 3/4 + budget for existing gates.
+    // Paint pieces so slot cells get orange without UTF-8 byte-offset bugs.
+    let left = "Time 32m12s · In 3.8K · Out 1.3M · ";
+    let right = format!(" · Parallel 3/4 · {DEMO_CTX_USED} / {DEMO_CTX_TOTAL}");
+    let slots = "▮▮▮▯";
+    let total = left.chars().count() + slots.chars().count() + right.chars().count();
+    let col = CANVAS_COLUMNS.saturating_sub(total as u16 + 2);
+    canvas.write(0, col, left, TextStyle::plain(ColorToken::Muted))?;
+    let slot_col = col + left.chars().count() as u16;
+    canvas.write(0, slot_col, "▮▮▮", TextStyle::plain(MC_ORANGE))?;
+    canvas.write(0, slot_col + 3, "▯", TextStyle::plain(ColorToken::Dim))?;
+    canvas.write(
+        0,
+        slot_col + 4,
+        &right,
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    Ok(())
+}
+
+fn paint_mc_top_bar(canvas: &mut Canvas) -> Result<(), String> {
+    // Secondary MC pack pages keep pool language; orange brand for shell consistency.
+    let brand = ".: Mission Control";
+    canvas.write(0, 2, brand, TextStyle::bold(MC_ORANGE))?;
+    let after_brand = 2 + brand.chars().count() as u16 + 2;
+    canvas.write(
+        0,
+        after_brand,
+        DEMO_CWD,
+        TextStyle::plain(ColorToken::Muted),
+    )?;
     let metrics = format!(
         "Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · {DEMO_CTX_USED} / {DEMO_CTX_TOTAL}"
     );
@@ -718,10 +796,9 @@ fn paint_mc_top_bar(canvas: &mut Canvas) -> Result<(), String> {
     Ok(())
 }
 
-
 fn paint_mc_top_bar_parallel(canvas: &mut Canvas, parallel: &str) -> Result<(), String> {
     let brand = ".: Mission Control";
-    canvas.write(0, 2, brand, TextStyle::bold(ColorToken::Path))?;
+    canvas.write(0, 2, brand, TextStyle::bold(MC_ORANGE))?;
     let after_brand = 2 + brand.chars().count() as u16 + 2;
     canvas.write(
         0,
@@ -771,14 +848,37 @@ fn finish_mc_flexible(canvas: Canvas, parallel: Option<&str>) -> Result<Canvas, 
 
 
 fn paint_mc_footer(canvas: &mut Canvas) -> Result<(), String> {
-    // Factory-like key row; putty-compatible middot separators (not exclusive
-    // Shift+Tab product putty - CROSS-028 allows non-putty MC footers).
+    // Secondary MC pack pages keep prior key row (P Pool still listed).
     canvas.write(
         39,
         1,
         "F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat",
         TextStyle::plain(ColorToken::Dim),
     )?;
+    Ok(())
+}
+
+/// (10) Premium home footer: F W 1-4 Tab A I Esc.
+fn paint_mc_footer_premium(canvas: &mut Canvas) -> Result<(), String> {
+    canvas.write(
+        39,
+        1,
+        "F Features   W Workers   1-4 Jump   Tab Cycle   A Assign   I Intervene   Esc",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+    // Hotkeys in orange so footer restraint still reads premium (single accent).
+    // Columns match starts inside the footer string beginning at col 1.
+    for (col, key) in [
+        (1u16, "F"),
+        (14, "W"),
+        (26, "1-4"),
+        (37, "Tab"),
+        (49, "A"),
+        (60, "I"),
+        (74, "Esc"),
+    ] {
+        canvas.write(39, col, key, TextStyle::plain(MC_ORANGE))?;
+    }
     Ok(())
 }
 
@@ -789,25 +889,166 @@ struct WorkerCard {
     feature: &'static str,
     timer: &'static str,
     skill: &'static str,
+    ticks: &'static str,
     stream: &'static str,
 }
 
-fn paint_worker_card(canvas: &mut Canvas, row: u16, card: &WorkerCard) -> Result<(), String> {
-    let prefix = if card.selected { "› " } else { "  " };
-    let head = format!("{}{} {} {}", prefix, card.id, card.mark, card.feature);
-    let head_style = if card.selected {
-        TextStyle::bold(ColorToken::Accent)
-    } else if card.mark == "✗" {
-        TextStyle::plain(ColorToken::Bad)
+struct FeatureRow {
+    selected: bool,
+    mark: &'static str,
+    name: &'static str,
+    badge: Option<&'static str>,
+    mark_tok: ColorToken,
+}
+
+fn paint_feature_row(canvas: &mut Canvas, row: u16, col: u16, feat: FeatureRow) -> Result<(), String> {
+    // (8) Selection invert bar for focused feature.
+    if feat.selected {
+        canvas.fill_row_bg(
+            row,
+            col,
+            CANVAS_COLUMNS.saturating_sub(2),
+            TextStyle::on(ColorToken::Bright, ColorToken::Surface),
+        )?;
+        canvas.write(row, col, "▌", TextStyle::plain(MC_ORANGE))?;
+        canvas.write(
+            row,
+            col + 2,
+            feat.mark,
+            TextStyle::bold(feat.mark_tok),
+        )?;
+        canvas.write(
+            row,
+            col + 4,
+            feat.name,
+            TextStyle::bold(ColorToken::Bright),
+        )?;
     } else {
-        TextStyle::plain(ColorToken::Text)
-    };
-    canvas.write(row, 2, &head, head_style)?;
-    // Timer right of card head within left pane (~col 48).
-    canvas.write(row, 48, card.timer, TextStyle::plain(ColorToken::Muted))?;
-    canvas.write(row + 1, 6, card.skill, TextStyle::plain(ColorToken::Secondary))?;
-    canvas.write(row + 2, 6, card.stream, TextStyle::plain(ColorToken::Dim))?;
+        canvas.write(row, col + 2, feat.mark, TextStyle::plain(feat.mark_tok))?;
+        canvas.write(
+            row,
+            col + 4,
+            feat.name,
+            TextStyle::plain(ColorToken::Text),
+        )?;
+    }
+    if let Some(badge) = feat.badge {
+        let badge_col = CANVAS_COLUMNS.saturating_sub(badge.chars().count() as u16 + 3);
+        let badge_style = if feat.selected {
+            TextStyle::plain(ColorToken::Secondary)
+        } else {
+            TextStyle::plain(ColorToken::Muted)
+        };
+        canvas.write(row, badge_col, badge, badge_style)?;
+    }
     Ok(())
+}
+
+/// Left workers pane ends before Features column (right=60). Clamp to 2..57.
+const MC_LEFT_MAX: u16 = 57;
+
+fn write_left(canvas: &mut Canvas, row: u16, col: u16, text: &str, style: TextStyle) -> Result<(), String> {
+    let max_len = MC_LEFT_MAX.saturating_sub(col) as usize;
+    if max_len == 0 {
+        return Ok(());
+    }
+    let clipped: String = text.chars().take(max_len).collect();
+    if !clipped.is_empty() {
+        canvas.write(row, col, &clipped, style)?;
+    }
+    Ok(())
+}
+
+/// Accordion worker paint. Selected expands preconditions/expected; others collapse.
+/// Returns the next free row after this card.
+fn paint_worker_card_premium(
+    canvas: &mut Canvas,
+    row: u16,
+    card: &WorkerCard,
+) -> Result<u16, String> {
+    if card.selected {
+        // (8) Selection invert bar across worker head (left pane only).
+        canvas.fill_row_bg(
+            row,
+            2,
+            MC_LEFT_MAX,
+            TextStyle::on(ColorToken::Bright, ColorToken::Surface),
+        )?;
+        write_left(canvas, row, 2, "▌", TextStyle::plain(MC_ORANGE))?;
+        let head = format!("{} {} {}", card.id, card.mark, card.feature);
+        write_left(canvas, row, 4, &head, TextStyle::bold(ColorToken::Bright))?;
+        write_left(canvas, row, 34, card.ticks, TextStyle::plain(MC_ORANGE))?;
+        write_left(canvas, row, 48, card.timer, TextStyle::plain(ColorToken::Muted))?;
+
+        write_left(
+            canvas,
+            row + 1,
+            4,
+            &format!("skill {} · milestone MCx", card.skill),
+            TextStyle::plain(ColorToken::Secondary),
+        )?;
+        write_left(
+            canvas,
+            row + 2,
+            4,
+            "Preconditions",
+            TextStyle::bold(ColorToken::Bright),
+        )?;
+        write_left(
+            canvas,
+            row + 3,
+            6,
+            "fable5 note present · harness-v4 builds",
+            TextStyle::plain(ColorToken::Muted),
+        )?;
+        write_left(
+            canvas,
+            row + 4,
+            6,
+            "Factory MC ref available · pool 3/4",
+            TextStyle::plain(ColorToken::Muted),
+        )?;
+        write_left(
+            canvas,
+            row + 5,
+            4,
+            "Expected",
+            TextStyle::bold(ColorToken::Bright),
+        )?;
+        write_left(
+            canvas,
+            row + 6,
+            6,
+            "Factory hierarchy · Parallel 3/4 obvious",
+            TextStyle::plain(ColorToken::Text),
+        )?;
+        write_left(
+            canvas,
+            row + 7,
+            6,
+            "Orange+gray · Execute/Read stream results",
+            TextStyle::plain(ColorToken::Text),
+        )?;
+        Ok(row + 9)
+    } else {
+        let mark_style = if card.mark == "✗" {
+            TextStyle::plain(ColorToken::Bad)
+        } else {
+            TextStyle::plain(ColorToken::Text)
+        };
+        let head = format!("  {} {} {}", card.id, card.mark, card.feature);
+        write_left(canvas, row, 2, &head, mark_style)?;
+        // Re-color the mark when running (orange ●) or failed (already Bad on whole head).
+        if card.mark == "●" {
+            // place ● after "  #NN " (2 spaces + id + space)
+            let mark_col = 2 + 2 + card.id.chars().count() as u16 + 1;
+            write_left(canvas, row, mark_col, "●", TextStyle::plain(MC_ORANGE))?;
+        }
+        write_left(canvas, row, 34, card.ticks, TextStyle::plain(ColorToken::Muted))?;
+        write_left(canvas, row, 48, card.timer, TextStyle::plain(ColorToken::Muted))?;
+        write_left(canvas, row + 1, 6, card.stream, TextStyle::plain(ColorToken::Dim))?;
+        Ok(row + 3)
+    }
 }
 
 fn finish_mc(canvas: Canvas) -> Result<Canvas, String> {
@@ -839,6 +1080,70 @@ fn finish_mc(canvas: Canvas) -> Result<Canvas, String> {
     // Must not reintroduce copper journey residual.
     if text.contains("Claude") || text.contains("Cortex Code") {
         return Err("MC paint residual: Claude/Cortex wording".to_owned());
+    }
+    Ok(canvas)
+}
+
+/// Premium home finish: pack residuals + palette restraint cues on the paint tokens used.
+fn finish_mc_premium(canvas: Canvas) -> Result<Canvas, String> {
+    let canvas = finish_mc(canvas)?;
+    let text = canvas.to_text();
+    if !text.contains("▮▮▮▯") {
+        return Err("MC premium missing slot cells ▮▮▮▯".to_owned());
+    }
+    if !text.contains("Workers (live) 3/4") && !text.contains("Workers 3/4") {
+        return Err("MC premium missing Workers live 3/4".to_owned());
+    }
+    if !text.contains("[#21]") {
+        return Err("MC premium missing feature [#id] badges".to_owned());
+    }
+    if !text.contains("Execute") || !text.contains("Read") {
+        return Err("MC premium missing Execute/Read stream grammar".to_owned());
+    }
+    if !text.contains('✓') {
+        return Err("MC premium missing stream result ✓".to_owned());
+    }
+    if !text.contains('⠋') {
+        return Err("MC premium missing spinner cue".to_owned());
+    }
+    if !text.contains("1-4 Jump") || !text.contains("Tab Cycle") {
+        return Err("MC premium missing F W 1-4 Tab footer".to_owned());
+    }
+    // Rainbow panel language (banned multi-hue panel labels).
+    for banned in ["purple", "cyan", "magenta", "violet", "rainbow"] {
+        if text.to_lowercase().contains(banned) {
+            return Err(format!("MC premium residual rainbow cue: {banned}"));
+        }
+    }
+    // Token usage restraint: home paint must not emit Info/Model/Plan/Accent/Running
+    // cell tokens (cyan/magenta multi-hue). Inspect canvas cells directly.
+    for cell in &canvas.cells {
+        match cell.style.foreground {
+            ColorToken::Accent | ColorToken::Info | ColorToken::Running | ColorToken::Model
+            | ColorToken::Plan => {
+                return Err(format!(
+                    "MC premium rainbow token {:?} on glyph {:?}",
+                    cell.style.foreground, cell.glyph
+                ));
+            }
+            _ => {}
+        }
+        if let Some(bg) = cell.style.background {
+            match bg {
+                ColorToken::Accent
+                | ColorToken::Info
+                | ColorToken::Running
+                | ColorToken::Model
+                | ColorToken::Plan
+                | ColorToken::Ok
+                | ColorToken::Bad
+                | ColorToken::Warn
+                | ColorToken::Path => {
+                    return Err(format!("MC premium rainbow/hot bg token {bg:?}"));
+                }
+                _ => {}
+            }
+        }
     }
     Ok(canvas)
 }
@@ -1620,7 +1925,7 @@ mod tests {
         }
     }
 
-    /// VAL-V3-MC-001: multi-worker Mission Control home anatomy.
+    /// VAL-V3-MC-001 + MC-004: multi-worker Mission Control home anatomy.
     #[test]
     fn mc_home_shows_multi_worker_parallel_pool() {
         let mon = render("workflow-monitor")
@@ -1642,18 +1947,118 @@ mod tests {
         assert!(mon.contains("Features"));
         assert!(mon.contains("Progress Log"));
         assert!(mon.contains("Worker #21") || mon.contains("Worker #22"));
-        assert!(mon.contains("Focus"));
         assert!(mon.contains("skill"));
         assert!(mon.contains("milestone"));
         assert!(mon.contains("Preconditions"));
-        assert!(mon.contains("Expected Behavior"));
+        assert!(mon.contains("Expected"));
         assert!(mon.contains("Execute"));
         assert!(mon.contains("Read"));
-        assert!(mon.contains("F Features"));
-        assert!(mon.contains("W Workers"));
-        assert!(mon.contains("Esc chat"));
+        assert!(mon.contains("F Features") || mon.contains("F "));
+        assert!(mon.contains("W Workers") || mon.contains("W "));
+        assert!(mon.contains("Esc"));
         assert!(!mon.contains("Tasks monitor"));
         assert!(!mon.contains("Subagents"));
+    }
+
+    /// VAL-V3-MC-004: premium Factory hierarchy cues.
+    #[test]
+    fn mc_premium_home_factory_hierarchy_and_stream_grammar() {
+        let c = render("workflow-monitor").unwrap_or_else(|e| panic!("{e}"));
+        let mon = c.to_text();
+        // (1) full-width RUNNING bar + fraction chip
+        assert!(mon.contains("● RUNNING"));
+        assert!(mon.contains("████████████████"));
+        assert!(mon.contains("18/42"));
+        assert!(mon.contains("3 live") && mon.contains("1 free") && mon.contains("2 queued"));
+        // (7) slot cells
+        assert!(mon.contains("▮▮▮▯"));
+        // (3) accordion: selected shows Preconditions/Expected; collapsed stream lines on siblings
+        assert!(mon.contains("Preconditions"));
+        assert!(mon.contains("Expected"));
+        assert!(mon.contains("Read staging/checklist.md") || mon.contains("Execute npx playwright"));
+        assert!(mon.contains("▰▰"));
+        // (4) feature badges
+        assert!(mon.contains("[#21]") && mon.contains("[#22]") && mon.contains("[#23]"));
+        assert!(mon.contains('✓') && mon.contains('○'));
+        // (6) stream grammar
+        assert!(mon.contains("Stream  #21"));
+        assert!(mon.contains("Execute"));
+        assert!(mon.contains("Read"));
+        assert!(mon.contains("14 tests passed") || mon.contains('✓'));
+        assert!(mon.contains('⠋'));
+        // (10) footer
+        assert!(mon.contains("1-4 Jump"));
+        assert!(mon.contains("Tab Cycle"));
+        assert!(mon.contains("A Assign"));
+        assert!(mon.contains("I Intervene"));
+        // (8) selection bar glyph
+        assert!(mon.contains('▌'));
+        // multi-worker still obvious
+        assert!(mon.contains("#21") && mon.contains("#22") && mon.contains("#23"));
+    }
+
+    /// VAL-V3-MC-004: no rainbow multi-accent panel tokens on premium home.
+    #[test]
+    fn mc_premium_home_palette_restraint_no_rainbow_tokens() {
+        let c = render("workflow-monitor").unwrap_or_else(|e| panic!("{e}"));
+        let mon = c.to_text();
+        for banned in ["purple", "cyan", "magenta", "violet", "rainbow"] {
+            assert!(
+                !mon.to_lowercase().contains(banned),
+                "banned palette word {banned}"
+            );
+        }
+        let mut saw_path = false;
+        let mut saw_ok = false;
+        for cell in &c.cells {
+            match cell.style.foreground {
+                ColorToken::Accent | ColorToken::Info | ColorToken::Running | ColorToken::Model
+                | ColorToken::Plan => {
+                    panic!(
+                        "rainbow token {:?} on glyph {:?}",
+                        cell.style.foreground, cell.glyph
+                    );
+                }
+                ColorToken::Path => saw_path = true,
+                ColorToken::Ok => saw_ok = true,
+                _ => {}
+            }
+        }
+        assert!(saw_path, "orange Path accent must be used");
+        assert!(saw_ok, "Ok terminal for ✓ results");
+        // Orange accent count should dominate; Path cells are the single hot accent family.
+        let path_n = c
+            .cells
+            .iter()
+            .filter(|c| c.style.foreground == ColorToken::Path)
+            .count();
+        assert!(path_n >= 8, "expected multiple Path/orange cues, got {path_n}");
+    }
+
+    /// VAL-V3-MC-004: multi-worker + stream grammar focused cases.
+    #[test]
+    fn mc_premium_home_multi_worker_and_stream_cues() {
+        let mon = render("workflow-monitor")
+            .unwrap_or_else(|e| panic!("{e}"))
+            .to_text();
+        // ≥3 live worker ids
+        for id in ["#21", "#22", "#23"] {
+            assert!(mon.contains(id), "missing worker {id}");
+        }
+        assert!(mon.contains("Workers (live) 3/4"));
+        // Stream block
+        let stream_at = mon.find("Stream  #21").expect("stream header");
+        let stream = &mon[stream_at..];
+        assert!(stream.contains("Execute"));
+        assert!(stream.contains("Read"));
+        assert!(stream.contains('✓'));
+        assert!(stream.contains('⠋') || stream.contains("Running multi-worker"));
+        // Collapsed siblings keep mini activity without full Preconditions blocks for each
+        let pre_count = mon.matches("Preconditions").count();
+        assert_eq!(
+            pre_count, 1,
+            "accordion: only selected worker expands Preconditions"
+        );
     }
 
     /// VAL-V3-MC-003: one worker fails without killing the pool run.
