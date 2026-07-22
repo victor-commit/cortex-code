@@ -1,30 +1,16 @@
-  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · 9.5K / 500K  
+  .: Mission Control  ~/projects/demo                                                                      9.5K / 500K  
                                                                                                                         
-  ● RUNNING  ████████░░░░  18/42 features · assignment board                                                            
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  
                                                                                                                         
-  Parallel assignment board                                                                                             
-  Feature · worker · state · skill · dependency  (assignment map)                                                       
+  Assignment map absorbed on Mission Control home                                                                       
                                                                                                                         
-  Feature                    Worker   State      Skill              Depends                                             
-  ─────────────────────────────────────────────────────────────────────────                                             
-  › e2e-test-suite           -        ○ blocked  v3-flow-worker     pool free                                           
-    Waits on free slot · queued behind Parallel 3/4                                                                     
+  Feature-to-worker pairing lives in Workers + Features on home.                                                        
+  Parallel 3/4 multi-● rows stay on the single Mission Control page.                                                    
+  This residual is not a second assignment product or tour page.                                                        
                                                                                                                         
-    note-open-risks          #21      ● running  v3-flow-worker     -                                                   
-    safe-publish-path        #22      ● running  v3-flow-worker     note-open                                           
-    window-os-actions        #23      ● running  v3-flow-worker     -                                                   
                                                                                                                         
-    github-actions-ci        -        ○ queued   v3-flow-worker     e2e-test                                            
-    (free slot)              #24      ○ free     -                  -                                                   
-                                                                                                                        
-    publish-checklist        #18      ✓ done     v3-flow-worker     -                                                   
-    staging-rollback         #19      ✓ done     v3-flow-worker     publish                                             
-                                                                                                                        
-  Pool summary                                                                                                          
-  Slots 3/4 live · free 1 · queue depth 2 · Parallel 3/4                                                                
-  Policy · implementers parallel · validators serial                                                                    
-                                                                                                                        
-  A Assign selected · W Workers · P Pool · Esc Mission Control                                                          
+  › Open Mission Control home                                                                                           
+    Stay on residual · no multi-panel Mission Control here                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +23,18 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
- F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ Esc Mission Control home · residual stub only                                                                          

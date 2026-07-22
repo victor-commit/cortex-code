@@ -1,32 +1,16 @@
-  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · 9.5K / 500K  
+  .: Mission Control  ~/projects/demo                                                                      9.5K / 500K  
                                                                                                                         
-  ● RUNNING  ████████░░░░  18/42 features · pool detail                                                                 
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  
                                                                                                                         
-  Pool board                                                                                                            
-  Slots · Parallel 3/4 · queue depth 2 · max concurrency 4                                                              
+  Pool detail absorbed on Mission Control home                                                                          
                                                                                                                         
-  Capacity                                                                                                              
-  › Free slots 1 / 4                                                                                                    
-    One assign ready · Assign opens workflow-launch                                                                     
-    Queue depth 2                                                                                                       
-    github-actions-ci · e2e-test-suite waiting on free slot                                                             
-    Live workers 3 / max 4                                                                                              
-    #21 #22 #23 occupied · Parallel 3/4                                                                                 
+  Parallel 3/4 · live/free/queued · slot cells live in the home header.                                                 
+  Open Mission Control home for Workers, Features, and Stream.                                                          
+  This residual is not a second pool dashboard.                                                                         
                                                                                                                         
-  Policy                                                                                                                
-    implementers-parallel · validators-serial                                                                           
-    Implementer features share pool slots; validators run one-at-a-time.                                                
                                                                                                                         
-  Slot map                                                                                                              
-    #21 ● note-open-risks     4m12s  v3-flow-worker                                                                     
-    #22 ● safe-publish-path   1m40s  v3-flow-worker                                                                     
-    #23 ● window-os-actions     55s  v3-flow-worker                                                                     
-    #24 ○ free                                                                                                          
-                                                                                                                        
-  Throughput (secondary)                                                                                                
-    Completed 18 · remaining 24 · elapsed 32m12s · no quarantine holds                                                  
-                                                                                                                        
-  A Assign free slot · Esc Mission Control · read-only pool metrics                                                     
+  › Open Mission Control home                                                                                           
+    Stay on residual · no multi-panel Mission Control here                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +21,20 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
- F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ Esc Mission Control home · residual stub only                                                                          

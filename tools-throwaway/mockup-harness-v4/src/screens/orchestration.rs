@@ -1,15 +1,18 @@
 //! Pure orchestration screens (F7).
 //!
-//! Most IDs stay tasks_pane / Dashboard analogues (pure-structure).
-//! Mission Control parallel pack (user-locked 2026-07-21) owns:
-//!   `workflow-monitor`, `workflow-monitor-failure`,
+//! Mission Control V2 premium (user-locked 2026-07-22) owns:
+//!   `workflow-monitor` (+ `workflow-monitor-failure` same DNA)
+//! as the **only** full MC product surface.
+//! Secondary former MC destinations collapse to non-primary stubs:
 //!   `concurrency-metrics`, `workflow-launch`, `workflow-launch-blocked`,
 //!   `team-board`
-//! Authority (V2 premium home): mission
-//! `library/mission-control-v2-premium-fable5-note.md` supersedes multi-page MC
-//! chrome; Factory ref `/tmp/factory-mission-control-ref.png`. Brand
-//! `.: Mission Control` under CortexNight with default pool 3 live / max 4.
-//! Home paint is orange + 3 grays only (Path accent; Ok/Bad terminal only).
+//! Residual advanced IDs (scorer/ladder/reviewer/envelope/mode-switch) stay
+//! thin non-MC detail surfaces and must not compete as alternate MC homes.
+//! Authority: mission `library/mission-control-v2-premium-fable5-note.md`;
+//! Factory ref `/tmp/factory-mission-control-ref.png`. Brand
+//! `.: Mission Control` under CortexNight on the primary home only (+ stubs that
+//! point home). Home paint is orange + 3 grays only (Path accent; Ok/Bad
+//! terminal only).
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{
@@ -139,258 +142,14 @@ fn mode_switch_refused() -> Result<Canvas, String> {
     finish(canvas)
 }
 
-/// MC parallel launch (VAL-V3-MC-002): assign next queued feature into a free pool slot.
+/// VAL-V3-MC-005 residual: assign absorbed on home (`A Assign`). Short pointer only.
 fn workflow_launch() -> Result<Canvas, String> {
-    let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_mc_top_bar(&mut canvas)?;
-
-    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
-    canvas.write(
-        2,
-        13,
-        "████████░░░░",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        2,
-        27,
-        "18/42 features · 3 live · 1 free slot",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-
-    canvas.write(
-        4,
-        2,
-        "Assign into free slot",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        5,
-        2,
-        "Pool 3/4 live · free slot #24 ready · queue depth 2",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    canvas.write(7, 2, "Workers (live) 3/4", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        8,
-        2,
-        "  #21 ● note-open-risks     4m12s",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        9,
-        2,
-        "  #22 ● safe-publish-path   1m40s",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        10,
-        2,
-        "  #23 ● window-os-actions     55s",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        11,
-        2,
-        "  #24 ○ free slot",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-
-    canvas.write(13, 2, "Queued features", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        14,
-        2,
-        "› ○ github-actions-ci",
-        TextStyle::bold(ColorToken::Accent),
-    )?;
-    canvas.write(
-        15,
-        4,
-        "skill v3-flow-worker · preconditions met · ready to assign",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        16,
-        2,
-        "  ○ e2e-test-suite",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "skill v3-flow-worker · waits behind github-actions-ci",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-
-    canvas.write(19, 2, "Effect", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        20,
-        2,
-        "Assign github-actions-ci into free slot #24. Pool becomes Parallel 4/4.",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        21,
-        2,
-        "Queue depth drops to 1. Sibling workers keep running.",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    paint_dock_frame(
-        &mut canvas,
-        28,
-        9,
-        "Assign queued feature into free slot?",
-        "Enter assigns · Esc returns to Mission Control",
-    )?;
-    canvas.write(
-        30,
-        5,
-        "› Assign into free slot",
-        TextStyle::bold(ColorToken::Accent),
-    )?;
-    canvas.write(
-        31,
-        5,
-        "  Keep queued · stay on monitor",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    paint_mc_footer(&mut canvas)?;
-    finish_mc(canvas)
+    mc_home_pointer_stub(McStubKind::Launch)
 }
 
-/// MC parallel launch blocked (VAL-V3-MC-002): pool full or precondition block.
+/// VAL-V3-MC-005 residual: pool-full / blocked signal points home — not a second dashboard.
 fn workflow_launch_blocked() -> Result<Canvas, String> {
-    let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_mc_top_bar_parallel(&mut canvas, "4/4")?;
-
-    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
-    canvas.write(
-        2,
-        13,
-        "██████████░░",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        2,
-        27,
-        "20/42 features · pool full · 2 queued",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-
-    canvas.write(
-        4,
-        2,
-        "Launch blocked",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        5,
-        2,
-        "✗ Pool full 4/4 · no free slot for the next queued feature",
-        TextStyle::bold(ColorToken::Bad),
-    )?;
-    canvas.write(
-        6,
-        2,
-        "  One queued item also fails precondition (see below).",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    canvas.write(8, 2, "Workers (live) 4/4", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        9,
-        2,
-        "  #21 ● note-open-risks     4m12s",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        10,
-        2,
-        "  #22 ● safe-publish-path   1m40s",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        11,
-        2,
-        "  #23 ● window-os-actions     55s",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        12,
-        2,
-        "  #24 ● github-actions-ci   1m05s",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        13,
-        2,
-        "  pool free 0 · max 4 · Parallel 4/4",
-        TextStyle::plain(ColorToken::Warn),
-    )?;
-
-    canvas.write(15, 2, "Queued · blocked", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        16,
-        2,
-        "› ○ e2e-test-suite",
-        TextStyle::bold(ColorToken::Warn),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "Blocked · pool full · waits for any free slot",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        18,
-        2,
-        "  ○ chrome-a11y-scan",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        19,
-        4,
-        "Blocked · precondition: Factory MC ref missing",
-        TextStyle::plain(ColorToken::Bad),
-    )?;
-
-    canvas.write(21, 2, "What happens next", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        22,
-        2,
-        "Free a slot (wait or intervene) or fix the missing precondition.",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        23,
-        2,
-        "Assign stays unavailable until pool free is at least 1 and preflight clears.",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    paint_dock_frame(
-        &mut canvas,
-        28,
-        9,
-        "Cannot assign · pool full",
-        "Enter opens pool · Esc returns to Mission Control",
-    )?;
-    canvas.write(
-        30,
-        5,
-        "› Open pool board",
-        TextStyle::bold(ColorToken::Accent),
-    )?;
-    canvas.write(
-        31,
-        5,
-        "  Fix precondition on chrome-a11y-scan",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    paint_mc_footer(&mut canvas)?;
-    finish_mc_flexible(canvas, Some("4/4"))
+    mc_home_pointer_stub(McStubKind::LaunchBlocked)
 }
 
 /// MC V2 premium home (VAL-V3-MC-004): Factory-grade parallel Mission Control.
@@ -409,9 +168,159 @@ enum McVariant {
     OneFailed,
 }
 
+/// Secondary orch destinations collapsed under VAL-V3-MC-005 (non-primary stubs).
+#[derive(Clone, Copy)]
+enum McStubKind {
+    Concurrency,
+    Launch,
+    LaunchBlocked,
+    TeamBoard,
+}
+
 /// Factory MC accent is orange Path (`#ff9e64`). Premium home paints Path + grays
 /// only; Ok/Bad reserved for terminal ✓/✗. No cyan Running / purple Accent panels.
 const MC_ORANGE: ColorToken = ColorToken::Path;
+
+/// Thin home-pointer residual for former multi-page MC destinations.
+/// Must NOT paint full multi-panel home chrome (Workers pane + Features + Stream).
+fn mc_home_pointer_stub(kind: McStubKind) -> Result<Canvas, String> {
+    let mut canvas = Canvas::new(Theme::CortexNight);
+    // Quiet residual top bar: brand + cwd + budget only (no full MC metrics lane).
+    let brand = ".: Mission Control";
+    canvas.write(0, 2, brand, TextStyle::bold(MC_ORANGE))?;
+    let after_brand = 2 + brand.chars().count() as u16 + 2;
+    canvas.write(
+        0,
+        after_brand,
+        DEMO_CWD,
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+    let budget = format!("{DEMO_CTX_USED} / {DEMO_CTX_TOTAL}");
+    let col = CANVAS_COLUMNS.saturating_sub(budget.chars().count() as u16 + 2);
+    canvas.write(0, col, &budget, TextStyle::plain(ColorToken::Muted))?;
+
+    paint_mc_rule(&mut canvas, 2)?;
+
+    let (title, line1, line2, line3, primary) = match kind {
+        McStubKind::Concurrency => (
+            "Pool detail absorbed on Mission Control home",
+            "Parallel 3/4 · live/free/queued · slot cells live in the home header.",
+            "Open Mission Control home for Workers, Features, and Stream.",
+            "This residual is not a second pool dashboard.",
+            "› Open Mission Control home",
+        ),
+        McStubKind::Launch => (
+            "Assign absorbed on Mission Control home",
+            "Use A Assign on home when a free slot is ready (queue depth 2).",
+            "Parallel 3/4 stays on the single Mission Control page.",
+            "This residual is not a launch tour or multi-panel board.",
+            "› Open Mission Control home",
+        ),
+        McStubKind::LaunchBlocked => (
+            "Assign blocked · return to Mission Control home",
+            "Pool full or a precondition failed: free a slot or fix preflight on home.",
+            "Parallel 4/4 saturation is visible from the home header when full.",
+            "This residual is not a competing blocked-launch dashboard.",
+            "› Open Mission Control home",
+        ),
+        McStubKind::TeamBoard => (
+            "Assignment map absorbed on Mission Control home",
+            "Feature-to-worker pairing lives in Workers + Features on home.",
+            "Parallel 3/4 multi-● rows stay on the single Mission Control page.",
+            "This residual is not a second assignment product or tour page.",
+            "› Open Mission Control home",
+        ),
+    };
+
+    canvas.write(4, 2, title, TextStyle::bold(ColorToken::Bright))?;
+    canvas.write(6, 2, line1, TextStyle::plain(ColorToken::Text))?;
+    canvas.write(7, 2, line2, TextStyle::plain(ColorToken::Muted))?;
+    canvas.write(8, 2, line3, TextStyle::plain(ColorToken::Dim))?;
+
+    canvas.write(11, 2, primary, TextStyle::bold(MC_ORANGE))?;
+    canvas.write(
+        12,
+        2,
+        "  Stay on residual · no multi-panel Mission Control here",
+        TextStyle::plain(ColorToken::Muted),
+    )?;
+
+    canvas.write(
+        39,
+        1,
+        "Esc Mission Control home · residual stub only",
+        TextStyle::plain(ColorToken::Dim),
+    )?;
+
+    finish_mc_stub(canvas, kind)
+}
+
+fn finish_mc_stub(canvas: Canvas, kind: McStubKind) -> Result<Canvas, String> {
+    let text = canvas.to_text();
+    reject_copper_residual(&text)?;
+    reject_structure_residual(&text)?;
+    if !text.contains(".: Mission Control") {
+        return Err("MC stub missing .: Mission Control brand".to_owned());
+    }
+    if !text.contains("Open Mission Control home") {
+        return Err("MC stub missing home pointer primary".to_owned());
+    }
+    // Must remain a short residual — never the full premium multi-panel chrome.
+    for banned in [
+        "Workers (live)",
+        "Progress Log",
+        "Stream  #",
+        "▮▮▮▯",
+        "1-4 Jump",
+        "Tab Cycle",
+        "Preconditions",
+        "Features 18/42",
+        "Features 17/42",
+    ] {
+        if text.contains(banned) {
+            return Err(format!("MC stub competes with home chrome: {banned}"));
+        }
+    }
+    // Rainbow / invent residuals.
+    if text.contains("Tasks monitor") || text.contains("Goals board") || text.contains("Owner ·") {
+        return Err("MC stub residual: banned invent chrome".to_owned());
+    }
+    if text.contains("Claude") || text.contains("Cortex Code") {
+        return Err("MC stub residual: Claude/Cortex wording".to_owned());
+    }
+    match kind {
+        McStubKind::Concurrency => {
+            if !text.contains("Parallel 3/4") {
+                return Err("concurrency stub missing Parallel 3/4 cue".to_owned());
+            }
+            if !text.contains("absorbed") && !text.contains("Pool detail") {
+                return Err("concurrency stub missing absorbed/pool language".to_owned());
+            }
+        }
+        McStubKind::Launch => {
+            if !text.contains("Assign") {
+                return Err("launch stub missing Assign language".to_owned());
+            }
+            if !text.contains("Parallel 3/4") {
+                return Err("launch stub missing Parallel 3/4".to_owned());
+            }
+        }
+        McStubKind::LaunchBlocked => {
+            if !(text.contains("blocked") || text.contains("Blocked") || text.contains("full")) {
+                return Err("blocked stub missing blocked/full language".to_owned());
+            }
+        }
+        McStubKind::TeamBoard => {
+            if !(text.contains("assignment") || text.contains("Assignment")) {
+                return Err("team-board stub missing assignment language".to_owned());
+            }
+            if !text.contains("Parallel 3/4") {
+                return Err("team-board stub missing Parallel 3/4".to_owned());
+            }
+        }
+    }
+    Ok(canvas)
+}
 
 /// Shared Mission Control V2 premium shell under CortexNight.
 fn mission_control_home(variant: McVariant) -> Result<Canvas, String> {
@@ -777,87 +686,6 @@ fn paint_mc_top_bar_premium(canvas: &mut Canvas) -> Result<(), String> {
     Ok(())
 }
 
-fn paint_mc_top_bar(canvas: &mut Canvas) -> Result<(), String> {
-    // Secondary MC pack pages keep pool language; orange brand for shell consistency.
-    let brand = ".: Mission Control";
-    canvas.write(0, 2, brand, TextStyle::bold(MC_ORANGE))?;
-    let after_brand = 2 + brand.chars().count() as u16 + 2;
-    canvas.write(
-        0,
-        after_brand,
-        DEMO_CWD,
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    let metrics = format!(
-        "Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · {DEMO_CTX_USED} / {DEMO_CTX_TOTAL}"
-    );
-    let col = CANVAS_COLUMNS.saturating_sub(metrics.chars().count() as u16 + 2);
-    canvas.write(0, col, &metrics, TextStyle::plain(ColorToken::Muted))?;
-    Ok(())
-}
-
-fn paint_mc_top_bar_parallel(canvas: &mut Canvas, parallel: &str) -> Result<(), String> {
-    let brand = ".: Mission Control";
-    canvas.write(0, 2, brand, TextStyle::bold(MC_ORANGE))?;
-    let after_brand = 2 + brand.chars().count() as u16 + 2;
-    canvas.write(
-        0,
-        after_brand,
-        DEMO_CWD,
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    let metrics = format!(
-        "Time 32m12s · In 3.8K · Out 1.3M · Parallel {parallel} · {DEMO_CTX_USED} / {DEMO_CTX_TOTAL}"
-    );
-    let col = CANVAS_COLUMNS.saturating_sub(metrics.chars().count() as u16 + 2);
-    canvas.write(0, col, &metrics, TextStyle::plain(ColorToken::Muted))?;
-    Ok(())
-}
-
-fn finish_mc_flexible(canvas: Canvas, parallel: Option<&str>) -> Result<Canvas, String> {
-    let text = canvas.to_text();
-    reject_copper_residual(&text)?;
-    reject_structure_residual(&text)?;
-    if !text.contains(".: Mission Control") {
-        return Err("MC paint missing .: Mission Control brand".to_owned());
-    }
-    let parallel_label = parallel.unwrap_or("3/4");
-    let needle = format!("Parallel {parallel_label}");
-    if !text.contains(&needle) {
-        return Err(format!("MC paint missing {needle} pool metric"));
-    }
-    if text.contains("Tasks monitor") || text.contains("Goals board") || text.contains("Owner ·")
-    {
-        return Err("MC paint residual: banned invent chrome".to_owned());
-    }
-    if text.contains("0m")
-        && text.split_whitespace().any(|tok| {
-            tok.len() >= 4
-                && tok.starts_with("0m")
-                && tok.ends_with('s')
-                && tok[2..tok.len() - 1].chars().all(|c| c.is_ascii_digit())
-        })
-    {
-        return Err("MC paint residual: 0mNNs timer".to_owned());
-    }
-    if text.contains("Claude") || text.contains("Cortex Code") {
-        return Err("MC paint residual: Claude/Cortex wording".to_owned());
-    }
-    Ok(canvas)
-}
-
-
-fn paint_mc_footer(canvas: &mut Canvas) -> Result<(), String> {
-    // Secondary MC pack pages keep prior key row (P Pool still listed).
-    canvas.write(
-        39,
-        1,
-        "F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-    Ok(())
-}
-
 /// (10) Premium home footer: F W 1-4 Tab A I Esc.
 fn paint_mc_footer_premium(canvas: &mut Canvas) -> Result<(), String> {
     canvas.write(
@@ -1148,137 +976,9 @@ fn finish_mc_premium(canvas: Canvas) -> Result<Canvas, String> {
     Ok(canvas)
 }
 
-/// MC parallel assignment board (VAL-V3-MC-002): feature↔worker map, NOT Owner Goals kanban.
+/// VAL-V3-MC-005 residual: assignment absorbed on home — short pointer, not a board.
 fn team_board() -> Result<Canvas, String> {
-    let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_mc_top_bar(&mut canvas)?;
-
-    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
-    canvas.write(
-        2,
-        13,
-        "████████░░░░",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        2,
-        27,
-        "18/42 features · assignment board",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-
-    canvas.write(
-        4,
-        2,
-        "Parallel assignment board",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        5,
-        2,
-        "Feature · worker · state · skill · dependency  (assignment map)",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    // Column headers.
-    canvas.write(
-        7,
-        2,
-        "Feature                    Worker   State      Skill              Depends",
-        TextStyle::bold(ColorToken::Bright),
-    )?;
-    canvas.write(
-        8,
-        2,
-        "─────────────────────────────────────────────────────────────────────────",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-
-    // Blocked / needs attention first.
-    canvas.write(
-        9,
-        2,
-        "› e2e-test-suite           -        ○ blocked  v3-flow-worker     pool free",
-        TextStyle::bold(ColorToken::Warn),
-    )?;
-    canvas.write(
-        10,
-        4,
-        "Waits on free slot · queued behind Parallel 3/4",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    // Running assignments with worker badges.
-    canvas.write(
-        12,
-        2,
-        "  note-open-risks          #21      ● running  v3-flow-worker     -",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        13,
-        2,
-        "  safe-publish-path        #22      ● running  v3-flow-worker     note-open",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        14,
-        2,
-        "  window-os-actions        #23      ● running  v3-flow-worker     -",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-
-    // Queued / free.
-    canvas.write(
-        16,
-        2,
-        "  github-actions-ci        -        ○ queued   v3-flow-worker     e2e-test",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        17,
-        2,
-        "  (free slot)              #24      ○ free     -                  -",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-
-    // Done.
-    canvas.write(
-        19,
-        2,
-        "  publish-checklist        #18      ✓ done     v3-flow-worker     -",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-    canvas.write(
-        20,
-        2,
-        "  staging-rollback         #19      ✓ done     v3-flow-worker     publish",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-
-    canvas.write(22, 2, "Pool summary", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        23,
-        2,
-        "Slots 3/4 live · free 1 · queue depth 2 · Parallel 3/4",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        24,
-        2,
-        "Policy · implementers parallel · validators serial",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-
-    canvas.write(
-        26,
-        2,
-        "A Assign selected · W Workers · P Pool · Esc Mission Control",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-
-    paint_mc_footer(&mut canvas)?;
-    finish_mc(canvas)
+    mc_home_pointer_stub(McStubKind::TeamBoard)
 }
 
 fn reviewer_output() -> Result<Canvas, String> {
@@ -1586,129 +1286,9 @@ fn intent_scorer_fail() -> Result<Canvas, String> {
     finish(canvas)
 }
 
-/// MC parallel pool board (VAL-V3-MC-002): slots, Parallel N/max, queue depth, policy.
+/// VAL-V3-MC-005 residual: pool metrics absorbed into home header slots / Workers line.
 fn concurrency_metrics() -> Result<Canvas, String> {
-    let mut canvas = Canvas::new(Theme::CortexNight);
-    paint_mc_top_bar(&mut canvas)?;
-
-    canvas.write(2, 2, "● RUNNING", TextStyle::bold(ColorToken::Running))?;
-    canvas.write(
-        2,
-        13,
-        "████████░░░░",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        2,
-        27,
-        "18/42 features · pool detail",
-        TextStyle::plain(ColorToken::Secondary),
-    )?;
-
-    canvas.write(4, 2, "Pool board", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        5,
-        2,
-        "Slots · Parallel 3/4 · queue depth 2 · max concurrency 4",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    // Exception-first: free capacity and queued pressure before healthy throughput.
-    canvas.write(7, 2, "Capacity", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        8,
-        2,
-        "› Free slots 1 / 4",
-        TextStyle::bold(ColorToken::Ok),
-    )?;
-    canvas.write(
-        9,
-        4,
-        "One assign ready · Assign opens workflow-launch",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        10,
-        2,
-        "  Queue depth 2",
-        TextStyle::plain(ColorToken::Warn),
-    )?;
-    canvas.write(
-        11,
-        4,
-        "github-actions-ci · e2e-test-suite waiting on free slot",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-    canvas.write(
-        12,
-        2,
-        "  Live workers 3 / max 4",
-        TextStyle::plain(ColorToken::Running),
-    )?;
-    canvas.write(
-        13,
-        4,
-        "#21 #22 #23 occupied · Parallel 3/4",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    canvas.write(15, 2, "Policy", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        16,
-        2,
-        "  implementers-parallel · validators-serial",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        17,
-        4,
-        "Implementer features share pool slots; validators run one-at-a-time.",
-        TextStyle::plain(ColorToken::Muted),
-    )?;
-
-    canvas.write(19, 2, "Slot map", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        20,
-        2,
-        "  #21 ● note-open-risks     4m12s  v3-flow-worker",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        21,
-        2,
-        "  #22 ● safe-publish-path   1m40s  v3-flow-worker",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        22,
-        2,
-        "  #23 ● window-os-actions     55s  v3-flow-worker",
-        TextStyle::plain(ColorToken::Text),
-    )?;
-    canvas.write(
-        23,
-        2,
-        "  #24 ○ free",
-        TextStyle::plain(ColorToken::Ok),
-    )?;
-
-    canvas.write(25, 2, "Throughput (secondary)", TextStyle::bold(ColorToken::Bright))?;
-    canvas.write(
-        26,
-        2,
-        "  Completed 18 · remaining 24 · elapsed 32m12s · no quarantine holds",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-
-    canvas.write(
-        28,
-        2,
-        "A Assign free slot · Esc Mission Control · read-only pool metrics",
-        TextStyle::plain(ColorToken::Dim),
-    )?;
-
-    paint_mc_footer(&mut canvas)?;
-    finish_mc(canvas)
+    mc_home_pointer_stub(McStubKind::Concurrency)
 }
 
 /// Tool evidence Latin form: `$ cmd`, never hybrid `Shell ·` invent.
@@ -1827,9 +1407,10 @@ fn finish(canvas: Canvas) -> Result<Canvas, String> {
 mod tests {
     use super::*;
 
-    const MC_PACK: &[&str] = &[
-        "workflow-monitor",
-        "workflow-monitor-failure",
+    /// Primary full MC product surfaces only (VAL-V3-MC-004/006).
+    const MC_PRIMARY: &[&str] = &["workflow-monitor", "workflow-monitor-failure"];
+    /// Former multi-page MC destinations collapsed to stubs (VAL-V3-MC-005).
+    const MC_SECONDARY_STUBS: &[&str] = &[
         "concurrency-metrics",
         "workflow-launch",
         "workflow-launch-blocked",
@@ -1861,8 +1442,9 @@ mod tests {
             assert!(!text.contains("How Code should work"), "{id}");
             assert!(!text.contains("Cortex Code"), "{id}");
             assert!(!text.contains("Factory Mission"), "{id}");
-            let is_mc = MC_PACK.contains(&id);
-            if is_mc {
+            let is_primary = MC_PRIMARY.contains(&id);
+            let is_stub = MC_SECONDARY_STUBS.contains(&id);
+            if is_primary {
                 assert!(
                     text.contains(".: Mission Control"),
                     "{id} missing MC brand"
@@ -1871,6 +1453,29 @@ mod tests {
                     text.contains("Parallel 3/4") || text.contains("Parallel 4/4"),
                     "{id} missing pool metric"
                 );
+                assert!(
+                    text.contains("Workers (live)") || text.contains("Workers 3/4"),
+                    "{id} missing Workers pane"
+                );
+            } else if is_stub {
+                assert!(
+                    text.contains(".: Mission Control"),
+                    "{id} stub missing MC brand"
+                );
+                assert!(
+                    text.contains("Open Mission Control home"),
+                    "{id} stub missing home pointer"
+                );
+                // Stubs must not compete as full multi-panel homes.
+                assert!(
+                    !text.contains("Workers (live)"),
+                    "{id} stub must not paint Workers live pane"
+                );
+                assert!(
+                    !text.contains("Progress Log"),
+                    "{id} stub must not paint Progress Log"
+                );
+                assert!(!text.contains("Stream  #"), "{id} stub must not paint Stream");
             } else {
                 assert!(
                     text.contains("Cortex")
@@ -1880,8 +1485,9 @@ mod tests {
                         || text.contains("Shift+Tab")
                         || text.contains("Subagents")
                         || text.contains("Watchers")
-                        || text.contains("$ cargo"),
-                    "{id} lacks pure Cortex tasks/dashboard language"
+                        || text.contains("$ cargo")
+                        || text.contains("Advanced"),
+                    "{id} lacks pure Cortex residual language"
                 );
             }
             assert_eq!(text.lines().count(), 40, "{id}");
@@ -2061,7 +1667,7 @@ mod tests {
         );
     }
 
-    /// VAL-V3-MC-003: one worker fails without killing the pool run.
+    /// VAL-V3-MC-003 + MC-006: one worker fails without killing the pool run.
     #[test]
     fn mc_failure_keeps_siblings_running() {
         let fail = render("workflow-monitor-failure")
@@ -2099,118 +1705,174 @@ mod tests {
         assert!(worker_ids >= 2, "need multi-worker presence after fail");
     }
 
-    /// VAL-V3-MC-002: pool metrics surface.
+    /// VAL-V3-MC-006: failure variant keeps premium home DNA (Factory hierarchy).
     #[test]
-    fn mc_concurrency_metrics_shows_pool_board() {
-        let m = render("concurrency-metrics")
-            .unwrap_or_else(|e| panic!("{e}"))
-            .to_text();
-        assert!(m.contains(".: Mission Control"));
-        assert!(m.contains("Parallel 3/4"));
-        assert!(m.contains("Pool board") || m.contains("pool"));
-        assert!(m.contains("queue depth") || m.contains("Queue depth"));
-        assert!(m.contains("Free slots") || m.contains("free"));
-        assert!(m.contains("max") || m.contains("4"));
-        assert!(
-            m.contains("validators-serial") || m.contains("validators serial"),
-            "policy hint validators-serial"
-        );
-        assert!(
-            m.contains("implementers-parallel") || m.contains("implementers parallel"),
-            "policy hint implementers-parallel"
-        );
-        assert!(m.contains("#21") && m.contains("#22") && m.contains("#23"));
-        assert!(!m.contains("Goals board"));
-        assert!(!m.contains("Owner ·"));
-        assert!(!m.contains("Tasks monitor"));
-    }
-
-    /// VAL-V3-MC-002: launch assigns queued feature into free slot.
-    #[test]
-    fn mc_workflow_launch_assigns_free_slot() {
-        let t = render("workflow-launch")
-            .unwrap_or_else(|e| panic!("{e}"))
-            .to_text();
-        assert!(t.contains(".: Mission Control"));
-        assert!(t.contains("Parallel 3/4"));
-        assert!(
-            t.contains("Assign into free slot") || t.contains("Assign queued feature"),
-            "must show assign-into-free-slot language"
-        );
-        assert!(t.contains("free slot") || t.contains("#24"));
-        assert!(t.contains("queue depth") || t.contains("Queued"));
-        assert!(t.contains("› Assign") || t.contains("Assign into free slot"));
-        // Distinct from blocked.
-        assert!(!t.contains("Pool full 4/4") || t.contains("3/4"));
-        assert!(!t.contains("Goals board"));
-        assert!(!t.contains("Tasks monitor"));
-    }
-
-    /// VAL-V3-MC-002: launch-blocked is distinct pool-full / precondition state.
-    #[test]
-    fn mc_workflow_launch_blocked_pool_or_precondition() {
-        let t = render("workflow-launch-blocked")
-            .unwrap_or_else(|e| panic!("{e}"))
-            .to_text();
-        assert!(t.contains(".: Mission Control"));
-        assert!(t.contains("Parallel 4/4") || t.contains("pool full") || t.contains("Pool full"));
-        assert!(
-            t.contains("Pool full") || t.contains("pool full") || t.contains("Launch blocked"),
-            "must show pool-full / blocked language"
-        );
-        assert!(
-            t.contains("precondition") || t.contains("Blocked"),
-            "precondition or blocked signal"
-        );
-        // Distinct from ready launch.
-        assert!(
-            !t.contains("› Assign into free slot"),
-            "blocked must not offer ready assign as primary"
-        );
-        assert!(t.contains("› Open pool") || t.contains("Open pool board") || t.contains("Fix precondition"));
-        assert!(!t.contains("Goals board"));
-    }
-
-    /// VAL-V3-MC-002: team-board is assignment board, not Owner Goals kanban.
-    #[test]
-    fn mc_team_board_is_assignment_not_goals_kanban() {
-        let t = render("team-board")
-            .unwrap_or_else(|e| panic!("{e}"))
-            .to_text();
-        assert!(t.contains(".: Mission Control"));
-        assert!(t.contains("Parallel 3/4"));
-        assert!(
-            t.contains("assignment") || t.contains("Assignment"),
-            "assignment board title/copy"
-        );
-        assert!(t.contains("#21") && t.contains("#22") && t.contains("#23"));
-        assert!(t.contains("Worker") || t.contains("worker"));
-        assert!(t.contains("Feature") || t.contains("feature"));
-        // Forbidden Owner Goals kanban invent.
-        assert!(!t.contains("Goals board"));
-        assert!(!t.contains("Owner ·"));
-        assert!(!t.contains("Owner Goals"));
-        assert!(!t.contains("kanban"));
-        assert!(!t.contains("Tasks monitor"));
-        // Blocked / needs attention before healthy rows.
-        let blocked_pos = t.find("blocked").or_else(|| t.find("Blocked"));
-        let running_pos = t.find("running").or_else(|| t.find("● running"));
-        if let (Some(b), Some(r)) = (blocked_pos, running_pos) {
-            assert!(b < r, "blocked rows should appear before running rows");
+    fn mc_failure_keeps_premium_home_dna() {
+        let c = render("workflow-monitor-failure").unwrap_or_else(|e| panic!("{e}"));
+        let fail = c.to_text();
+        // Same premium shell as home.
+        assert!(fail.contains(".: Mission Control"));
+        assert!(fail.contains("▮▮▮▯"), "slot cells");
+        assert!(fail.contains("● RUNNING"));
+        assert!(fail.contains("████████████████"), "dense RUNNING bar");
+        assert!(fail.contains("17/42") || fail.contains("Features 17/42"));
+        assert!(fail.contains("Workers 3/4") || fail.contains("Workers (live)"));
+        assert!(fail.contains("1 failed"));
+        // Per-worker fail + siblings running.
+        assert!(fail.contains('✗'));
+        assert!(fail.contains("#21") && fail.contains("#22") && fail.contains("#23"));
+        assert!(fail.contains("[#21]") && fail.contains("[#22]") && fail.contains("[#23]"));
+        // Stream grammar retained for focused running sibling.
+        assert!(fail.contains("Stream  #21"));
+        assert!(fail.contains("Execute") && fail.contains("Read"));
+        assert!(fail.contains('✓') && fail.contains('⠋'));
+        assert!(fail.contains("1-4 Jump") && fail.contains("Tab Cycle"));
+        assert!(fail.contains("Preconditions") && fail.contains("Expected"));
+        // Log records the fail while pool stays RUNNING.
+        assert!(fail.contains("Worker #22 failed") || fail.contains("failed [safe-publish-path]"));
+        // Palette restraint (no rainbow tokens).
+        for cell in &c.cells {
+            match cell.style.foreground {
+                ColorToken::Accent | ColorToken::Info | ColorToken::Running | ColorToken::Model
+                | ColorToken::Plan => {
+                    panic!(
+                        "failure premium rainbow token {:?} on {:?}",
+                        cell.style.foreground, cell.glyph
+                    );
+                }
+                _ => {}
+            }
         }
     }
 
-    /// VAL-V3-CROSS-030: entire MC pack shares shell brand + pool language.
+    /// VAL-V3-MC-005: secondary orch pages are non-primary stubs / home pointers.
     #[test]
-    fn mc_pack_shell_consistency() {
-        for id in MC_PACK {
+    fn mc_secondary_stubs_are_home_pointers_not_full_dashboards() {
+        for id in MC_SECONDARY_STUBS {
             let t = render(id)
                 .unwrap_or_else(|e| panic!("{id}: {e}"))
                 .to_text();
             assert!(
                 t.contains(".: Mission Control"),
-                "{id} missing MC brand"
+                "{id} keeps brand for residual pointer"
             );
+            assert!(
+                t.contains("Open Mission Control home"),
+                "{id} must point home"
+            );
+            assert!(
+                t.contains("residual") || t.contains("absorbed") || t.contains("not a"),
+                "{id} must read as residual/absorbed, not primary product"
+            );
+            // Full multi-panel MC home chrome must NOT appear on stubs.
+            for banned in [
+                "Workers (live)",
+                "Progress Log",
+                "Stream  #",
+                "▮▮▮▯",
+                "1-4 Jump",
+                "Tab Cycle",
+                "Preconditions",
+                "Features 18/42",
+                "Features 17/42",
+            ] {
+                assert!(
+                    !t.contains(banned),
+                    "{id} must not compete with home chrome {banned:?}"
+                );
+            }
+            assert!(!t.contains("Goals board"), "{id}");
+            assert!(!t.contains("Owner ·"), "{id}");
+            assert!(!t.contains("Tasks monitor"), "{id}");
+            assert_eq!(t.lines().count(), 40, "{id}");
+            assert!(
+                t.contains("9.5K / 500K") || t.contains("K / "),
+                "{id} budget chrome"
+            );
+        }
+
+        // Distinct residual copy per stub.
+        let pool = render("concurrency-metrics").unwrap().to_text();
+        assert!(pool.contains("Parallel 3/4"));
+        assert!(
+            pool.contains("Pool detail") || pool.contains("absorbed"),
+            "pool residual language"
+        );
+
+        let launch = render("workflow-launch").unwrap().to_text();
+        assert!(launch.contains("Assign") && launch.contains("Parallel 3/4"));
+        assert!(launch.contains("A Assign") || launch.contains("free slot"));
+
+        let blocked = render("workflow-launch-blocked").unwrap().to_text();
+        assert!(
+            blocked.contains("blocked")
+                || blocked.contains("Blocked")
+                || blocked.contains("full")
+                || blocked.contains("Pool full"),
+            "blocked residual"
+        );
+        assert_ne!(launch, blocked, "launch and blocked stubs must differ");
+
+        let board = render("team-board").unwrap().to_text();
+        assert!(
+            board.contains("assignment") || board.contains("Assignment"),
+            "assignment residual"
+        );
+        assert!(!board.contains("kanban"));
+    }
+
+    /// VAL-V3-MC-005: only primary home (+ failure) paints full multi-panel chrome.
+    #[test]
+    fn mc_main_page_is_only_full_product() {
+        let mon = render("workflow-monitor").unwrap().to_text();
+        assert!(mon.contains("Workers (live) 3/4"));
+        assert!(mon.contains("Progress Log"));
+        assert!(mon.contains("Stream  #21"));
+        assert!(mon.contains("▮▮▮▯"));
+
+        let fail = render("workflow-monitor-failure").unwrap().to_text();
+        assert!(fail.contains("Workers 3/4") || fail.contains("Workers (live)"));
+        assert!(fail.contains("Progress Log"));
+        assert!(fail.contains("Stream  #21"));
+        assert!(fail.contains("▮▮▮▯"));
+
+        // Every other orch ID must lack the full triple chrome competition.
+        for id in [
+            "concurrency-metrics",
+            "workflow-launch",
+            "workflow-launch-blocked",
+            "team-board",
+            "mode-switch",
+            "mode-switch-refused",
+            "reviewer-output",
+            "reviewer-approved",
+            "verification-ladder",
+            "intent-scorer-pass",
+            "intent-scorer-fail",
+            "tool-envelope",
+        ] {
+            let t = render(id)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+                .to_text();
+            let has_workers = t.contains("Workers (live)") || t.contains("Workers 3/4 ·");
+            let has_log = t.contains("Progress Log");
+            let has_stream = t.contains("Stream  #");
+            let competing = has_workers && has_log && has_stream;
+            assert!(
+                !competing,
+                "{id} paints full multi-panel MC home chrome competing with workflow-monitor"
+            );
+        }
+    }
+
+    /// Primary home + stubs brand consistency (VAL-V3-MC-004/005).
+    #[test]
+    fn mc_pack_shell_consistency() {
+        for id in MC_PRIMARY {
+            let t = render(id)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+                .to_text();
+            assert!(t.contains(".: Mission Control"), "{id} missing MC brand");
             assert!(
                 t.contains("Parallel 3/4") || t.contains("Parallel 4/4"),
                 "{id} missing Parallel N/max"
@@ -2219,27 +1881,32 @@ mod tests {
                 t.contains("9.5K / 500K") || t.contains("K / "),
                 "{id} missing CortexNight context budget"
             );
+            assert!(t.contains("▮▮▮▯"), "{id} premium slots");
             assert!(!t.contains("Cortex Code"), "{id}");
             assert!(!t.contains("Code needs"), "{id}");
             assert!(!t.contains("Tasks monitor"), "{id}");
             assert!(!t.contains("Goals board"), "{id}");
             assert_eq!(t.lines().count(), 40, "{id}");
         }
-        // Launch and blocked are distinct states.
+        for id in MC_SECONDARY_STUBS {
+            let t = render(id)
+                .unwrap_or_else(|e| panic!("{id}: {e}"))
+                .to_text();
+            assert!(t.contains(".: Mission Control"), "{id}");
+            assert!(t.contains("Open Mission Control home"), "{id}");
+            assert!(!t.contains("Workers (live)"), "{id}");
+            assert!(!t.contains("Tasks monitor"), "{id}");
+            assert!(!t.contains("Goals board"), "{id}");
+            assert_eq!(t.lines().count(), 40, "{id}");
+        }
         let launch = render("workflow-launch").unwrap().to_text();
         let blocked = render("workflow-launch-blocked").unwrap().to_text();
         assert_ne!(launch, blocked, "launch and blocked must differ");
-        assert!(
-            launch.contains("Assign") && blocked.contains("blocked")
-                || blocked.contains("Pool full")
-                || blocked.contains("pool full"),
-            "distinct launch vs blocked signals"
-        );
     }
 
     #[test]
     fn tasks_pane_and_dashboard_language_visible() {
-        // MC pack owns monitor + pool/launch/board; residual IDs keep tool language.
+        // Primary MC home owns multi-panel chrome; secondary stubs point home.
         let mon = render("workflow-monitor").unwrap().to_text();
         assert!(mon.contains(".: Mission Control"));
         assert!(mon.contains("Workers (live)"));
@@ -2249,8 +1916,10 @@ mod tests {
         let board = render("team-board").unwrap().to_text();
         assert!(board.contains(".: Mission Control"));
         assert!(board.contains("assignment") || board.contains("Assignment"));
+        assert!(board.contains("Open Mission Control home"));
         assert!(!board.contains("Goals board"));
         assert!(!board.contains("Owner ·"));
+        assert!(!board.contains("Workers (live)"));
 
         let env = render("tool-envelope").unwrap().to_text();
         assert!(env.contains("$ cargo test publish"));

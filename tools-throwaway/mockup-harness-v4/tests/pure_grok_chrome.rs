@@ -180,7 +180,7 @@ fn all_f1_f7_screens_reject_copper_brand() {
 
 #[test]
 fn orchestration_uses_tasks_dashboard_plan_language() {
-    // MC parallel pack owns workflow-monitor (VAL-V3-MC-001).
+    // MC V2 premium owns workflow-monitor as the only full MC product (VAL-V3-MC-004).
     let monitor = render_pilot("workflow-monitor").unwrap().to_text();
     assert!(monitor.contains(".: Mission Control"));
     assert!(monitor.contains("Workers (live)") || monitor.contains("Parallel 3/4"));
@@ -190,15 +190,22 @@ fn orchestration_uses_tasks_dashboard_plan_language() {
     let mode = render_pilot("mode-switch").unwrap().to_text();
     assert!(mode.contains("Shift+Tab") || mode.contains("plan"));
     assert!(!mode.contains("How Code should work"));
-    // MC pack owns concurrency-metrics as pool board (VAL-V3-MC-002).
+    // VAL-V3-MC-005: concurrency-metrics is a non-primary home pointer stub.
     let dash = render_pilot("concurrency-metrics").unwrap().to_text();
     assert!(
         dash.contains(".: Mission Control") || dash.contains("Dashboard"),
-        "pool board is MC pack or legacy Dashboard"
+        "pool residual keeps brand or legacy Dashboard"
     );
     assert!(
-        dash.contains("Parallel 3/4") || dash.contains("Pool board") || dash.contains(MODEL_LABEL),
-        "pool Parallel metric or model label"
+        dash.contains("Open Mission Control home")
+            || dash.contains("Parallel 3/4")
+            || dash.contains("Pool board")
+            || dash.contains(MODEL_LABEL),
+        "pool residual points home or keeps Parallel cue"
+    );
+    assert!(
+        !dash.contains("Workers (live)"),
+        "concurrency stub must not paint full Workers pane"
     );
 }
 
@@ -738,19 +745,18 @@ fn orchestration_family_tasks_dashboard_analogues() {
             text.contains("9.5K / 500K") || text.contains("K / "),
             "{id} inherits M1 auth budget chrome"
         );
-        let is_mc = matches!(
+        let is_primary = matches!(id, "workflow-monitor" | "workflow-monitor-failure");
+        let is_stub = matches!(
             id,
-            "workflow-monitor"
-                | "workflow-monitor-failure"
-                | "concurrency-metrics"
+            "concurrency-metrics"
                 | "workflow-launch"
                 | "workflow-launch-blocked"
                 | "team-board"
         );
-        if is_mc {
+        if is_primary {
             assert!(
                 text.contains("F Features")
-                    || text.contains("Esc chat")
+                    || text.contains("Esc")
                     || text.contains(".: Mission Control"),
                 "{id} MC footer keys / brand"
             );
@@ -758,6 +764,29 @@ fn orchestration_family_tasks_dashboard_analogues() {
                 text.contains("Parallel 3/4") || text.contains("Parallel 4/4"),
                 "{id} Parallel N/max"
             );
+            assert!(
+                text.contains("Workers (live)") || text.contains("Workers 3/4"),
+                "{id} full Workers pane"
+            );
+        } else if is_stub {
+            // VAL-V3-MC-005: non-primary stubs point home; no multi-panel competition.
+            assert!(
+                text.contains(".: Mission Control"),
+                "{id} residual brand"
+            );
+            assert!(
+                text.contains("Open Mission Control home"),
+                "{id} home pointer"
+            );
+            assert!(
+                !text.contains("Workers (live)"),
+                "{id} stub must not paint Workers live pane"
+            );
+            assert!(
+                !text.contains("Progress Log"),
+                "{id} stub must not paint Progress Log"
+            );
+            assert!(!text.contains("Stream  #"), "{id} stub must not paint Stream");
         } else {
             assert!(
                 text.contains("Shift+Tab:mode | Ctrl+c:cancel") || text.contains("Shift+Tab"),
@@ -766,7 +795,7 @@ fn orchestration_family_tasks_dashboard_analogues() {
         }
     }
 
-    // MC parallel home (supersedes tasks_pane-only language on these IDs).
+    // MC V2 premium home (primary product surface only).
     let mon = render_pilot("workflow-monitor").unwrap().to_text();
     assert!(mon.contains(".: Mission Control"), "MC brand");
     assert!(mon.contains("Parallel 3/4"), "default pool 3/4");
@@ -787,41 +816,51 @@ fn orchestration_family_tasks_dashboard_analogues() {
         fail.contains("Workers") && fail.contains("1 failed"),
         "failure pane names failed slot"
     );
+    // VAL-V3-MC-006: premium DNA retained on failure variant.
+    assert!(fail.contains("▮▮▮▯") || fail.contains("Stream  #21"));
+    assert!(fail.contains("Preconditions") || fail.contains("Execute"));
 
-    // MC parallel assignment board (VAL-V3-MC-002) — not Owner Goals kanban.
+    // VAL-V3-MC-005: secondary former MC destinations are home pointers, not boards.
     let board = render_pilot("team-board").unwrap().to_text();
     assert!(
         board.contains(".: Mission Control") || board.contains("assignment"),
-        "board is MC assignment surface"
+        "board residual keeps brand/assignment"
     );
     assert!(
-        board.contains("#21") && board.contains("#22") && board.contains("#23"),
-        "board maps workers"
+        board.contains("Open Mission Control home"),
+        "board points home"
     );
+    assert!(!board.contains("Workers (live)"));
     assert!(!board.contains("Goals board"));
     assert!(!board.contains("Owner ·"));
 
     let pool = render_pilot("concurrency-metrics").unwrap().to_text();
     assert!(pool.contains(".: Mission Control"));
+    assert!(pool.contains("Open Mission Control home"));
     assert!(pool.contains("Parallel 3/4"));
-    assert!(
-        pool.contains("queue depth") || pool.contains("Queue depth"),
-        "pool queue depth"
-    );
+    assert!(!pool.contains("Workers (live)"));
+    assert!(!pool.contains("Progress Log"));
 
     let launch = render_pilot("workflow-launch").unwrap().to_text();
     assert!(launch.contains(".: Mission Control"));
+    assert!(launch.contains("Open Mission Control home"));
     assert!(
-        launch.contains("Assign into free slot") || launch.contains("free slot"),
-        "launch assigns free slot"
+        launch.contains("Assign") || launch.contains("free slot"),
+        "launch residual mentions Assign"
     );
+    assert!(!launch.contains("Workers (live)"));
 
     let blocked = render_pilot("workflow-launch-blocked").unwrap().to_text();
     assert!(blocked.contains(".: Mission Control"));
+    assert!(blocked.contains("Open Mission Control home"));
     assert!(
-        blocked.contains("Pool full") || blocked.contains("pool full") || blocked.contains("blocked"),
-        "blocked is pool-full / precondition"
+        blocked.contains("Pool full")
+            || blocked.contains("pool full")
+            || blocked.contains("blocked")
+            || blocked.contains("Blocked"),
+        "blocked residual"
     );
+    assert!(!blocked.contains("Workers (live)"));
 
     let env = render_pilot("tool-envelope").unwrap().to_text();
     assert!(env.contains("$ cargo test publish"), "tool-envelope $ form");
@@ -888,7 +927,7 @@ fn published_orchestration_set_structure_language_bans() {
     let mon = root.join("workflow-monitor.txt");
     if mon.exists() {
         let text = std::fs::read_to_string(&mon).unwrap();
-        // After MC parallel publish: Mission Control home (not tasks_pane).
+        // After MC V2 premium publish: full Mission Control home (not tasks_pane).
         assert!(
             text.contains(".: Mission Control")
                 || text.contains("Subagents")
@@ -898,17 +937,31 @@ fn published_orchestration_set_structure_language_bans() {
         assert!(!text.contains("Active work ·"));
         assert!(!text.contains("Tasks monitor"));
     }
+    let fail = root.join("workflow-monitor-failure.txt");
+    if fail.exists() {
+        let text = std::fs::read_to_string(&fail).unwrap();
+        if text.contains(".: Mission Control") {
+            assert!(text.contains('✗') || text.contains("failed"));
+            assert!(text.contains("● RUNNING") || text.contains("RUNNING"));
+        }
+    }
     let board = root.join("team-board.txt");
     if board.exists() {
         let text = std::fs::read_to_string(&board).unwrap();
         assert!(
             text.contains(".: Mission Control")
                 || text.contains("assignment")
-                || text.contains("Dashboard"),
-            "published board is MC assignment or legacy Dashboard"
+                || text.contains("Dashboard")
+                || text.contains("Open Mission Control home"),
+            "published board is home pointer residual or legacy"
         );
         assert!(!text.contains("Goals board"));
         assert!(!text.contains("Owner ·"));
+        // VAL-V3-MC-005: after stub publish, board is not full multi-panel home.
+        if text.contains("Open Mission Control home") {
+            assert!(!text.contains("Workers (live)"));
+            assert!(!text.contains("Progress Log"));
+        }
     }
     for id in [
         "concurrency-metrics",
@@ -924,10 +977,23 @@ fn published_orchestration_set_structure_language_bans() {
             text.contains(".: Mission Control"),
             "published {id} MC brand"
         );
+        // VAL-V3-MC-005: stubs point home; may mention Parallel without full chrome.
         assert!(
-            text.contains("Parallel 3/4") || text.contains("Parallel 4/4"),
-            "published {id} Parallel metric"
+            text.contains("Open Mission Control home")
+                || text.contains("Parallel 3/4")
+                || text.contains("Parallel 4/4"),
+            "published {id} home pointer or Parallel cue"
         );
+        if text.contains("Open Mission Control home") {
+            assert!(
+                !text.contains("Workers (live)"),
+                "published {id} must not be full Workers dashboard"
+            );
+            assert!(
+                !text.contains("Progress Log"),
+                "published {id} must not paint Progress Log"
+            );
+        }
     }
     let env = root.join("tool-envelope.txt");
     if env.exists() {

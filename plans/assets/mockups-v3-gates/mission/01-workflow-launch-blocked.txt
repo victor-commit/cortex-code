@@ -1,40 +1,40 @@
-  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 4/4 · 9.5K / 500K  
+  .: Mission Control  ~/projects/demo                                                                      9.5K / 500K  
                                                                                                                         
-  ● RUNNING  ██████████░░  20/42 features · pool full · 2 queued                                                        
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  
                                                                                                                         
-  Launch blocked                                                                                                        
-  ✗ Pool full 4/4 · no free slot for the next queued feature                                                            
-    One queued item also fails precondition (see below).                                                                
+  Assign blocked · return to Mission Control home                                                                       
                                                                                                                         
-  Workers (live) 4/4                                                                                                    
-    #21 ● note-open-risks     4m12s                                                                                     
-    #22 ● safe-publish-path   1m40s                                                                                     
-    #23 ● window-os-actions     55s                                                                                     
-    #24 ● github-actions-ci   1m05s                                                                                     
-    pool free 0 · max 4 · Parallel 4/4                                                                                  
+  Pool full or a precondition failed: free a slot or fix preflight on home.                                             
+  Parallel 4/4 saturation is visible from the home header when full.                                                    
+  This residual is not a competing blocked-launch dashboard.                                                            
                                                                                                                         
-  Queued · blocked                                                                                                      
-  › ○ e2e-test-suite                                                                                                    
-    Blocked · pool full · waits for any free slot                                                                       
-    ○ chrome-a11y-scan                                                                                                  
-    Blocked · precondition: Factory MC ref missing                                                                      
                                                                                                                         
-  What happens next                                                                                                     
-  Free a slot (wait or intervene) or fix the missing precondition.                                                      
-  Assign stays unavailable until pool free is at least 1 and preflight clears.                                          
+  › Open Mission Control home                                                                                           
+    Stay on residual · no multi-panel Mission Control here                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Cannot assign · pool full                                                                                        │  
-  │  › Open pool board                                                                                               │  
-  │    Fix precondition on chrome-a11y-scan                                                                          │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter opens pool · Esc returns to Mission Control                                                                │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ Esc Mission Control home · residual stub only                                                                          

@@ -1,40 +1,40 @@
-  .: Mission Control  ~/projects/demo                    Time 32m12s · In 3.8K · Out 1.3M · Parallel 3/4 · 9.5K / 500K  
+  .: Mission Control  ~/projects/demo                                                                      9.5K / 500K  
                                                                                                                         
-  ● RUNNING  ████████░░░░  18/42 features · 3 live · 1 free slot                                                        
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  
                                                                                                                         
-  Assign into free slot                                                                                                 
-  Pool 3/4 live · free slot #24 ready · queue depth 2                                                                   
+  Assign absorbed on Mission Control home                                                                               
                                                                                                                         
-  Workers (live) 3/4                                                                                                    
-    #21 ● note-open-risks     4m12s                                                                                     
-    #22 ● safe-publish-path   1m40s                                                                                     
-    #23 ● window-os-actions     55s                                                                                     
-    #24 ○ free slot                                                                                                     
+  Use A Assign on home when a free slot is ready (queue depth 2).                                                       
+  Parallel 3/4 stays on the single Mission Control page.                                                                
+  This residual is not a launch tour or multi-panel board.                                                              
                                                                                                                         
-  Queued features                                                                                                       
-  › ○ github-actions-ci                                                                                                 
-    skill v3-flow-worker · preconditions met · ready to assign                                                          
-    ○ e2e-test-suite                                                                                                    
-    skill v3-flow-worker · waits behind github-actions-ci                                                               
                                                                                                                         
-  Effect                                                                                                                
-  Assign github-actions-ci into free slot #24. Pool becomes Parallel 4/4.                                               
-  Queue depth drops to 1. Sibling workers keep running.                                                                 
+  › Open Mission Control home                                                                                           
+    Stay on residual · no multi-panel Mission Control here                                                              
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮  
-  │ Assign queued feature into free slot?                                                                            │  
-  │  › Assign into free slot                                                                                         │  
-  │    Keep queued · stay on monitor                                                                                 │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │                                                                                                                  │  
-  │ Enter assigns · Esc returns to Mission Control                                                                   │  
-  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯  
                                                                                                                         
                                                                                                                         
- F Features · W Workers · P Pool · A Assign · I Intervene · Esc chat                                                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ Esc Mission Control home · residual stub only                                                                          
