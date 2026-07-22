@@ -6,7 +6,7 @@
 //! inventory/flow, TXT/PNG fidelity, semantic/transition audit, negative
 //! fixtures, immutable v2 references, assertion-to-case coverage, vision
 //! evidence, README index, programmatic check.sh, statusline policy,
-//! approval integrity, secret/commit/path scope, contractual 502-assertion
+//! approval integrity, secret/commit/path scope, contractual 506-assertion
 //! inventory, and double-render determinism via the public scripts.
 
 use std::collections::BTreeMap;
