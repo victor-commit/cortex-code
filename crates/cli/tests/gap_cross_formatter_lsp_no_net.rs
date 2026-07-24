@@ -875,7 +875,8 @@ fn fake_openrouter_key() -> String {
 fn reserve_serve_port() -> u16 {
     for _ in 0..60 {
         let port = NEXT_SERVE_PORT.fetch_add(1, Ordering::SeqCst);
-        if port > 3259 {
+        // Product reserved serve/provider loopback band is 18765-18864.
+        if !(18765..=18864).contains(&port) {
             NEXT_SERVE_PORT.store(18805, Ordering::SeqCst);
             continue;
         }
@@ -884,14 +885,15 @@ fn reserve_serve_port() -> u16 {
             return port;
         }
     }
-    panic!("no free serve port in 3240-3259");
+    panic!("no free serve port in 18765-18864");
 }
 
 fn bind_in_range(counter: &AtomicU16) -> (u16, TcpListener) {
     for _ in 0..60 {
         let port = counter.fetch_add(1, Ordering::SeqCst);
-        if port > 3279 {
-            counter.store(18825, Ordering::SeqCst);
+        // Product reserved serve/provider loopback band is 18765-18864.
+        if !(18765..=18864).contains(&port) {
+            counter.store(18765, Ordering::SeqCst);
             continue;
         }
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -899,5 +901,5 @@ fn bind_in_range(counter: &AtomicU16) -> (u16, TcpListener) {
             return (port, listener);
         }
     }
-    panic!("no free provider port in 3260-3279");
+    panic!("no free provider port in 18765-18864");
 }

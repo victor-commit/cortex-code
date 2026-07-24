@@ -625,7 +625,12 @@ fn generated_titles_and_diff_summaries_are_persisted_and_visible() {
     let mut list = Command::new(env!("CARGO_BIN_EXE_cortex"));
     list.current_dir(&home)
         .args(["session", "list", "--format", "json"])
-        .env("HOME", &home);
+        .env("HOME", &home)
+        // Match cortex_run_json isolation: an ambient XDG_DATA_HOME (e.g. mission hermetic
+        // gate wrappers) must not hijack the session DB away from this scratch HOME.
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CORTEX_DATA_DIR");
     let listed = run(list);
     assert_eq!(
         listed.status.code(),

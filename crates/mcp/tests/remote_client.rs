@@ -110,14 +110,27 @@ async fn wait_for_port(port: u16) {
     panic!("the fixture never started listening on 127.0.0.1:{port}");
 }
 
+/// Pick a free loopback port in the MCP fixture band (3200-3299).
+/// Hardcoded fixtures collide with other local services (e.g. uvicorn on 3210).
+fn free_mcp_port() -> u16 {
+    use std::net::TcpListener;
+    for port in 3200..=3299 {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free MCP fixture port in 3200-3299");
+}
+
 #[tokio::test]
 async fn remote_streamable_connects_lists_and_calls() {
     let log = temp_path("streamable-log");
-    let _fixture = Fixture::spawn("streamable", 3210, Some(&log), &[]);
-    wait_for_port(3210).await;
+    let port = free_mcp_port();
+    let _fixture = Fixture::spawn("streamable", port, Some(&log), &[]);
+    wait_for_port(port).await;
 
     let servers = config(json!({
-        "api": { "type": "remote", "url": "http://127.0.0.1:3210/mcp" }
+        "api": { "type": "remote", "url": format!("http://127.0.0.1:{port}/mcp") }
     }));
     let manager = McpManager::connect(servers).await;
 

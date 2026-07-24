@@ -5849,7 +5849,7 @@ impl App {
             }
         }
         let id = local_share_id();
-        let url = format!("http://127.0.0.1:3200/share/{id}");
+        let url = format!("http://127.0.0.1:18765/share/{id}");
         let shares_dir = self.share_dir();
         let notice = match write_share_reference(&id, &self.status.session, &shares_dir) {
             Ok(path) => format!(
@@ -10912,7 +10912,7 @@ fn write_share_reference(id: &str, session: &str, dir: &Path) -> io::Result<Path
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{id}.json"));
     let body = format!(
-        "{{\"id\":\"{id}\",\"session\":\"{session}\",\"url\":\"http://127.0.0.1:3200/share/{id}\"}}"
+        "{{\"id\":\"{id}\",\"session\":\"{session}\",\"url\":\"http://127.0.0.1:18765/share/{id}\"}}"
     );
     std::fs::write(&path, body)?;
     Ok(path)
@@ -16498,7 +16498,7 @@ mod tests {
         let mut a = app();
         a.set_session_store(Some(path.clone()));
         a.set_remote_server(Some(
-            crate::remote::RemoteServer::from_url("http://127.0.0.1:3200").unwrap(),
+            crate::remote::RemoteServer::from_url("http://127.0.0.1:18765").unwrap(),
         ));
         a.attach_session(&session_id);
         let before = a.transcript.len();
@@ -19931,7 +19931,7 @@ mod tests {
 
         let mut a = app();
         a.remote_server = Some(
-            crate::remote::RemoteServer::from_url("http://127.0.0.1:3200")
+            crate::remote::RemoteServer::from_url("http://127.0.0.1:18765")
                 .expect("loopback server url"),
         );
         a.session_id = Some(session_id);
