@@ -246,7 +246,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if own_footer {
         if product_shell {
-            draw_product_putty(frame, footer_area, &theme);
+            draw_product_putty(frame, app, footer_area, &theme);
         } else {
             draw_footer(frame, app, footer_area, &theme);
         }
@@ -5023,16 +5023,41 @@ fn draw_product_top_bar(
 }
 
 /// product putty footer with product `|` separators (VAL-CORTEX-CHROME-003).
-fn draw_product_putty(frame: &mut Frame, area: Rect, theme: &style::ThemeColors) {
+///
+/// When a visual attention badge is active (error/completion/permission), the left zone shows
+/// `attention <event>` so existing attention tests and the quiet/enabled contract keep working on
+/// the authenticated Cortex shell. Otherwise paints the default putty shortcuts line.
+fn draw_product_putty(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let width = area.width as usize;
+    let bg = theme.background;
+    if let Some(attention) = app.attention_badge() {
+        // Match breadcrumb status-bar left-zone cue: "attention <label>" with muted prefix +
+        // warning emphasis on the event name. Keep putty canvas background (not BAR surface).
+        let line = Line::from(vec![
+            Span::styled("  attention ".to_owned(), Style::default().fg(theme.text_muted).bg(bg)),
+            Span::styled(
+                attention.to_owned(),
+                Style::default()
+                    .fg(theme.warning)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " ".repeat(width.saturating_sub(12 + attention.chars().count())),
+                Style::default().bg(bg),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let line = tui_components::chrome::default_putty_line(width);
     frame.render_widget(
         Paragraph::new(Span::styled(
             line,
-            Style::default().fg(theme.text_muted).bg(theme.background),
+            Style::default().fg(theme.text_muted).bg(bg),
         )),
         area,
     );
