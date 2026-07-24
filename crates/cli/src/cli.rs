@@ -1302,8 +1302,8 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1", value_name = "HOST")]
     pub hostname: String,
 
-    /// Port to bind the loopback server to.
-    #[arg(long, default_value_t = 3200, value_name = "PORT")]
+    /// Port to bind the loopback server to (product default 18765; reserved 18765-18864).
+    #[arg(long, default_value_t = 18765, value_name = "PORT")]
     pub port: u16,
 
     /// Enable browser-facing loopback CORS for token-gated protected routes.
@@ -1986,7 +1986,7 @@ mod tests {
         match cli.command {
             Some(Command::Serve(args)) => {
                 assert_eq!(args.hostname, "127.0.0.1");
-                assert_eq!(args.port, 3200);
+                assert_eq!(args.port, 18765);
                 assert!(!args.public);
                 assert_eq!(args.token, None);
             }

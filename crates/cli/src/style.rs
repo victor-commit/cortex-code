@@ -849,25 +849,25 @@ mod tests {
     #[test]
     fn serve_banner_line_is_plain_and_ansi_free_when_disabled() {
         let plain = Styler::new(false);
-        let line = serve_banner_line(plain, "127.0.0.1:3200");
-        assert_eq!(line, "cortex serve listening on http://127.0.0.1:3200");
+        let line = serve_banner_line(plain, "127.0.0.1:18765");
+        assert_eq!(line, "cortex serve listening on http://127.0.0.1:18765");
         assert!(!line.contains('\x1b'), "disabled banner has no ANSI");
     }
 
     #[test]
     fn serve_banner_line_paints_the_url_blue_when_enabled() {
         let styled = Styler::new(true);
-        let line = serve_banner_line(styled, "127.0.0.1:3200");
+        let line = serve_banner_line(styled, "127.0.0.1:18765");
         // The URL is wrapped in the URL-blue SGR; the lead text is unstyled.
         assert!(line.starts_with("cortex serve listening on "));
         assert!(line.contains(&format!(
-            "{}http://127.0.0.1:3200\x1b[0m",
+            "{}http://127.0.0.1:18765\x1b[0m",
             Style::fg(URL_BLUE).open_sequence()
         )));
         // Stripping ANSI recovers the exact plain banner.
         assert_eq!(
             strip_ansi(&line),
-            "cortex serve listening on http://127.0.0.1:3200"
+            "cortex serve listening on http://127.0.0.1:18765"
         );
     }
 

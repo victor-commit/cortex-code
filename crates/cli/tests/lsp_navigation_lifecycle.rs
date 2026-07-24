@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
-static NEXT_PORT: AtomicU16 = AtomicU16::new(3280);
+static NEXT_PORT: AtomicU16 = AtomicU16::new(18845);
 static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
 
 struct Scratch {
@@ -656,7 +656,7 @@ fn bind_provider_listener() -> (u16, TcpListener) {
             return (port, listener);
         }
     }
-    panic!("no test provider port available in the permitted 3280-3299 range");
+    panic!("no test provider port available in the permitted 18840-18864 range");
 }
 
 fn accept_with_idle_timeout(listener: &TcpListener, timeout: Duration) -> Option<TcpStream> {

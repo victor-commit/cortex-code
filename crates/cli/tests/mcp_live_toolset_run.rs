@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 const CONTROL_SETTLE: Duration = Duration::from_millis(250);
 
-static NEXT_PORT: AtomicU16 = AtomicU16::new(3240);
+static NEXT_PORT: AtomicU16 = AtomicU16::new(18805);
 
 #[derive(Clone, Copy)]
 enum Scenario {
@@ -785,8 +785,8 @@ fn fake_openrouter_key() -> String {
 fn free_port() -> u16 {
     for _ in 0..60 {
         let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
-        if port > 3299 {
-            NEXT_PORT.store(3240, Ordering::SeqCst);
+        if port > 18864 {
+            NEXT_PORT.store(18805, Ordering::SeqCst);
             continue;
         }
         let addr: SocketAddr = format!("127.0.0.1:{port}")
@@ -796,7 +796,7 @@ fn free_port() -> u16 {
             return port;
         }
     }
-    panic!("no free port available in 3240-3299");
+    panic!("no free port available in 18765-18864");
 }
 
 fn wait_for_port(port: u16) {

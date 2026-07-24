@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
-static NEXT_PORT: AtomicU16 = AtomicU16::new(3230);
+static NEXT_PORT: AtomicU16 = AtomicU16::new(18765);
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
@@ -549,7 +549,7 @@ fn free_port() -> u16 {
             return port;
         }
     }
-    panic!("no free port in 3200-3299");
+    panic!("no free port in 18765-18864");
 }
 
 fn bind_fixture_listener() -> (u16, TcpListener) {
@@ -565,7 +565,7 @@ fn bind_fixture_listener() -> (u16, TcpListener) {
             return (port, listener);
         }
     }
-    panic!("no free fixture port in 3200-3299");
+    panic!("no free fixture port in 18765-18864");
 }
 
 fn sse_body(frames: &[String]) -> String {

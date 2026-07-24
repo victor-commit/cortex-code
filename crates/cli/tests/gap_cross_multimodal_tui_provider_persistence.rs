@@ -215,12 +215,12 @@ fn assert_media_answer_and_redaction(messages: &[Value], secret: &str, surface: 
 }
 
 fn free_server_port() -> u16 {
-    for port in 3240..=3299 {
+    for port in 18765..=18864 {
         if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
-    panic!("no free server port in 3240-3299");
+    panic!("no free server port in 18765-18864");
 }
 
 fn wait_for_health(port: u16) {

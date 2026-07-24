@@ -1,9 +1,9 @@
 //! Small loopback HTTP client for an attached `cortex serve` process.
 //!
 //! The TUI stays a terminal app and does not depend on a generated SDK. When the user opts into an
-//! attached local server (`cortex tui --server http://127.0.0.1:32NN` or `CORTEX_SERVER_URL`), this
+//! attached local server (`cortex tui --server http://127.0.0.1:18765` or `CORTEX_SERVER_URL`), this
 //! module posts typed turn events to the server's `/event` bridge and asks the server to create
-//! loopback shares. Only 127.0.0.1/localhost ports in 3200-3299 are accepted.
+//! loopback shares. Only 127.0.0.1/localhost ports in 18765-18864 are accepted.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use events::Event;
 
-const MIN_PORT: u16 = 3200;
-const MAX_PORT: u16 = 3299;
+const MIN_PORT: u16 = 18765;
+const MAX_PORT: u16 = 18864;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteServer {
@@ -42,10 +42,10 @@ impl RemoteServer {
             .strip_prefix("http://")
             .ok_or_else(|| "server URL must use http:// loopback".to_owned())?;
         if rest.is_empty() || rest.contains('/') {
-            return Err("server URL must be an origin like http://127.0.0.1:3200".to_owned());
+            return Err("server URL must be an origin like http://127.0.0.1:18765".to_owned());
         }
         let (host, port) = rest.rsplit_once(':').ok_or_else(|| {
-            "server URL must include a port in the reserved 3200-3299 range".to_owned()
+            "server URL must include a port in the reserved 18765-18864 range".to_owned()
         })?;
         if !(host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost")) {
             return Err("server URL host must be loopback (127.0.0.1 or localhost)".to_owned());
@@ -55,7 +55,7 @@ impl RemoteServer {
             .map_err(|_| "server URL port must be numeric".to_owned())?;
         if !(MIN_PORT..=MAX_PORT).contains(&port) {
             return Err(format!(
-                "server URL port {port} is outside the reserved 3200-3299 range"
+                "server URL port {port} is outside the reserved 18765-18864 range"
             ));
         }
         let authority = format!("127.0.0.1:{port}");
@@ -258,12 +258,14 @@ mod tests {
 
     #[test]
     fn accepts_only_loopback_ports_in_the_server_range() {
-        assert!(RemoteServer::from_url("http://127.0.0.1:3200").is_ok());
-        assert!(RemoteServer::from_url("http://localhost:3299").is_ok());
-        assert!(RemoteServer::from_url("https://127.0.0.1:3200").is_err());
-        assert!(RemoteServer::from_url("http://example.com:3200").is_err());
-        assert!(RemoteServer::from_url("http://127.0.0.1:3199").is_err());
-        assert!(RemoteServer::from_url("http://127.0.0.1:3300").is_err());
+        assert!(RemoteServer::from_url("http://127.0.0.1:18765").is_ok());
+        assert!(RemoteServer::from_url("http://localhost:18864").is_ok());
+        assert!(RemoteServer::from_url("https://127.0.0.1:18765").is_err());
+        assert!(RemoteServer::from_url("http://example.com:18765").is_err());
+        assert!(RemoteServer::from_url("http://127.0.0.1:18764").is_err());
+        assert!(RemoteServer::from_url("http://127.0.0.1:18865").is_err());
+        // Old 32xx product ports are no longer accepted for attach/serve URLs.
+        assert!(RemoteServer::from_url("http://127.0.0.1:3200").is_err());
     }
 
     #[test]

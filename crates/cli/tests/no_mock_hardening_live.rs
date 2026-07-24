@@ -28,7 +28,7 @@ const SERVE_TIMEOUT: Duration = Duration::from_secs(20);
 const SERVE_HTTP_READ_TIMEOUT: Duration = Duration::from_secs(90);
 const NONCE_MAX_ATTEMPTS: u32 = 3;
 const NONCE_RETRY_BASE_BACKOFF_MS: u64 = 200;
-const SERVE_PORT_START: u16 = 3200;
+const SERVE_PORT_START: u16 = 18765;
 const SERVE_PORT_END: u16 = 3239;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 static NEXT_SERVE_PORT: AtomicU16 = AtomicU16::new(SERVE_PORT_START);
@@ -548,7 +548,7 @@ fn free_port() -> u16 {
             return port;
         }
     }
-    panic!("no free serve port in reserved range 3200-3239");
+    panic!("no free serve port in reserved range 18765-18804");
 }
 
 fn listener_pids(port: u16) -> Vec<u32> {

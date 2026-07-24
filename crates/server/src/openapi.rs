@@ -53,8 +53,8 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                 "url": "http://127.0.0.1:{port}",
                 "variables": {
                     "port": {
-                        "default": "3200",
-                        "description": "A free port in the reserved 3200-3299 range."
+                        "default": "18765",
+                        "description": "A free port in the reserved 18765-18864 range (product default 18765)."
                     }
                 }
             }
@@ -669,7 +669,7 @@ pub(crate) fn openapi_document() -> serde_json::Value {
                     "summary": "Create a loopback-only local share for one session.",
                     "responses": {
                         "200": json_response("Local share reference.", "ShareResponse"),
-                        "400": json_response("Host header was not loopback or port was outside 3200-3299.", "ErrorResponse"),
+                        "400": json_response("Host header was not loopback or port was outside 18765-18864.", "ErrorResponse"),
                         "404": json_response("Session was not found.", "ErrorResponse")
                     }
                 }

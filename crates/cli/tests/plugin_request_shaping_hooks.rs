@@ -17,7 +17,7 @@ use serde_json::Value;
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
-static NEXT_PORT: AtomicU16 = AtomicU16::new(3260);
+static NEXT_PORT: AtomicU16 = AtomicU16::new(18765);
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
@@ -394,8 +394,8 @@ fn fake_openrouter_key() -> String {
 fn free_port() -> u16 {
     for _ in 0..80 {
         let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
-        if port > 3299 {
-            NEXT_PORT.store(3260, Ordering::SeqCst);
+        if port > 18864 {
+            NEXT_PORT.store(18825, Ordering::SeqCst);
             continue;
         }
         let addr: SocketAddr = format!("127.0.0.1:{port}")
@@ -405,7 +405,7 @@ fn free_port() -> u16 {
             return port;
         }
     }
-    panic!("no free port available in 3260-3299");
+    panic!("no free port available in 18765-18864");
 }
 
 fn wait_for_listener_pid(port: u16) -> u32 {

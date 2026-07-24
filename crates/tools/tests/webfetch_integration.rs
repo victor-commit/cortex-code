@@ -9,13 +9,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tools::{Tool, ToolContext, ToolRegistry, WebFetchTool};
 
 static WEBFETCH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-static NEXT_LOOPBACK_PORT: AtomicU16 = AtomicU16::new(3200);
+static NEXT_LOOPBACK_PORT: AtomicU16 = AtomicU16::new(18765);
 
 fn bind_loopback() -> (TcpListener, u16) {
     for _ in 0..100 {
         let port = NEXT_LOOPBACK_PORT.fetch_add(1, Ordering::Relaxed);
-        if port > 3299 {
-            NEXT_LOOPBACK_PORT.store(3200, Ordering::Relaxed);
+        if port > 18864 {
+            NEXT_LOOPBACK_PORT.store(18765, Ordering::Relaxed);
             continue;
         }
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
@@ -25,7 +25,7 @@ fn bind_loopback() -> (TcpListener, u16) {
             return (listener, port);
         }
     }
-    panic!("no available loopback port in the reserved Cortex range 3200-3299");
+    panic!("no available loopback port in the reserved Cortex range 18765-18864");
 }
 
 fn serve_once(content_type: &'static str, body: Vec<u8>) -> (String, thread::JoinHandle<String>) {

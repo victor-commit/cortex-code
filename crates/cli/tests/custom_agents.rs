@@ -196,12 +196,12 @@ impl Drop for GenerationFixture {
 }
 
 fn bind_loopback_listener() -> TcpListener {
-    for port in 3200..3300 {
+    for port in 18765..18865 {
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
             return listener;
         }
     }
-    panic!("no permitted loopback fixture port is available in 3200-3299");
+    panic!("no permitted loopback fixture port is available in 18765-18864");
 }
 
 fn accept_with_timeout(listener: &TcpListener, timeout: Duration) -> Option<TcpStream> {

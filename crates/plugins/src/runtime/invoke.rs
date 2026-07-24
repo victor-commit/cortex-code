@@ -3074,7 +3074,7 @@ impl PluginRuntimeContext {
         // before any such probe so `cortex run --command` (and every other load path)
         // never issues connect() while the kill-switch is engaged. An explicit
         // CORTEX_SERVER_URL is accepted without a socket probe because resolution is
-        // purely local string validation against the reserved 3200-3299 range.
+        // purely local string validation against the reserved 18765-18864 range.
         let server_url = std::env::var("CORTEX_SERVER_URL")
             .ok()
             .and_then(|raw| normalize_server_url(&raw))
@@ -3113,7 +3113,7 @@ fn normalize_server_url(raw: &str) -> Option<String> {
     let authority = trimmed.strip_prefix("http://")?.split('/').next()?;
     let (host, port) = authority.rsplit_once(':')?;
     let port = port.parse::<u16>().ok()?;
-    if !(3200..=3299).contains(&port) {
+    if !(18765..=18864).contains(&port) {
         return None;
     }
     if host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost") {
@@ -3134,7 +3134,7 @@ fn discover_loopback_server_url() -> Option<String> {
     if redaction::network_disabled() {
         return None;
     }
-    for port in 3200..=3299 {
+    for port in 18765..=18864 {
         if loopback_healthcheck(port) {
             return Some(format!("http://127.0.0.1:{port}"));
         }

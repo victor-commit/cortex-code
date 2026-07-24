@@ -509,7 +509,7 @@ fn mcp_list_remote_fails_closed_under_no_net_before_connecting() {
         r#"
 [mcp.api]
 type = "remote"
-url = "http://127.0.0.1:3299/mcp"
+url = "http://127.0.0.1:18864/mcp"
 "#,
     );
 
@@ -548,7 +548,7 @@ fn mcp_auth_remote_fails_closed_under_no_net_before_discovery() {
         r#"
 [mcp.api]
 type = "remote"
-url = "http://127.0.0.1:3299/mcp"
+url = "http://127.0.0.1:18864/mcp"
 "#,
     );
 

@@ -201,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port: u16 = std::env::var("CORTEX_MCP_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .expect("CORTEX_MCP_PORT must be set to a port in 3200-3299");
+        .expect("CORTEX_MCP_PORT must be set to a loopback test port");
     let expires_in: u64 = std::env::var("CORTEX_MCP_EXPIRES_IN")
         .ok()
         .and_then(|v| v.parse().ok())

@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn parses_http_and_https_urls_but_not_paths() {
-        assert!(parse_http_url("http://127.0.0.1:3200/share/shr_1").is_some());
+        assert!(parse_http_url("http://127.0.0.1:18765/share/shr_1").is_some());
         assert!(parse_http_url("https://example.test/share/abc").is_some());
         assert!(parse_http_url("./local.json").is_none());
         assert!(parse_http_url("-").is_none());

@@ -2219,7 +2219,7 @@ async fn share_route_serves_conversation_over_loopback_and_unshare_revokes() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/session/{}/share", session.id))
-                .header(header::HOST, "127.0.0.1:3201")
+                .header(header::HOST, "127.0.0.1:18766")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -2236,12 +2236,12 @@ async fn share_route_serves_conversation_over_loopback_and_unshare_revokes() {
     );
     let url = body["url"].as_str().expect("share url");
     assert!(
-        url.starts_with("http://127.0.0.1:3201/share/"),
+        url.starts_with("http://127.0.0.1:18766/share/"),
         "share URL must point at the loopback server, got {url:?}"
     );
 
     let share_path = url
-        .strip_prefix("http://127.0.0.1:3201")
+        .strip_prefix("http://127.0.0.1:18766")
         .expect("loopback URL prefix");
     let response = app
         .clone()
@@ -2325,7 +2325,7 @@ async fn share_route_serves_importable_json_when_accept_is_json() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/session/{}/share", session.id))
-                .header(header::HOST, "127.0.0.1:3201")
+                .header(header::HOST, "127.0.0.1:18766")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -2336,7 +2336,7 @@ async fn share_route_serves_importable_json_when_accept_is_json() {
     let share_path = body["url"]
         .as_str()
         .expect("share url")
-        .strip_prefix("http://127.0.0.1:3201")
+        .strip_prefix("http://127.0.0.1:18766")
         .expect("loopback URL prefix")
         .to_owned();
 
@@ -2451,7 +2451,7 @@ async fn share_html_and_json_redact_secret_shaped_content() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/session/{}/share", session.id))
-                .header(header::HOST, "127.0.0.1:3201")
+                .header(header::HOST, "127.0.0.1:18766")
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -2462,7 +2462,7 @@ async fn share_html_and_json_redact_secret_shaped_content() {
     let share_path = body["url"]
         .as_str()
         .expect("share url")
-        .strip_prefix("http://127.0.0.1:3201")
+        .strip_prefix("http://127.0.0.1:18766")
         .expect("loopback URL prefix")
         .to_owned();
 

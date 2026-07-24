@@ -1,7 +1,7 @@
 //! Live server↔TUI remote-control integration proof for M6.
 //!
 //! Covers VAL-CROSS-038/039/040/019/047 with a shared project + data dir, loopback `cortex serve`
-//! on a 3200-3299 port, an attached TUI (`--session` + `--server`), and real OpenRouter turns when
+//! on a 18765-18864 port, an attached TUI (`--session` + `--server`), and real OpenRouter turns when
 //! `OPENROUTER_API_KEY` is present. Offline workspace suites skip cleanly without the key and
 //! without `tuistory`.
 //!
@@ -47,12 +47,12 @@ fn scratch_dir(tag: &str) -> PathBuf {
 }
 
 fn free_server_port() -> u16 {
-    for port in 3250..=3299 {
+    for port in 18765..=18864 {
         if TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
-    panic!("no free server port in 3250-3299");
+    panic!("no free server port in 18765-18864");
 }
 
 fn nonce(label: &str, salt: u32) -> String {

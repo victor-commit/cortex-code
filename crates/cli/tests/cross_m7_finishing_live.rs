@@ -192,12 +192,12 @@ fn stats_session_usage(stats: &Value, session_id: &str) -> (u64, u64, u64, f64) 
 }
 
 fn free_server_port() -> u16 {
-    for port in 3220..=3299 {
+    for port in 18765..=18864 {
         if TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
-    panic!("no free server port in 3220-3299");
+    panic!("no free server port in 18765-18864");
 }
 
 fn listener_pid(port: u16) -> Option<u32> {

@@ -26,7 +26,7 @@ const LIVE_MODEL: &str = "google/gemini-2.5-flash";
 const UPPERCASE_DIRECTIVE: &str = "Directive CROSS_MEM_UPPER: Reply only in uppercase. Every word of the final answer must be uppercase.";
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
-static NEXT_PORT: AtomicU16 = AtomicU16::new(3250);
+static NEXT_PORT: AtomicU16 = AtomicU16::new(18815);
 
 fn live_key() -> Option<String> {
     match std::env::var("OPENROUTER_API_KEY") {
@@ -73,7 +73,7 @@ fn free_server_port() -> u16 {
             return port;
         }
     }
-    panic!("no free server port in 3200-3299");
+    panic!("no free server port in 18765-18864");
 }
 
 fn bind_fixture_listener() -> (u16, TcpListener) {
@@ -89,7 +89,7 @@ fn bind_fixture_listener() -> (u16, TcpListener) {
             return (port, listener);
         }
     }
-    panic!("no free fixture port in 3200-3299");
+    panic!("no free fixture port in 18765-18864");
 }
 
 struct Scratch {

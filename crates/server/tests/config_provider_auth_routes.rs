@@ -263,7 +263,7 @@ async fn oauth_authorize_then_callback_stores_token_and_authenticates() {
         "authorize_endpoint": "https://auth.example.test/authorize",
         "token_endpoint": token_url,
         "client_id": "cortex-fixture-client",
-        "redirect_uri": "http://127.0.0.1:3200/auth/callback",
+        "redirect_uri": "http://127.0.0.1:18765/auth/callback",
         "scopes": ["profile", "models"],
     })
     .to_string();
@@ -346,13 +346,13 @@ async fn oauth_authorize_derives_callback_from_host_header() {
         .method("POST")
         .uri("/auth/acme/authorize")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::HOST, "127.0.0.1:3211")
+        .header(header::HOST, "127.0.0.1:18776")
         .body(Body::from(authorize_body))
         .expect("request");
     let response = app.clone().oneshot(request).await.expect("response");
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value = json_body(response).await;
-    assert_eq!(body["redirect_uri"], "http://127.0.0.1:3211/auth/callback");
+    assert_eq!(body["redirect_uri"], "http://127.0.0.1:18776/auth/callback");
 }
 
 #[tokio::test]
@@ -395,7 +395,7 @@ async fn oauth_authorize_state_uses_the_csprng_not_a_time_fallback() {
         "authorize_endpoint": "https://auth.example.test/authorize",
         "token_endpoint": "https://auth.example.test/token",
         "client_id": "cortex-fixture-client",
-        "redirect_uri": "http://127.0.0.1:3200/auth/callback",
+        "redirect_uri": "http://127.0.0.1:18765/auth/callback",
         "scopes": ["profile"],
     })
     .to_string();

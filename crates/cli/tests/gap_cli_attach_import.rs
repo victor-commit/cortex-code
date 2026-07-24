@@ -5,7 +5,7 @@
 //! `cortex import <url>` fetches and stores it into a separate database. Attach tests prove the
 //! observer streams current and future messages and that detaching leaves the producing turn
 //! running. Process hygiene: every server is stopped by its lsof-resolved listener PID and every
-//! child is waited on; ports stay in 3200-3299.
+//! child is waited on; ports stay in 18765-18864.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -141,7 +141,7 @@ fn import_url_fails_closed_under_no_net() {
     let db = dst.join("cortex.db");
     let mut command = cortex(&[
         "import",
-        "http://127.0.0.1:3299/share/shr_x?token=secret-abc",
+        "http://127.0.0.1:18864/share/shr_x?token=secret-abc",
     ]);
     command.env("CORTEX_DB_PATH", &db).env("CORTEX_NO_NET", "1");
     let output = command.output().expect("import");
@@ -600,7 +600,7 @@ fn free_port() -> u16 {
             return port;
         }
     }
-    panic!("no free port in 3200-3299");
+    panic!("no free port in 18765-18864");
 }
 
 fn listener_pid(port: u16) -> Option<u32> {

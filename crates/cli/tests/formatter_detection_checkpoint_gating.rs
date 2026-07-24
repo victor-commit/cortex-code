@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 const TURN_TIMEOUT: Duration = Duration::from_secs(120);
 static SCRATCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static NEXT_PROVIDER_PORT: AtomicU16 = AtomicU16::new(3210);
+static NEXT_PROVIDER_PORT: AtomicU16 = AtomicU16::new(18775);
 
 struct Sandbox {
     root: PathBuf,
@@ -152,15 +152,15 @@ impl ScriptedProvider {
 fn bind_provider_listener() -> (u16, TcpListener) {
     for _ in 0..100 {
         let port = NEXT_PROVIDER_PORT.fetch_add(1, Ordering::SeqCst);
-        if port > 3299 {
-            NEXT_PROVIDER_PORT.store(3210, Ordering::SeqCst);
+        if port > 18864 {
+            NEXT_PROVIDER_PORT.store(18775, Ordering::SeqCst);
             continue;
         }
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
             return (port, listener);
         }
     }
-    panic!("no free loopback provider port in 3210-3299");
+    panic!("no free loopback provider port in 18765-18864");
 }
 
 impl Drop for ScriptedProvider {

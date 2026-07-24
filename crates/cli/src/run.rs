@@ -922,7 +922,7 @@ fn run_command_path(args: RunArgs, bus: Arc<EventBus>, pure_plugins: bool) -> Ex
     );
 
     // Local command execution itself opens no sockets, but plugin session startup
-    // can resolve a loopback serve URL via TCP health checks on ports 3200-3299.
+    // can resolve a loopback serve URL via TCP health checks on ports 18765-18864.
     // Loading still proceeds under CORTEX_NO_NET so locked packages and offline-
     // capable local plugins keep working; the host skips socket-opening discovery
     // inside the plugin runtime when the kill-switch is engaged (aligned with the
@@ -3436,7 +3436,7 @@ mod tests {
         let run_config = resolve_run_config(config_inputs(
             &base,
             &proj,
-            &[("CORTEX_OPENROUTER_BASE_URL", "http://127.0.0.1:3299")],
+            &[("CORTEX_OPENROUTER_BASE_URL", "http://127.0.0.1:18864")],
             None,
         ))
         .expect("resolve");
@@ -3445,7 +3445,7 @@ mod tests {
                 .provider_config
                 .provider_base_url(providers::OPENROUTER_ID)
                 .as_deref(),
-            Some("http://127.0.0.1:3299")
+            Some("http://127.0.0.1:18864")
         );
     }
 

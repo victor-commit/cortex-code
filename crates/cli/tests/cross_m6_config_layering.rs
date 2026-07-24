@@ -15,7 +15,7 @@
 //!   file-layer model on both surfaces.
 //!
 //! NO mocks on the live path. Servers are killed by exact lsof listener PID. Ports
-//! stay inside 3200-3299.
+//! stay inside 18765-18864.
 
 use std::io::Read;
 use std::net::TcpListener;
@@ -53,12 +53,12 @@ fn scratch_dir(tag: &str) -> PathBuf {
 }
 
 fn free_server_port() -> u16 {
-    for port in 3240..=3299 {
+    for port in 18765..=18864 {
         if TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
-    panic!("no free server port in 3240-3299");
+    panic!("no free server port in 18765-18864");
 }
 
 fn project_config_model_agent() -> String {

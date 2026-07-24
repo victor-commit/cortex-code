@@ -1150,7 +1150,7 @@ mod tests {
         let config = parse_set(
             r#"
 [provider.local]
-base_url = "http://127.0.0.1:3200"
+base_url = "http://127.0.0.1:18765"
 models = [{ id = "local/demo", cost = { input = 2, output = 3 } }]
 "#,
         );
@@ -1168,7 +1168,7 @@ models = [{ id = "local/demo", cost = { input = 2, output = 3 } }]
         let table: Table = toml::from_str(
             r#"
 [provider.local]
-base_url = "http://127.0.0.1:3200"
+base_url = "http://127.0.0.1:18765"
 models = [{ id = "local/demo", cost = { input = "cheap", output = 3 } }]
 "#,
         )
@@ -1191,7 +1191,7 @@ models = [{ id = "local/demo", cost = { input = "cheap", output = 3 } }]
         let config = parse_set(
             r#"
 [provider.local]
-base_url = "http://127.0.0.1:3200"
+base_url = "http://127.0.0.1:18765"
 models = [{ id = "local/demo", cost_input = 7, cost_output = 11, cost = { input = 2, output = 3 } }]
 "#,
         );
@@ -1209,7 +1209,7 @@ models = [{ id = "local/demo", cost_input = 7, cost_output = 11, cost = { input 
         let config = parse_set(
             r#"
 [provider.local]
-base_url = "http://127.0.0.1:3200"
+base_url = "http://127.0.0.1:18765"
 models = [{ id = "local/demo", cost = { input = 2, output = 3, cache_write = 1.1, cache_read = 0.7, reasoning = 4.2, over_input_threshold = { threshold_input_tokens = 123456, input = 5, output = 8, cache_write = 2, cache_read = 1, reasoning = 9 } } }]
 "#,
         );

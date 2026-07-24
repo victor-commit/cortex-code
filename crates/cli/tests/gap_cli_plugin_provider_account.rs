@@ -325,7 +325,7 @@ disabled = ["openrouter"]
 [provider.model_overrides]
 "google/gemini-2.5-flash" = "local/test-model"
 [provider.local]
-base_url = "http://127.0.0.1:3299"
+base_url = "http://127.0.0.1:18864"
 api_key = "{synthetic_key}"
 models = [{{ id = "local/test-model", name = "Local Test Model", tool_call = true, context_length = 8192, max_output_tokens = 1024 }}]
 "#

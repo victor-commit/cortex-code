@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 const RUN_TIMEOUT: Duration = Duration::from_secs(60);
-static NEXT_PROVIDER_PORT: AtomicU16 = AtomicU16::new(3260);
-static NEXT_SERVE_PORT: AtomicU16 = AtomicU16::new(3240);
+static NEXT_PROVIDER_PORT: AtomicU16 = AtomicU16::new(18765);
+static NEXT_SERVE_PORT: AtomicU16 = AtomicU16::new(18805);
 
 /// The misformatted, error-bearing Python fixture the edit flow writes. `ruff format` collapses the
 /// extra spacing (changing the bytes on disk), and the `ruff` language server reports a real unused
@@ -876,7 +876,7 @@ fn reserve_serve_port() -> u16 {
     for _ in 0..60 {
         let port = NEXT_SERVE_PORT.fetch_add(1, Ordering::SeqCst);
         if port > 3259 {
-            NEXT_SERVE_PORT.store(3240, Ordering::SeqCst);
+            NEXT_SERVE_PORT.store(18805, Ordering::SeqCst);
             continue;
         }
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -891,7 +891,7 @@ fn bind_in_range(counter: &AtomicU16) -> (u16, TcpListener) {
     for _ in 0..60 {
         let port = counter.fetch_add(1, Ordering::SeqCst);
         if port > 3279 {
-            counter.store(3260, Ordering::SeqCst);
+            counter.store(18825, Ordering::SeqCst);
             continue;
         }
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();

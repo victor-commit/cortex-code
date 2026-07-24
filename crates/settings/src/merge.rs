@@ -54,7 +54,7 @@ mod tests {
             r#"
             [server]
             host = "localhost"
-            port = 3200
+            port = 18765
             "#,
         );
         merge_into(

@@ -918,7 +918,7 @@ fn count_connect(trace: &str) -> usize {
 /// discovery (or any other connect) on the `cortex run --command` branch.
 ///
 /// Without the kill-switch, `RuntimeHost`/`PluginRuntimeContext` scans ports
-/// 3200-3299 via real `connect()` health checks even when no serve instance is
+/// 18765-18864 via real `connect()` health checks even when no serve instance is
 /// listening. That must not happen under the network kill-switch.
 #[test]
 fn cortex_run_command_honors_no_net_before_plugin_loopback_discovery() {

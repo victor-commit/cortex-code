@@ -68,9 +68,14 @@ mod session_ext;
 mod tui_control;
 
 /// First allowed port for `cortex serve` and server test fixtures.
-pub const MIN_PORT: u16 = 3200;
+///
+/// Mission policy: product serve stays on loopback **18765+** and must not steal
+/// the busy 32xx / droid session ports.
+pub const MIN_PORT: u16 = 18765;
 /// Last allowed port for `cortex serve` and server test fixtures.
-pub const MAX_PORT: u16 = 3299;
+pub const MAX_PORT: u16 = 18864;
+/// Default product serve port (`cortex serve` with no `--port`).
+pub const DEFAULT_PORT: u16 = 18765;
 /// Canonical loopback bind address required by the server validation contract.
 pub const LOOPBACK_HOST: &str = "127.0.0.1";
 /// The outbound operation named when the network kill-switch refuses a server prompt turn.
@@ -601,13 +606,13 @@ pub enum ServeError {
         hostname: String,
     },
     /// The requested port is outside the mission-reserved server range.
-    #[error("port {port} is outside the reserved cortex serve range 3200-3299")]
+    #[error("port {port} is outside the reserved cortex serve range 18765-18864")]
     PortOutOfRange {
         /// Port supplied by the CLI.
         port: u16,
     },
     /// The requested loopback port already has a listener.
-    #[error("port {port} is already in use on 127.0.0.1; choose a free port in 3200-3299")]
+    #[error("port {port} is already in use on 127.0.0.1; choose a free port in 18765-18864")]
     PortBusy {
         /// Busy port.
         port: u16,
@@ -996,7 +1001,7 @@ pub fn app_with_state(state: ServerState) -> Router {
 /// Resolve and validate the requested bind address.
 ///
 /// The lifecycle contract is intentionally strict: even if another loopback address is available,
-/// the public server surface binds only to `127.0.0.1` inside the reserved 3200-3299 range.
+/// the public server surface binds only to `127.0.0.1` inside the reserved 18765-18864 range.
 pub fn bind_addr(hostname: &str, port: u16) -> Result<SocketAddr, ServeError> {
     if !(MIN_PORT..=MAX_PORT).contains(&port) {
         return Err(ServeError::PortOutOfRange { port });
@@ -3616,15 +3621,20 @@ fn loopback_share_origin(headers: &HeaderMap) -> Result<String, ApiError> {
 
 fn parse_loopback_host(host: &str) -> Result<(&'static str, u16), ApiError> {
     let trimmed = host.trim();
+    let range = format!("{MIN_PORT}-{MAX_PORT}");
     let (hostname, port) = trimmed.rsplit_once(':').ok_or_else(|| {
-        ApiError::bad_request("share Host header must include a loopback port in 3200-3299")
+        ApiError::bad_request(format!(
+            "share Host header must include a loopback port in {range}"
+        ))
     })?;
     let port = port.parse::<u16>().map_err(|_| {
-        ApiError::bad_request("share Host header must include a numeric port in 3200-3299")
+        ApiError::bad_request(format!(
+            "share Host header must include a numeric port in {range}"
+        ))
     })?;
     if !(MIN_PORT..=MAX_PORT).contains(&port) {
         return Err(ApiError::bad_request(format!(
-            "share Host header port {port} is outside the loopback range 3200-3299"
+            "share Host header port {port} is outside the loopback range {range}"
         )));
     }
     match hostname.trim() {

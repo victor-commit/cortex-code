@@ -32,29 +32,33 @@ async fn health_route_returns_ok_json() {
 #[test]
 fn bind_addr_accepts_only_canonical_loopback_and_reserved_ports() {
     assert_eq!(
-        bind_addr("127.0.0.1", 3200).expect("loopback"),
-        "127.0.0.1:3200".parse::<SocketAddr>().expect("addr")
+        bind_addr("127.0.0.1", server::DEFAULT_PORT).expect("loopback"),
+        format!("127.0.0.1:{}", server::DEFAULT_PORT)
+            .parse::<SocketAddr>()
+            .expect("addr")
     );
     assert_eq!(
-        bind_addr("localhost", 3299).expect("localhost maps to canonical loopback"),
-        "127.0.0.1:3299".parse::<SocketAddr>().expect("addr")
+        bind_addr("localhost", server::MAX_PORT).expect("localhost maps to canonical loopback"),
+        format!("127.0.0.1:{}", server::MAX_PORT)
+            .parse::<SocketAddr>()
+            .expect("addr")
     );
 
     assert!(matches!(
-        bind_addr("0.0.0.0", 3200),
+        bind_addr("0.0.0.0", server::DEFAULT_PORT),
         Err(ServeError::NonLoopbackHost { .. })
     ));
     assert!(matches!(
-        bind_addr("192.168.1.20", 3200),
+        bind_addr("192.168.1.20", server::DEFAULT_PORT),
         Err(ServeError::NonLoopbackHost { .. })
     ));
     assert!(matches!(
-        bind_addr("127.0.0.1", 3199),
-        Err(ServeError::PortOutOfRange { port: 3199 })
+        bind_addr("127.0.0.1", server::MIN_PORT - 1),
+        Err(ServeError::PortOutOfRange { port }) if port == server::MIN_PORT - 1
     ));
     assert!(matches!(
-        bind_addr("127.0.0.1", 3300),
-        Err(ServeError::PortOutOfRange { port: 3300 })
+        bind_addr("127.0.0.1", server::MAX_PORT + 1),
+        Err(ServeError::PortOutOfRange { port }) if port == server::MAX_PORT + 1
     ));
 }
 
@@ -120,7 +124,11 @@ fn bind_free_loopback_listener() -> StdTcpListener {
             return listener;
         }
     }
-    panic!("no free loopback port in 3200-3299");
+    panic!(
+        "no free loopback port in {}-{}",
+        server::MIN_PORT,
+        server::MAX_PORT
+    );
 }
 
 struct Scratch {

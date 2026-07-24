@@ -349,12 +349,12 @@ fn stop_server(mut child: Child, port: u16) {
 }
 
 fn free_server_port(avoid: u16) -> u16 {
-    for port in 3260..=3299 {
+    for port in 18765..=18864 {
         if port != avoid && TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
-    panic!("no free server port in 3260-3299");
+    panic!("no free server port in 18765-18864");
 }
 
 #[test]

@@ -4,7 +4,7 @@
 //! set/get/remove round-trip and that `all`/`list` redacts secret-looking values. Part B proves the
 //! "removed keys no longer affect runs" half end-to-end: a value set with `cortex env set` reaches a
 //! command run through the real `cortex serve` shell route, and after `cortex env remove` the same
-//! command no longer sees it. The loopback server uses only the mission port range 3200-3299 and is
+//! command no longer sees it. The loopback server uses only the mission port range 18765-18864 and is
 //! stopped by its exact listener PID.
 
 use std::io::{Read, Write};
@@ -352,12 +352,12 @@ fn wait_for_health(port: u16, child: &mut Child) {
 }
 
 fn free_port() -> u16 {
-    for port in (3200u16..=3299).rev() {
+    for port in (18765u16..=18864).rev() {
         if listener_pid(port).is_none() && TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
     }
-    panic!("no free loopback port in 3200-3299");
+    panic!("no free loopback port in 18765-18864");
 }
 
 fn listener_pid(port: u16) -> Option<u32> {
