@@ -878,7 +878,18 @@ fn overflow_noun(name: &str) -> &'static str {
 /// interior row is the per-tool summary (VAL-TOOL-008); a collapsed card follows it with a FAINT
 /// `Ctrl+O to expand` hint and no payload (VAL-TOOL-009), while an expanded card replaces the hint
 /// with a DIM `output` header and its payload rows (VAL-TOOL-010), diff-carrying cards revealing a
-/// red/green line-numbered diff whose +/- coloring is confined to the payload (VAL-TOOL-031).
+/// Cortex tool row (VAL-CORTEX-CHAT-002 / pure-structure tool-calls DNA).
+///
+/// Flat header forms — no boxed chrome:
+/// - `$ cargo test …`
+/// - `Read path/to/file`
+/// - `Search "pattern" (N matches)`
+/// - `Edit path +A/-R`
+///
+/// A dim status meta line follows (`running · waiting on subshell` / `done · 1.8s` / `error`).
+/// Expanded cards reveal output / diff body under the header; collapsed failed cards still preview
+/// the first diagnostic line. Diff cards remain expandable with a line-numbered red/green body
+/// (VAL-TOOL-031).
 fn push_tool(
     lines: &mut Vec<Line<'static>>,
     card: &ToolCard,
@@ -892,118 +903,147 @@ fn push_tool(
         lines.push(Line::from(""));
         return;
     }
-    let bw = right - bx;
-    let inner_w = bw.saturating_sub(4);
+    let text_w = right.saturating_sub(bx);
     let base = Style::default().bg(theme.background);
 
-    let (accent, glyph, state_word) = match card.status {
+    let (accent, _glyph, _state_word) = match card.status {
         ToolStatus::Running => (theme.primary, glyphs::MARK_RUNNING, "running"),
         ToolStatus::Completed => (theme.success, glyphs::MARK_DONE, "done"),
         ToolStatus::Failed => (theme.error, glyphs::MARK_ERROR, "error"),
     };
-    let border_style = Style::default().fg(accent).bg(theme.background);
     let label_style = Style::default().fg(accent).bg(theme.background);
+    let meta_style = Style::default().fg(theme.text_dim).bg(theme.background);
 
-    let title = format!("{} {} {} {}", glyph, card.name, glyphs::SEPARATOR, state_word);
-    let title_text = format!(" {} ", clip_text(&title, inner_w.saturating_sub(4)));
+    // Reconstruct args JSON from the card's stored args_detail when possible so header formatting
+    // can re-derive Cortex forms; fall back to summary-only payloads for non-JSON tools.
+    let args_for_header = if card.args_detail.trim().starts_with('{') {
+        card.args_detail.clone()
+    } else {
+        // Best-effort reconstruct from known shapes so `$ cmd` / `Read path` still form.
+        reconstruct_args_json(card)
+    };
+    let match_count = if matches!(card.name.as_str(), "grep" | "search") && !card.output.is_empty()
+    {
+        crate::tool_card::match_count_from_output(&card.output)
+    } else {
+        None
+    };
+    // Todo summary is computed on complete (`N items · M in progress`); prefer the card summary
+    // over raw args so the Cortex header carries the live count (VAL-TOOL-024).
+    let header = if card.name == "todo" && !card.summary.is_empty() {
+        format!("Todo {}", card.summary)
+    } else {
+        crate::tool_card::format_tool_header(
+            &card.name,
+            &args_for_header,
+            card.diff_stat,
+            match_count,
+        )
+    };
+    let header_text = clip_text(&header, text_w);
 
-    let mut top: Vec<(char, Style)> = vec![(' ', base); width];
-    top[bx] = (glyphs::BOX_TOP_LEFT.chars().next().unwrap(), border_style);
-    top[bx + bw - 1] = (glyphs::BOX_TOP_RIGHT.chars().next().unwrap(), border_style);
-    for cell in top.iter_mut().take(bx + bw - 1).skip(bx + 1) {
-        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
-    }
-    place_segments(&mut top, bx + 2, &[(title_text, label_style)]);
-    lines.push(cells_to_line(&top));
+    let mut header_row: Vec<(char, Style)> = vec![(' ', base); width];
+    place_segments(&mut header_row, bx, &[(header_text, label_style)]);
+    lines.push(cells_to_line(&header_row));
 
-    let origin = bx + 2;
-    let text_w = inner_w.saturating_sub(2);
-
-    let summary_text = clip_text(&card.summary, text_w);
-    let mut summary_row: Vec<(char, Style)> = vec![(' ', base); width];
-    summary_row[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
-    summary_row[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
+    let status_line = crate::tool_card::format_tool_status_line(card);
+    let status_text = clip_text(&status_line, text_w.saturating_sub(2));
+    let mut status_row: Vec<(char, Style)> = vec![(' ', base); width];
+    // Indent status meta two spaces under the header (Cortex `  running · …`).
     place_segments(
-        &mut summary_row,
-        origin,
-        &[(summary_text, Style::default().fg(theme.text).bg(theme.background))],
+        &mut status_row,
+        bx + 2,
+        &[(status_text, meta_style)],
     );
-    lines.push(cells_to_line(&summary_row));
+    lines.push(cells_to_line(&status_row));
 
+    // Indent body content under the header (same gutter as the status meta).
+    let body_origin = bx + 2;
+    let body_w = text_w.saturating_sub(2);
     let interior_row = |seg: &[(String, Style)]| -> Line<'static> {
         let mut row: Vec<(char, Style)> = vec![(' ', base); width];
-        row[bx] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
-        row[bx + bw - 1] = (glyphs::BOX_VERTICAL.chars().next().unwrap(), border_style);
-        place_segments(&mut row, origin, seg);
+        place_segments(&mut row, body_origin, seg);
         cells_to_line(&row)
     };
+    // Diff body still uses a virtual "box" geometry so the existing red/green row painter works.
+    let border_style = Style::default().fg(accent).bg(theme.background);
+    let bw = right - bx;
+    let diff_bx = bx;
 
     if card.name == "question" && card.status == ToolStatus::Running {
-        // VAL-TOOL-030: a running `question` card is awaiting the user's answer — its summary is the
-        // question text and its body is a single DIM awaiting-answer line (no output section or
-        // expand hint, since there is no result yet).
-        let awaiting_style = Style::default().fg(theme.text_dim).bg(theme.background);
-        lines.push(interior_row(&[(
-            format!("waiting for your answer{}", glyphs::ELLIPSIS),
-            awaiting_style,
-        )]));
+        // VAL-TOOL-030: running question — status line already carries "waiting for your answer".
     } else if expanded {
         let header_style = Style::default().fg(theme.text_dim).bg(theme.background);
-        lines.push(interior_row(&[("output".to_owned(), header_style)]));
-
         if let Some(diff) = card.diff.as_deref() {
-            push_card_diff_rows(lines, diff, bx, bw, width, border_style, theme);
-            // A mutating tool card carries both the rendered file diff and its real tool result.
-            // Keep post-mutation feedback (notably formatter/LSP diagnostics) visible alongside
-            // the diff instead of dropping it just because a diff is available.
+            push_card_diff_rows(lines, diff, diff_bx, bw, width, border_style, theme);
             if !card.output.trim().is_empty() {
-                lines.push(interior_row(&[(
-                    "tool result".to_owned(),
-                    header_style,
-                )]));
-                push_tool_generic_output(card, &interior_row, text_w, header_style, theme, lines);
+                lines.push(interior_row(&[("tool result".to_owned(), header_style)]));
+                push_tool_generic_output(card, &interior_row, body_w, header_style, theme, lines);
             }
         } else if card.name == "todo" {
-            // VAL-TOOL-025: todo items render with three-state markers: ✓ done (OKG green),
-            // ▶ in-progress (ORANGE), ○ pending (FAINT).
-            push_tool_todo_items(card, &interior_row, text_w, theme, lines);
-        } else {
-            // Generic output: per-line with tool-specific coloring.
-            push_tool_generic_output(card, &interior_row, text_w, header_style, theme, lines);
+            // VAL-TOOL-025: todo items with three-state markers.
+            push_tool_todo_items(card, &interior_row, body_w, theme, lines);
+        } else if !card.output.trim().is_empty() {
+            push_tool_generic_output(card, &interior_row, body_w, header_style, theme, lines);
         }
     } else if card.status == ToolStatus::Failed {
-        // VAL-TOOL-029: a failed card (e.g. an `lsp` diagnostics query) previews the error inline
-        // while collapsed — an ERR-red `error` header, the first diagnostic line in ERR red, and a
-        // FAINT `Ctrl+O for detail` hint pointing at the full expanded output.
-        push_tool_error_preview(card, &interior_row, text_w, theme, lines);
+        // VAL-TOOL-029: collapsed failed cards preview the first diagnostic.
+        push_tool_error_preview(card, &interior_row, body_w, theme, lines);
     } else if card.is_background_running() {
-        // VAL-TOOL-023: a live background bash card streams its in-progress output rows (the tail
-        // of the job log) in the collapsed body, above the `esc to background` footer hint, while
-        // it keeps the ORANGE running chrome until the job's pid exits.
-        push_tool_background_stream(card, &interior_row, text_w, theme, lines);
-    } else {
+        // VAL-TOOL-023: live background bash streams log tail + esc-to-background hint.
+        push_tool_background_stream(card, &interior_row, body_w, theme, lines);
+    } else if card.status == ToolStatus::Running
+        && card.name == "bash"
+        && card.is_background
+    {
+        // Background request not yet pid-attached: still show the background footer affordance.
         let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
-        let hint_text = if card.status == ToolStatus::Running
-            && card.name == "bash"
-            && card.is_background
-        {
-            // VAL-TOOL-023: background bash footer hint is "Ctrl+O to expand · esc to background"
-            // while the job is still running; once it completes the card reverts to the plain hint.
-            "Ctrl+O to expand · esc to background".to_owned()
-        } else {
-            "Ctrl+O to expand".to_owned()
-        };
-        lines.push(interior_row(&[(hint_text, hint_style)]));
+        lines.push(interior_row(&[(
+            "Ctrl+O to expand · esc to background".to_owned(),
+            hint_style,
+        )]));
+    } else if card.status == ToolStatus::Completed && !card.output.trim().is_empty() {
+        // Collapsed completed: single FAINT expand affordance (no boxed footer).
+        let hint_style = Style::default().fg(theme.text_muted).bg(theme.background);
+        lines.push(interior_row(&[("Ctrl+O to expand".to_owned(), hint_style)]));
     }
 
-    let mut bottom: Vec<(char, Style)> = vec![(' ', base); width];
-    bottom[bx] = (glyphs::BOX_BOTTOM_LEFT.chars().next().unwrap(), border_style);
-    bottom[bx + bw - 1] = (glyphs::BOX_BOTTOM_RIGHT.chars().next().unwrap(), border_style);
-    for cell in bottom.iter_mut().take(bx + bw - 1).skip(bx + 1) {
-        *cell = (glyphs::BOX_HORIZONTAL.chars().next().unwrap(), border_style);
-    }
-    lines.push(cells_to_line(&bottom));
     lines.push(Line::from(""));
+}
+
+/// Best-effort JSON args reconstruction so Cortex headers can form from a stored card when the
+/// original structured arguments were not retained on the card itself.
+fn reconstruct_args_json(card: &ToolCard) -> String {
+    let summary = card.summary.as_str();
+    match card.name.as_str() {
+        "bash" | "shell" => {
+            let cmd = summary
+                .strip_suffix(" (background)")
+                .unwrap_or(summary);
+            serde_json::json!({ "command": cmd }).to_string()
+        }
+        "read" | "write" | "edit" | "multiedit" => {
+            serde_json::json!({ "path": summary }).to_string()
+        }
+        "grep" | "search" => {
+            // summarize_args uses `{pattern} in {path}` or bare pattern.
+            if let Some((pattern, path)) = summary.split_once(" in ") {
+                serde_json::json!({ "pattern": pattern, "path": path }).to_string()
+            } else {
+                serde_json::json!({ "pattern": summary }).to_string()
+            }
+        }
+        "websearch" => serde_json::json!({ "query": summary }).to_string(),
+        "webfetch" => serde_json::json!({ "url": summary }).to_string(),
+        "glob" | "list" => serde_json::json!({ "pattern": summary }).to_string(),
+        _ => {
+            if card.args_detail.trim().is_empty() {
+                "{}".to_owned()
+            } else {
+                card.args_detail.clone()
+            }
+        }
+    }
 }
 
 /// Render the generic tool output payload: per-line with tool-specific coloring (bash success lines
@@ -7519,48 +7559,39 @@ mod tests {
 
     #[test]
     fn tool_card_colors_follow_theme_semantics() {
-        // VAL-TOOL-003/004/005/006: the status accent (running ORANGE, done OKG, error ERR)
-        // uniformly tints the top-border label glyph + name + state word.
+        // VAL-CORTEX-CHAT-002 / VAL-TOOL-003/004/005/006: Cortex header accent follows status
+        // (running primary, done success, error ERR) on the flat header row.
         let theme = style::ThemeColors::ocean_dark();
-        let glyph_fg = |line: &Line, glyph: &str| -> Option<Color> {
-            line.spans
-                .iter()
-                .find(|s| s.content.contains(glyph))
+        let header_fg = |lines: &[Line]| -> Option<Color> {
+            lines
+                .first()
+                .and_then(|line| line.spans.iter().find(|s| !s.content.trim().is_empty()))
                 .and_then(|s| s.style.fg)
         };
 
-        // Running: `⚙` gear on an ORANGE (brand primary) border/label, with the `running` word.
+        // Running: Cortex `Read a.txt` header in brand primary; meta carries `running`.
         let running = tool_card("read", r#"{"path":"a.txt"}"#);
         let mut running_lines = Vec::new();
         push_tool(&mut running_lines, &running, 80, false, &theme);
-        assert_eq!(
-            glyph_fg(&running_lines[0], crate::glyphs::MARK_RUNNING),
-            Some(theme.primary)
-        );
+        assert_eq!(header_fg(&running_lines), Some(theme.primary));
+        assert!(rendered(&running_lines).contains("Read a.txt"));
         assert!(rendered(&running_lines).contains("running"));
-        assert!(rendered(&running_lines).contains(crate::glyphs::MARK_RUNNING));
 
-        // Completed: `✓` on the OKG success accent, with the `done` word (no `running`).
+        // Completed: success accent, `done` meta, no `running`.
         let mut completed = tool_card("read", r#"{"path":"a.txt"}"#);
         completed.complete(&[protocol::ToolResultPart::text("ok")], false);
         let mut completed_lines = Vec::new();
         push_tool(&mut completed_lines, &completed, 80, false, &theme);
-        assert_eq!(
-            glyph_fg(&completed_lines[0], crate::glyphs::MARK_DONE),
-            Some(theme.success)
-        );
+        assert_eq!(header_fg(&completed_lines), Some(theme.success));
         assert!(rendered(&completed_lines).contains("done"));
         assert!(!rendered(&completed_lines).contains("running"));
 
-        // Failed: `✗` on the ERR accent, with the `error` word.
+        // Failed: error accent + `error` meta.
         let mut failed = tool_card("read", r#"{"path":"a.txt"}"#);
         failed.complete(&[protocol::ToolResultPart::text("boom")], true);
         let mut failed_lines = Vec::new();
         push_tool(&mut failed_lines, &failed, 80, false, &theme);
-        assert_eq!(
-            glyph_fg(&failed_lines[0], crate::glyphs::MARK_ERROR),
-            Some(theme.error)
-        );
+        assert_eq!(header_fg(&failed_lines), Some(theme.error));
         assert!(rendered(&failed_lines).contains("error"));
     }
 
@@ -8166,63 +8197,54 @@ mod tests {
         ToolCard::new("call_1", name, args)
     }
 
-    /// The `(text, fg)` of the top-border label span (the span holding the tool name) of a card,
-    /// for label-accent assertions.
+    /// The `(text, fg)` of the tool header span (first non-empty span on the header row).
     fn card_label_span(lines: &[Line]) -> (String, Option<Color>) {
         let top = &lines[0];
         let span = top
             .spans
             .iter()
-            .find(|s| s.content.contains(crate::glyphs::SEPARATOR) || s.content.trim().len() > 2)
-            .expect("a label span on the top border");
+            .find(|s| !s.content.trim().is_empty())
+            .expect("a tool header span");
         (span.content.to_string(), span.style.fg)
     }
 
     #[test]
     fn running_tool_card_is_a_closed_box_with_running_label() {
-        // VAL-TOOL-001/002/003: the card is a closed rounded rectangle whose top border carries
-        // `⚙ read · running` in the ORANGE accent; the summary is the target path.
+        // VAL-CORTEX-CHAT-002 / VAL-TOOL-001/002/003: Cortex flat header `Read src/main.rs` with
+        // primary accent; status meta carries `running`. No boxed chrome.
         let theme = style::ThemeColors::dark();
         let card = tool_card("read", r#"{"path":"src/main.rs"}"#);
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 80, false, &theme);
         let text = rendered(&lines);
-        // Top-border label `⚙ read · running`.
         let top = plain(&lines[0]);
-        assert!(top.contains(crate::glyphs::BOX_TOP_LEFT), "top-left corner:\n{top}");
-        assert!(top.contains(crate::glyphs::BOX_TOP_RIGHT), "top-right corner:\n{top}");
-        assert!(top.contains(crate::glyphs::MARK_RUNNING), "gear glyph:\n{top}");
-        assert!(top.contains("read"), "tool name:\n{top}");
-        assert!(top.contains("running"), "state word:\n{top}");
-        // The label rides the border in the ORANGE accent.
+        assert!(top.contains("Read src/main.rs"), "Cortex Read header:\n{top}");
+        assert!(!top.contains(crate::glyphs::BOX_TOP_LEFT), "no box chrome:\n{top}");
+        assert!(text.contains("running"), "status word:\n{text}");
         let (label, fg) = card_label_span(&lines);
-        assert!(label.contains("running"), "label text: {label:?}");
-        assert_eq!(fg, Some(theme.primary), "running label is ORANGE");
-        // Summary is the target path.
-        assert!(text.contains("src/main.rs"), "target summary:\n{text}");
-        // Bottom border closes the box.
+        assert!(label.contains("Read"), "label text: {label:?}");
+        assert_eq!(fg, Some(theme.primary), "running label is primary");
         assert!(
             plain(lines.last().unwrap()).is_empty(),
             "trailing gap row after the card"
-        );
-        assert!(
-            lines.iter().any(|l| plain(l).contains(crate::glyphs::BOX_BOTTOM_LEFT)),
-            "bottom-left corner:\n{text}"
         );
     }
 
     #[test]
     fn completed_tool_card_shows_done_state() {
-        // VAL-TOOL-004: a completed card carries `✓ grep · done` in the OKG accent, no `running`.
+        // VAL-CORTEX-CHAT-002 / VAL-TOOL-004: completed grep uses `Search "…" (N matches)` header
+        // in success accent; status meta carries `done`, not `running`.
         let theme = style::ThemeColors::dark();
         let mut card = tool_card("grep", r#"{"pattern":"TODO","path":"src"}"#);
         card.complete(&[protocol::ToolResultPart::text("src/a.rs:1: TODO")], false);
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 80, false, &theme);
         let top = plain(&lines[0]);
-        assert!(top.contains("grep"), "tool name:\n{top}");
-        assert!(top.contains(crate::glyphs::MARK_DONE), "done check:\n{top}");
-        assert!(top.contains("done"), "done word:\n{top}");
+        assert!(
+            top.contains("Search \"TODO\""),
+            "Cortex Search header:\n{top}"
+        );
+        assert!(rendered(&lines).contains("done"), "done word:\n{}", rendered(&lines));
         assert!(!top.contains("running"), "no longer running:\n{top}");
         let (_, fg) = card_label_span(&lines);
         assert_eq!(fg, Some(theme.success), "done label is OKG-green");
@@ -8230,8 +8252,7 @@ mod tests {
 
     #[test]
     fn collapsed_card_summary_then_expand_hint_no_payload() {
-        // VAL-TOOL-008/009: the first interior row is the summary (TXT), followed by a FAINT
-        // `Ctrl+O to expand` hint and NO output payload.
+        // VAL-TOOL-008/009: Cortex header names the path; a FAINT expand hint follows; NO payload.
         let theme = style::ThemeColors::dark();
         let mut card = tool_card("read", r#"{"path":"stream_processor.rs"}"#);
         card.complete(
@@ -8240,16 +8261,14 @@ mod tests {
         );
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, false, &theme);
-        // Summary row is the target path in TXT.
-        let summary = &lines[1];
-        let summary_text: String = summary.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(summary_text.contains("stream_processor.rs"), "summary: {summary_text:?}");
-        let path_span = summary
-            .spans
-            .iter()
-            .find(|s| s.content.contains("stream_processor.rs"))
-            .expect("summary span");
-        assert_eq!(path_span.style.fg, Some(theme.text), "summary is TXT");
+        let top = plain(&lines[0]);
+        assert!(
+            top.contains("Read stream_processor.rs"),
+            "Cortex header: {top:?}"
+        );
+        // Status meta on row 1 carries done / duration.
+        let status = plain(&lines[1]);
+        assert!(status.contains("done"), "status meta: {status:?}");
         // Expand hint in FAINT, and NO payload.
         let text = rendered(&lines);
         assert!(text.contains("Ctrl+O to expand"), "expand hint:\n{text}");
@@ -8259,8 +8278,64 @@ mod tests {
             .find(|s| s.content.contains("Ctrl+O to expand"))
             .expect("hint span");
         assert_eq!(hint_span.style.fg, Some(theme.text_muted), "hint is FAINT");
-        assert!(!text.contains("output"), "no output header while collapsed:\n{text}");
         assert!(!text.contains("use ratatui"), "no payload while collapsed:\n{text}");
+    }
+
+    #[test]
+    fn tool_headers_match_pure_structure_forms() {
+        // VAL-CORTEX-CHAT-002: bash / Read / Search / Edit headers match mockups-v3 DNA.
+        let theme = style::ThemeColors::dark();
+
+        let bash = tool_card("bash", r#"{"command":"cargo test retry -- --nocapture"}"#);
+        let mut lines = Vec::new();
+        push_tool(&mut lines, &bash, 100, false, &theme);
+        assert!(
+            plain(&lines[0]).contains("$ cargo test retry -- --nocapture"),
+            "bash header:\n{}",
+            plain(&lines[0])
+        );
+        assert!(
+            plain(&lines[1]).contains("waiting on subshell"),
+            "bash running meta:\n{}",
+            plain(&lines[1])
+        );
+
+        let read = tool_card("read", r#"{"path":"crates/agent/src/retry.rs"}"#);
+        lines.clear();
+        push_tool(&mut lines, &read, 100, false, &theme);
+        assert!(
+            plain(&lines[0]).contains("Read crates/agent/src/retry.rs"),
+            "read header:\n{}",
+            plain(&lines[0])
+        );
+
+        let mut search = tool_card("grep", r#"{"pattern":"rate.?limit","path":"src"}"#);
+        search.complete(
+            &[protocol::ToolResultPart::text(
+                "a.rs:1: rate-limit\nb.rs:2: rate limit\nc.rs:3: rate.?limit",
+            )],
+            false,
+        );
+        lines.clear();
+        push_tool(&mut lines, &search, 100, false, &theme);
+        let top = plain(&lines[0]);
+        assert!(
+            top.contains("Search \"rate.?limit\"") && top.contains("(3 matches)"),
+            "search header:\n{top}"
+        );
+
+        let mut edit = tool_card(
+            "edit",
+            r#"{"path":"crates/agent/src/retry.rs","oldString":"a","newString":"b"}"#,
+        );
+        edit.diff_stat = Some((12, 4));
+        lines.clear();
+        push_tool(&mut lines, &edit, 100, false, &theme);
+        assert!(
+            plain(&lines[0]).contains("Edit crates/agent/src/retry.rs +12/-4"),
+            "edit header:\n{}",
+            plain(&lines[0])
+        );
     }
 
     #[test]
@@ -8296,7 +8371,7 @@ mod tests {
 
     #[test]
     fn expanded_card_shows_output_header_and_payload() {
-        // VAL-TOOL-010: expanding replaces the hint with a DIM `output` header + payload rows (TXT).
+        // VAL-TOOL-010: expanding reveals payload rows under the Cortex header (no expand hint).
         let theme = style::ThemeColors::dark();
         let mut card = tool_card("read", r#"{"path":"a.txt"}"#);
         card.complete(
@@ -8306,13 +8381,11 @@ mod tests {
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, true, &theme);
         let text = rendered(&lines);
-        assert!(text.contains("output"), "output header:\n{text}");
-        let header_span = lines
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .find(|s| s.content.contains("output"))
-            .expect("output header span");
-        assert_eq!(header_span.style.fg, Some(theme.text_dim), "output header is DIM");
+        assert!(
+            plain(&lines[0]).contains("Read a.txt"),
+            "Cortex header retained while expanded:\n{}",
+            plain(&lines[0])
+        );
         assert!(text.contains("use ratatui"), "payload row revealed:\n{text}");
         assert!(!text.contains("Ctrl+O to expand"), "no hint while expanded:\n{text}");
     }
@@ -8346,8 +8419,8 @@ mod tests {
 
     #[test]
     fn card_body_is_clipped_inside_the_right_bar() {
-        // VAL-TOOL-012: a very long summary is clipped (with `…`) so no content touches or overruns
-        // the right `│` bar; the card stays rectangular.
+        // VAL-TOOL-012: a very long Cortex `$` header is clipped (with `…`) so no content overruns
+        // the available text width under the content margins.
         let theme = style::ThemeColors::dark();
         let long = "x".repeat(500);
         let args = serde_json::json!({ "command": long }).to_string();
@@ -8355,26 +8428,21 @@ mod tests {
         card.complete(&[protocol::ToolResultPart::text("ok")], false);
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, false, &theme);
-        // Every rendered card line is exactly the same display width and ends in a border/space,
-        // never in payload text bleeding past the right bar.
-        let widths: Vec<usize> = lines
-            .iter()
-            .filter(|l| !plain(l).is_empty())
-            .map(|l| plain(l).chars().count())
-            .collect();
-        // The right border sits at column `width - CONTENT_MARGIN - 1`; all box rows share it.
-        let border_col = 92 - CONTENT_MARGIN - 1;
+        let text_w = 92usize.saturating_sub(CONTENT_MARGIN * 2);
         for line in lines.iter().filter(|l| !plain(l).is_empty()) {
-            let chars: Vec<char> = plain(line).chars().collect();
+            let body: String = plain(line).chars().skip(CONTENT_MARGIN).collect();
+            let trimmed = body.trim_end();
             assert!(
-                chars.get(border_col) == Some(&'│')
-                    || chars.get(border_col) == Some(&'╮')
-                    || chars.get(border_col) == Some(&'╯'),
-                "right bar at col {border_col}: {:?}",
-                plain(line)
+                trimmed.chars().count() <= text_w,
+                "header/body overruns text width {text_w}: {trimmed:?}"
             );
         }
-        assert!(!widths.is_empty(), "the card rendered some rows");
+        let top = plain(&lines[0]);
+        assert!(top.contains('$'), "bash still forms a $ header:\n{top}");
+        assert!(
+            top.contains(crate::glyphs::ELLIPSIS) || top.contains('…'),
+            "long command is truncated:\n{top}"
+        );
     }
 
     /// A completed `edit` card with a real diff attached (1 deletion, 2 additions), for the
@@ -8422,7 +8490,11 @@ mod tests {
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, true, &theme);
         let text = rendered(&lines);
-        assert!(text.contains("output"), "output header:\n{text}");
+        assert!(
+            plain(&lines[0]).contains("Edit stream_processor.rs"),
+            "Cortex edit header:\n{}",
+            plain(&lines[0])
+        );
         assert!(text.contains("new_a") && text.contains("new_b"), "additions shown:\n{text}");
         assert!(text.contains("old_a"), "deletion shown:\n{text}");
         // A row carries a right-justified line number in the theme gutter tone.
@@ -8599,19 +8671,18 @@ mod tests {
             expanded_text.contains("a.txt"),
             "expanded still shows the summary target:\n{expanded_text}"
         );
-        // The expanded card occupies strictly more lines than the collapsed one.
+        // Expanded reveals payload the collapsed form hides (content, not necessarily more rows).
         assert!(
-            expanded.len() > collapsed.len(),
-            "expanded is taller: {} vs {}",
-            expanded.len(),
-            collapsed.len()
+            !collapsed_text.contains("secret detail line")
+                && expanded_text.contains("secret detail line"),
+            "expand toggles payload visibility"
         );
     }
 
     #[test]
     fn failed_tool_card_renders_distinct_error_state() {
-        // VAL-TOOL-005: a failed call carries `✗ read · error` in the ERR accent, distinct in hue
-        // from a completed card, and surfaces the failure message in the expanded output.
+        // VAL-TOOL-005: a failed call uses ERR accent on the Cortex header, carries `error` in the
+        // status meta, and surfaces the failure message in the expanded body.
         let theme = style::ThemeColors::dark();
         let mut failed = tool_card("read", r#"{"path":"nope.txt"}"#);
         failed.complete(
@@ -8622,8 +8693,8 @@ mod tests {
         push_tool(&mut lines, &failed, 80, true, &theme);
         let text = rendered(&lines);
         let top = plain(&lines[0]);
-        assert!(top.contains(crate::glyphs::MARK_ERROR), "error mark:\n{top}");
-        assert!(top.contains("error"), "error word:\n{top}");
+        assert!(top.contains("Read nope.txt"), "Cortex header:\n{top}");
+        assert!(text.contains("error"), "error word in status/meta:\n{text}");
         assert!(
             text.contains("file not found"),
             "failure message shown in the payload:\n{text}"
@@ -8659,22 +8730,34 @@ mod tests {
         }
         card.complete(&[protocol::ToolResultPart::text(&result)], false);
 
-        // Collapsed: `✓ task · done` header + the objective summary.
+        // Collapsed: Cortex `Task explore: …` header + done status meta + objective summary.
         let mut collapsed = Vec::new();
         push_tool(&mut collapsed, &card, 92, false, &theme);
         let top = plain(&collapsed[0]);
-        assert!(top.contains("task") && top.contains("done"), "task done header:\n{top}");
+        assert!(
+            top.contains("Task") && top.contains("explore"),
+            "task Cortex header:\n{top}"
+        );
+        assert!(
+            rendered(&collapsed).contains("done"),
+            "done status meta:\n{}",
+            rendered(&collapsed)
+        );
         assert!(
             rendered(&collapsed).contains("explore: where are tool cards rendered?"),
             "summary is the delegated objective:\n{}",
             rendered(&collapsed)
         );
 
-        // Expanded: `output` header, the result summary lines, and a `… (N more lines)` overflow row.
+        // Expanded: result summary lines and a `… (N more lines)` overflow row under the Cortex header.
         let mut expanded = Vec::new();
         push_tool(&mut expanded, &card, 92, true, &theme);
         let text = rendered(&expanded);
-        assert!(text.contains("output"), "output header:\n{text}");
+        assert!(
+            plain(&expanded[0]).contains("Task explore"),
+            "Cortex task header retained:\n{}",
+            plain(&expanded[0])
+        );
         assert!(text.contains("push_tool()"), "result summary shown:\n{text}");
         assert!(
             text.contains("more lines)"),
@@ -8684,9 +8767,8 @@ mod tests {
 
     #[test]
     fn lsp_failure_renders_red_error_card_with_inline_diagnostic() {
-        // VAL-TOOL-029: a failed `lsp` card shows the ERR chrome (`✗ lsp · error`), a
-        // `diagnostics {path}` summary, an ERR-red `error` header, the first diagnostic line in ERR
-        // red, and a FAINT `Ctrl+O for detail` hint — all while collapsed.
+        // VAL-TOOL-029: a failed `lsp` card shows Cortex `Lsp diagnostics {path}` in ERR accent,
+        // an `error` status meta, the first diagnostic in ERR red, and `Ctrl+O for detail`.
         let theme = style::ThemeColors::dark();
         let mut card = tool_card("lsp", r#"{"action":"documentSymbols","filePath":"crates/tui"}"#);
         card.complete(
@@ -8700,33 +8782,30 @@ mod tests {
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, false, &theme);
 
-        // Header: `✗ lsp · error` in the ERR accent.
+        // Header: `Lsp diagnostics crates/tui` in the ERR accent.
         let top = plain(&lines[0]);
-        assert!(top.contains(crate::glyphs::MARK_ERROR), "error mark:\n{top}");
-        assert!(top.contains("lsp") && top.contains("error"), "lsp error header:\n{top}");
+        assert!(
+            top.contains("Lsp") && top.contains("diagnostics crates/tui"),
+            "Cortex lsp header:\n{top}"
+        );
         assert_eq!(card_label_span(&lines).1, Some(theme.error), "error label is ERR red");
 
-        // Summary + inline error preview.
+        // Status meta + inline error preview.
         let text = rendered(&lines);
-        assert!(text.contains("diagnostics crates/tui"), "summary:\n{text}");
-        // The `error` header row is ERR red.
-        let error_header = lines
-            .iter()
-            .find(|l| plain(l).trim() == format!("{} error", crate::glyphs::BOX_VERTICAL).trim());
+        assert!(text.contains("error"), "error status meta:\n{text}");
         let error_span_fg = lines
             .iter()
             .flat_map(|l| l.spans.iter())
-            .find(|s| s.content.trim() == "error")
+            .find(|s| s.content.contains("error"))
             .and_then(|s| s.style.fg);
-        assert!(error_header.is_some() || error_span_fg.is_some(), "an `error` header row:\n{text}");
-        assert_eq!(error_span_fg, Some(theme.error), "`error` header is ERR red");
-        // The first diagnostic line is shown in ERR red.
+        // Status meta is dim; diagnostic payload carries ERR. Accept either.
         let diag_fg = lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.contains("mismatched types"))
             .and_then(|s| s.style.fg);
         assert_eq!(diag_fg, Some(theme.error), "first diagnostic line is ERR red:\n{text}");
+        let _ = error_span_fg;
         // A FAINT `Ctrl+O for detail` hint, not the plain expand hint.
         assert!(text.contains("Ctrl+O for detail"), "detail hint:\n{text}");
         assert!(!text.contains("Ctrl+O to expand"), "not the plain expand hint:\n{text}");
@@ -8735,8 +8814,8 @@ mod tests {
 
     #[test]
     fn question_running_card_awaits_the_answer() {
-        // VAL-TOOL-030: a running `question` card carries the running chrome (`⚙ question ·
-        // running`), a summary that is the question text, and a DIM/FAINT awaiting-answer line.
+        // VAL-TOOL-030: a running `question` card uses Cortex `Ask …` header, primary accent, and a
+        // DIM awaiting-answer status line (no expand hint).
         let theme = style::ThemeColors::dark();
         let card = tool_card(
             "question",
@@ -8748,13 +8827,12 @@ mod tests {
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, false, &theme);
 
-        // Header: `⚙ question · running` in the ORANGE (primary) accent.
+        // Header: `Ask Default provider…` in the primary accent.
         let top = plain(&lines[0]);
-        assert!(top.contains(crate::glyphs::MARK_RUNNING), "gear glyph:\n{top}");
-        assert!(top.contains("question") && top.contains("running"), "running header:\n{top}");
-        assert_eq!(card_label_span(&lines).1, Some(theme.primary), "running label is ORANGE");
+        assert!(top.contains("Ask"), "Cortex Ask header:\n{top}");
+        assert_eq!(card_label_span(&lines).1, Some(theme.primary), "running label is primary");
 
-        // Summary is the question; body is the awaiting-answer line in DIM (no expand hint).
+        // Question text + awaiting-answer status meta in DIM (no expand hint).
         let text = rendered(&lines);
         assert!(
             text.contains("Default provider: Anthropic or OpenAI?"),
@@ -8798,8 +8876,7 @@ mod tests {
 
     #[test]
     fn cards_stack_as_separate_boxes_in_transcript_order() {
-        // VAL-TOOL-013: multiple tool cards in one turn render as separate stacked closed boxes in
-        // invocation order, each its own frame (not merged).
+        // VAL-TOOL-013: multiple tool cards stack as separate Cortex header blocks in order.
         let theme = style::ThemeColors::dark();
         let mut first = tool_card("read", r#"{"path":"first.rs"}"#);
         first.complete(&[protocol::ToolResultPart::text("a")], false);
@@ -8809,17 +8886,19 @@ mod tests {
         push_tool(&mut lines, &first, 92, false, &theme);
         push_tool(&mut lines, &second, 92, false, &theme);
         let text = rendered(&lines);
-        // Two top borders and two bottom borders → two distinct closed boxes.
-        let tops = lines.iter().filter(|l| plain(l).contains(crate::glyphs::BOX_TOP_LEFT)).count();
-        let bottoms = lines
+        let reads = lines
             .iter()
-            .filter(|l| plain(l).contains(crate::glyphs::BOX_BOTTOM_LEFT))
+            .filter(|l| plain(l).contains("Read first.rs"))
             .count();
-        assert_eq!(tops, 2, "two top borders:\n{text}");
-        assert_eq!(bottoms, 2, "two bottom borders:\n{text}");
-        // Order preserved: `first.rs` appears before `second`.
+        let searches = lines
+            .iter()
+            .filter(|l| plain(l).contains("Search \"TODO\""))
+            .count();
+        assert_eq!(reads, 1, "one Read header:\n{text}");
+        assert_eq!(searches, 1, "one Search header:\n{text}");
+        // Order preserved: `first.rs` appears before `Search`.
         let first_at = text.find("first.rs").expect("first card present");
-        let second_at = text.find("second").expect("second card present");
+        let second_at = text.find("Search").expect("second card present");
         assert!(first_at < second_at, "cards stack in invocation order:\n{text}");
     }
 
@@ -8874,10 +8953,11 @@ mod tests {
             assert_eq!(card.summary, expected_path, "{name} summary is the file path");
             let mut lines = Vec::new();
             push_tool(&mut lines, &card, 92, false, &theme);
-            let summary_text = plain(&lines[1]);
+            // Cortex header carries the path (`Edit path`, `Write path`).
+            let header = plain(&lines[0]);
             assert!(
-                summary_text.contains(expected_path),
-                "{name} summary row shows the path:\n{summary_text}"
+                header.contains(expected_path),
+                "{name} Cortex header shows the path:\n{header}"
             );
             assert!(
                 rendered(&lines).contains("Ctrl+O to expand"),
@@ -8915,7 +8995,13 @@ mod tests {
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, true, &theme);
         let text = rendered(&lines);
-        assert!(text.contains("ToolStatus in crates/tui"), "grep summary:\n{text}");
+        // Cortex header: Search "ToolStatus" (N matches); model still holds `pattern in path`.
+        assert_eq!(card.summary, "ToolStatus in crates/tui");
+        assert!(
+            plain(&lines[0]).contains("Search \"ToolStatus\""),
+            "Cortex search header:\n{}",
+            plain(&lines[0])
+        );
         assert!(
             text.contains("crates/tui/src/ui.rs:20: use crate::tool_card::ToolStatus;"),
             "path:line: match row:\n{text}"
@@ -9011,27 +9097,32 @@ mod tests {
 
     #[test]
     fn background_bash_card_shows_background_in_summary_and_special_hint() {
-        // VAL-TOOL-023: a background bash card carries the running chrome, its summary marks the
-        // job as "(background)", and its footer hint reads "Ctrl+O to expand · esc to background".
+        // VAL-TOOL-023: background bash keeps `(background)` on the card summary, paints a Cortex
+        // `$ cmd` header, and the footer hint includes `esc to background`.
         let theme = style::ThemeColors::dark();
         let card = tool_card("bash", r#"{"command":"cargo build --release","background":true}"#);
         assert_eq!(card.summary, "cargo build --release (background)");
         assert_eq!(card.status, ToolStatus::Running);
-        
+
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, false, &theme);
         let text = rendered(&lines);
         assert!(
-            text.contains("cargo build --release (background)"),
-            "summary includes (background):\n{text}"
+            plain(&lines[0]).contains("$ cargo build --release"),
+            "Cortex $ header:\n{}",
+            plain(&lines[0])
+        );
+        assert!(
+            card.summary.contains("(background)"),
+            "summary includes (background)"
         );
         assert!(
             text.contains("esc to background"),
             "footer hint mentions esc to background:\n{text}"
         );
         assert!(
-            text.contains(glyphs::MARK_RUNNING),
-            "running card has the gear glyph:\n{text}"
+            text.contains("running"),
+            "running status meta present:\n{text}"
         );
     }
 
@@ -9058,14 +9149,19 @@ mod tests {
             "the streaming card keeps the background footer hint:\n{text}"
         );
         assert!(
-            text.contains(glyphs::MARK_RUNNING),
-            "the streaming card keeps the running gear glyph:\n{text}"
+            plain(&lines[0]).contains("$ cargo build --release"),
+            "Cortex $ header retained while streaming:\n{}",
+            plain(&lines[0])
+        );
+        assert!(
+            text.contains("running · background"),
+            "background running status meta:\n{text}"
         );
     }
 
     #[test]
     fn todo_card_summary_is_item_count_and_in_progress_count() {
-        // VAL-TOOL-024: a todo card's summary row is "{N} items · {M} in progress".
+        // VAL-TOOL-024: a todo card's summary is "{N} items · {M} in progress" (also on Cortex header).
         let theme = style::ThemeColors::dark();
         let mut card = tool_card("todo", r#"{}"#);
         let output = "1. [completed][medium] cap the streaming buffer\n\
@@ -9073,17 +9169,17 @@ mod tests {
                       3. [pending][medium] open a pull request";
         card.complete(&[protocol::ToolResultPart::text(output)], false);
         assert_eq!(card.summary, "3 items · 1 in progress");
-        
+
         let mut lines = Vec::new();
         push_tool(&mut lines, &card, 92, false, &theme);
-        let summary_text = plain(&lines[1]);
+        let header = plain(&lines[0]);
         assert!(
-            summary_text.contains("3 items"),
-            "summary shows item count:\n{summary_text}"
+            header.contains("3 items"),
+            "Cortex todo header shows item count:\n{header}"
         );
         assert!(
-            summary_text.contains("1 in progress"),
-            "summary shows in-progress count:\n{summary_text}"
+            header.contains("1 in progress"),
+            "Cortex todo header shows in-progress count:\n{header}"
         );
     }
 

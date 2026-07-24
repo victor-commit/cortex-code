@@ -288,6 +288,46 @@ mod tests {
         );
     }
 
+    // VAL-CORTEX-CHAT-003: deny is the fail-closed gate — a drop or explicit Deny both yield
+    // Decision::Deny so a mutating tool cannot proceed without an explicit Allow.
+    #[test]
+    fn permission_gate_deny_blocks_effect_and_allow_unblocks() {
+        let (tx, rx) = channel();
+        let responder = Arc::new(UiResponder::new(tx));
+
+        // Explicit deny path.
+        let denied = {
+            let responder = responder.clone();
+            thread::spawn(move || responder.respond(&request("write", "secret.txt")))
+        };
+        let TurnMessage::Permission(ask) = rx.recv().expect("ask forwarded") else {
+            panic!("expected permission ask");
+        };
+        assert_eq!(ask.tool, "write");
+        assert_eq!(ask.subject, "secret.txt");
+        ask.answer(ScopedDecision::once(Decision::Deny));
+        assert_eq!(
+            denied.join().unwrap(),
+            Decision::Deny,
+            "deny must block the gated tool"
+        );
+
+        // Explicit allow path (different subject so the in-turn cache does not short-circuit).
+        let allowed = {
+            let responder = responder.clone();
+            thread::spawn(move || responder.respond(&request("write", "ok.txt")))
+        };
+        let TurnMessage::Permission(ask) = rx.recv().expect("second ask") else {
+            panic!("expected permission ask");
+        };
+        ask.answer(ScopedDecision::once(Decision::Allow));
+        assert_eq!(
+            allowed.join().unwrap(),
+            Decision::Allow,
+            "allow must unblock the gated tool"
+        );
+    }
+
     // Concurrent identical asks are correlated: one UI prompt is shown and the answered decision
     // (including deny feedback) fans out to all waiting callers.
     #[test]

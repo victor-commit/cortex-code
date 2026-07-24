@@ -119,7 +119,7 @@ impl ToolCard {
             ToolStatus::Completed
         };
         self.duration_ms = Some(self.started.elapsed().as_millis() as u64);
-        
+
         // Post-completion summary override for tools whose summary depends on the result
         // (VAL-TOOL-024: todo summary is "{N} items · {M} in progress").
         if self.name == "todo" && !is_error {
@@ -181,11 +181,7 @@ pub fn is_background_call(name: &str, arguments: &str) -> bool {
     }
     serde_json::from_str::<serde_json::Value>(arguments)
         .ok()
-        .and_then(|value| {
-            value
-                .get("background")
-                .and_then(serde_json::Value::as_bool)
-        })
+        .and_then(|value| value.get("background").and_then(serde_json::Value::as_bool))
         .unwrap_or(false)
 }
 
@@ -243,11 +239,7 @@ fn diff_stat_for(name: &str, arguments: &str) -> Option<(usize, usize)> {
 
 /// The number of text lines in `s` (an empty string is zero lines).
 fn line_count(s: &str) -> usize {
-    if s.is_empty() {
-        0
-    } else {
-        s.lines().count()
-    }
+    if s.is_empty() { 0 } else { s.lines().count() }
 }
 
 /// Count the `(added, removed)` body lines of a patch envelope, ignoring the `+++`/`---` file
@@ -270,6 +262,180 @@ fn patch_line_counts(patch: &str) -> (usize, usize) {
 
 /// The maximum number of characters kept in a card's one-line argument summary.
 const SUMMARY_MAX: usize = 100;
+
+/// Maximum characters kept in a Cortex-style tool header line (VAL-CORTEX-CHAT-002).
+const HEADER_MAX: usize = 120;
+
+/// Format a Cortex tool header line from a tool name + structured arguments.
+///
+/// Pure-structure DNA (mockups-v3 `tool-calls` / `tool-running` / `tool-success`):
+/// - bash / shell → `$ <command>`
+/// - read → `Read <path>`
+/// - grep / search → `Search "<pattern>"` (optional ` (N matches)` when known)
+/// - edit / multiedit → `Edit <path>` (optional ` +A/-R` when a diff stat is known)
+/// - write → `Write <path>`
+/// - apply_patch → `Edit <target>`
+/// - websearch → `Search <query>`
+/// - webfetch → `Fetch <url>`
+/// - other → Title-case tool name + summary
+///
+/// This is intentionally box-free: the header is the primary tool label the transcript paints.
+#[must_use]
+pub fn format_tool_header(
+    name: &str,
+    arguments: &str,
+    diff_stat: Option<(usize, usize)>,
+    match_count: Option<usize>,
+) -> String {
+    let summary = summarize_args(name, arguments);
+    let header = match name {
+        "bash" | "shell" => {
+            // Strip the background marker from the `$` form (Cortex shows the live command only).
+            let cmd = summary
+                .strip_suffix(" (background)")
+                .unwrap_or(summary.as_str());
+            format!("$ {cmd}")
+        }
+        "read" => format!("Read {summary}"),
+        "grep" | "search" => {
+            let value: serde_json::Value =
+                serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
+            let pattern = value
+                .get("pattern")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(summary.as_str());
+            let base = format!("Search \"{pattern}\"");
+            match match_count {
+                Some(n) => format!("{base} ({n} matches)"),
+                None => base,
+            }
+        }
+        "edit" | "multiedit" => match diff_stat {
+            Some((a, r)) => format!("Edit {summary} +{a}/-{r}"),
+            None => format!("Edit {summary}"),
+        },
+        "write" => match diff_stat {
+            Some((a, r)) if a > 0 || r > 0 => format!("Write {summary} +{a}/-{r}"),
+            _ => format!("Write {summary}"),
+        },
+        "apply_patch" => match diff_stat {
+            Some((a, r)) => format!("Edit {summary} +{a}/-{r}"),
+            None => format!("Edit {summary}"),
+        },
+        "websearch" => format!("Search {summary}"),
+        "webfetch" => format!("Fetch {summary}"),
+        "glob" | "list" => format!("Glob {summary}"),
+        "todo" => format!("Todo {summary}"),
+        "task" => format!("Task {summary}"),
+        "lsp" => format!("Lsp {summary}"),
+        "question" => format!("Ask {summary}"),
+        other => {
+            let title = title_case_tool(other);
+            if summary.is_empty() {
+                title
+            } else {
+                format!("{title} {summary}")
+            }
+        }
+    };
+    truncate(&one_line(&header), HEADER_MAX)
+}
+
+/// Cortex-style secondary status line under a tool header (running / done meta).
+///
+/// Examples:
+/// - running bash: `running · waiting on subshell`
+/// - completed bash with duration: `done · 1800ms`
+/// - failed: `error`
+#[must_use]
+pub fn format_tool_status_line(card: &ToolCard) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let state = match card.status {
+        ToolStatus::Running => {
+            if card.is_background_running() || card.is_background {
+                "running · background"
+            } else if card.name == "bash" || card.name == "shell" {
+                "running · waiting on subshell"
+            } else if card.name == "question" {
+                "waiting for your answer"
+            } else {
+                "running"
+            }
+        }
+        ToolStatus::Completed => "done",
+        ToolStatus::Failed => "error",
+    };
+    parts.push(state.to_owned());
+    if let Some(ms) = card.duration_ms {
+        parts.push(format_duration_ms(ms));
+    }
+    if let Some((a, r)) = card.diff_stat {
+        if card.status != ToolStatus::Running && matches!(card.name.as_str(), "edit" | "multiedit" | "write" | "apply_patch") {
+            // Diff stat already rides the header for edit/write; skip duplicate on status.
+            let _ = (a, r);
+        }
+    }
+    parts.join(" · ")
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        let secs = ms as f64 / 1000.0;
+        if secs < 10.0 {
+            format!("{secs:.1}s")
+        } else {
+            format!("{}s", ms / 1000)
+        }
+    }
+}
+
+fn title_case_tool(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Best-effort match count for a completed grep/search tool from its textual output.
+///
+/// Recognises common grep-style `path:line:` rows (one match per non-empty non-header line) and
+/// explicit `N matches` tails. Returns `None` when the output is empty or unparseable.
+#[must_use]
+pub fn match_count_from_output(output: &str) -> Option<usize> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Explicit "N matches" / "N match" phrase wins when present.
+    for token in trimmed.split_whitespace() {
+        if let Some(n) = token
+            .strip_suffix("matches")
+            .or_else(|| token.strip_suffix("match"))
+            .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok())
+        {
+            if n > 0 {
+                return Some(n);
+            }
+        }
+    }
+    // Grep-like rows: `path:line:…` (require at least two colons so plain prose is ignored).
+    let rows = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let mut parts = line.splitn(3, ':');
+            matches!(
+                (parts.next(), parts.next(), parts.next()),
+                (Some(p), Some(l), Some(_)) if !p.is_empty() && l.chars().all(|c| c.is_ascii_digit())
+            )
+        })
+        .count();
+    (rows > 0).then_some(rows)
+}
 
 /// Produce a short, human-readable summary of a tool call's most salient argument(s).
 ///
@@ -454,10 +620,7 @@ fn todo_summary_from_output(output: &str) -> String {
     }
     let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
     let total = lines.len();
-    let in_progress = lines
-        .iter()
-        .filter(|l| l.contains("[in_progress]"))
-        .count();
+    let in_progress = lines.iter().filter(|l| l.contains("[in_progress]")).count();
     if in_progress > 0 {
         format!("{total} items · {in_progress} in progress")
     } else {
@@ -494,7 +657,10 @@ mod tests {
     fn background_bash_summary_is_marked_background() {
         // VAL-TOOL-023: a background bash call's summary marks the job as `(background)`.
         assert_eq!(
-            summarize_args("bash", r#"{"command":"cargo build --release","background":true}"#),
+            summarize_args(
+                "bash",
+                r#"{"command":"cargo build --release","background":true}"#
+            ),
             "cargo build --release (background)"
         );
         // A foreground call (background false / absent) is the plain command.
@@ -583,7 +749,10 @@ mod tests {
         // VAL-TOOL-029: an lsp card's summary is `diagnostics {target}`, where the target is the
         // queried file path (any alias) and the workspace fallback for a query-only request.
         assert_eq!(
-            summarize_args("lsp", r#"{"action":"documentSymbols","filePath":"crates/tui"}"#),
+            summarize_args(
+                "lsp",
+                r#"{"action":"documentSymbols","filePath":"crates/tui"}"#
+            ),
             "diagnostics crates/tui"
         );
         assert_eq!(
@@ -715,5 +884,77 @@ mod tests {
         assert_eq!(card.duration_ms, None);
         card.complete(&[ToolResultPart::text("ok")], false);
         assert!(card.duration_ms.is_some());
+    }
+
+    // --- VAL-CORTEX-CHAT-002: tool header formatting ---
+
+    #[test]
+    fn tool_header_bash_is_dollar_command() {
+        assert_eq!(
+            format_tool_header("bash", r#"{"command":"cargo test retry -- --nocapture"}"#, None, None),
+            "$ cargo test retry -- --nocapture"
+        );
+    }
+
+    #[test]
+    fn tool_header_read_is_read_path() {
+        assert_eq!(
+            format_tool_header("read", r#"{"path":"crates/agent/src/retry.rs"}"#, None, None),
+            "Read crates/agent/src/retry.rs"
+        );
+    }
+
+    #[test]
+    fn tool_header_search_is_quoted_pattern() {
+        assert_eq!(
+            format_tool_header(
+                "grep",
+                r#"{"pattern":"rate.?limit","path":"src"}"#,
+                None,
+                Some(3)
+            ),
+            "Search \"rate.?limit\" (3 matches)"
+        );
+        assert_eq!(
+            format_tool_header("search", r#"{"pattern":"TODO"}"#, None, None),
+            "Search \"TODO\""
+        );
+    }
+
+    #[test]
+    fn tool_header_edit_includes_diff_stat() {
+        assert_eq!(
+            format_tool_header(
+                "edit",
+                r#"{"path":"crates/agent/src/retry.rs","oldString":"a","newString":"b\nc"}"#,
+                Some((12, 4)),
+                None
+            ),
+            "Edit crates/agent/src/retry.rs +12/-4"
+        );
+    }
+
+    #[test]
+    fn tool_header_write_is_write_path() {
+        assert_eq!(
+            format_tool_header("write", r#"{"path":"notes.md","content":"hi"}"#, None, None),
+            "Write notes.md"
+        );
+    }
+
+    #[test]
+    fn tool_status_line_running_bash_awaits_subshell() {
+        let card = ToolCard::new("c", "bash", r#"{"command":"ls"}"#);
+        assert_eq!(
+            format_tool_status_line(&card),
+            "running · waiting on subshell"
+        );
+    }
+
+    #[test]
+    fn match_count_from_grep_style_rows() {
+        let out = "src/a.rs:1: TODO\nsrc/b.rs:4: TODO later\n";
+        assert_eq!(match_count_from_output(out), Some(2));
+        assert_eq!(match_count_from_output(""), None);
     }
 }
