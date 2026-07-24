@@ -22,6 +22,7 @@ mod keybind;
 mod lsp_bridge;
 mod mcp_runtime;
 mod mention;
+mod mission_control;
 mod modal;
 mod motd;
 mod onboarding;

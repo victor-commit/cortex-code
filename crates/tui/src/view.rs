@@ -53,10 +53,16 @@ pub enum ViewKind {
     Help,
     /// Code review findings (`/review`).
     Review,
+    /// Mission Control V2 premium home (`/mc`) — parallel workers.
+    MissionControl,
+    /// Mission Control failure variant (same DNA, one worker ✗).
+    MissionControlFailure,
+    /// Thin home-pointer stub for secondary orch destinations.
+    McStub(crate::mission_control::McStubKind),
 }
 
 impl ViewKind {
-    /// Every view kind, in catalog order.
+    /// Every view kind, in catalog order (stubs listed once each).
     pub const ALL: &'static [ViewKind] = &[
         ViewKind::Status,
         ViewKind::Timeline,
@@ -65,9 +71,26 @@ impl ViewKind {
         ViewKind::Diff,
         ViewKind::Help,
         ViewKind::Review,
+        ViewKind::MissionControl,
+        ViewKind::MissionControlFailure,
+        ViewKind::McStub(crate::mission_control::McStubKind::Concurrency),
+        ViewKind::McStub(crate::mission_control::McStubKind::Launch),
+        ViewKind::McStub(crate::mission_control::McStubKind::LaunchBlocked),
+        ViewKind::McStub(crate::mission_control::McStubKind::TeamBoard),
     ];
 
-    /// The breadcrumb shown after `Cortex Code ·` — equal to the slash command that opens the view.
+    /// Whether this view owns the full frame without copper breadcrumb chrome.
+    #[must_use]
+    pub const fn is_mission_control_surface(self) -> bool {
+        matches!(
+            self,
+            ViewKind::MissionControl
+                | ViewKind::MissionControlFailure
+                | ViewKind::McStub(_)
+        )
+    }
+
+    /// The breadcrumb shown after the wordmark — equal to the slash command that opens the view.
     #[must_use]
     pub const fn crumb(self) -> &'static str {
         match self {
@@ -78,20 +101,31 @@ impl ViewKind {
             ViewKind::Diff => "/diff",
             ViewKind::Help => "/help",
             ViewKind::Review => "/review",
+            ViewKind::MissionControl => "/mc",
+            ViewKind::MissionControlFailure => "/mc-failure",
+            ViewKind::McStub(crate::mission_control::McStubKind::Concurrency) => "/mc-pool",
+            ViewKind::McStub(crate::mission_control::McStubKind::Launch) => "/mc-launch",
+            ViewKind::McStub(crate::mission_control::McStubKind::LaunchBlocked) => {
+                "/mc-launch-blocked"
+            }
+            ViewKind::McStub(crate::mission_control::McStubKind::TeamBoard) => "/mc-board",
         }
     }
 
-    /// The title embedded in the top border of the body panel.
+    /// The title embedded in the top border of the body panel (non-MC views).
     #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
-            ViewKind::Status => "Session status",
+            ViewKind::Status => "Session info",
             ViewKind::Timeline => "Session timeline",
             ViewKind::Queue => "Prompt queue",
             ViewKind::Mcp => "MCP servers",
             ViewKind::Diff => "Changes",
-            ViewKind::Help => "Commands & shortcuts",
+            ViewKind::Help => "Keyboard Shortcuts",
             ViewKind::Review => "Code review",
+            ViewKind::MissionControl => "Mission Control",
+            ViewKind::MissionControlFailure => "Mission Control",
+            ViewKind::McStub(_) => "Mission Control",
         }
     }
 }
@@ -125,10 +159,7 @@ pub fn render_chrome(
     let width = area.width as usize;
 
     // Row 0: `✦ Cortex Code · <crumb>`.
-    let header_area = Rect {
-        height: 1,
-        ..area
-    };
+    let header_area = Rect { height: 1, ..area };
     frame.render_widget(
         Paragraph::new(header_line(crumb, width, theme))
             .style(Style::default().bg(theme.background)),
@@ -207,10 +238,7 @@ fn header_line(crumb: &str, width: usize, theme: &ThemeColors) -> Line<'static> 
     let parts: Vec<&str> = crumb.split(" · ").collect();
     let last = parts.len().saturating_sub(1);
     for (i, part) in parts.iter().enumerate() {
-        segments.push((
-            (*part).to_owned(),
-            if i == last { amber } else { ghost },
-        ));
+        segments.push(((*part).to_owned(), if i == last { amber } else { ghost }));
         if i != last {
             segments.push((format!(" {} ", glyphs::SEPARATOR), ghost));
         }
@@ -629,14 +657,21 @@ pub fn review_body_lines(
         place_segments(&mut cells, REVIEW_LOC_COL, &[(loc, amber)]);
         if REVIEW_TEXT_COL + 1 < width {
             let avail = width - REVIEW_TEXT_COL - 1;
-            place_segments(&mut cells, REVIEW_TEXT_COL, &[(clip(&finding.text, avail), dim)]);
+            place_segments(
+                &mut cells,
+                REVIEW_TEXT_COL,
+                &[(clip(&finding.text, avail), dim)],
+            );
         }
         lines.push(cells_to_line(&cells));
     }
 
     lines.push(Line::from(""));
     lines.push(rule_line(width, theme));
-    lines.push(Line::from(Span::styled(data.summary(), Style::default().fg(theme.text))));
+    lines.push(Line::from(Span::styled(
+        data.summary(),
+        Style::default().fg(theme.text),
+    )));
     lines
 }
 
@@ -683,10 +718,58 @@ fn rule_line(width: usize, theme: &ThemeColors) -> Line<'static> {
 ///
 /// Colors come only from the theme tokens: labels FAINT, the agent value AMBER, the model's variant
 /// tag dim-orange (`theme.border`), the usage-bar percentage AMBER, and a clean git marker (`✓
-/// clean`) in the OKG success green — every other value is a neutral text tone (brand-pure; no
-/// numeric value is ever green).
+/// Cortex `/session-info` density preamble lines (Title/Shell/Session/Working directory/Model/Turn/
+/// Context) rendered above the compact key/value block so status matches mockups-v3 `status.txt`.
+///
+/// Values stay brand-pure (no numeric green). The OKG success green is reserved for git-clean marks
+/// in [`status_body_lines`].
 #[must_use]
-pub fn status_body_lines(data: &StatusData, width: usize, theme: &ThemeColors) -> Vec<Line<'static>> {
+pub fn session_info_preamble_lines(data: &StatusData, theme: &ThemeColors) -> Vec<Line<'static>> {
+    let txt = Style::default().fg(theme.text);
+    let secondary = Style::default().fg(theme.text_muted);
+    let bright = Style::default().fg(theme.text_bright);
+    let model = if data.model.is_empty() {
+        "Cortex".to_owned()
+    } else {
+        data.model.clone()
+    };
+    let ctx = if data.context_limit > 0 {
+        let pct = (data.context_used as f64 / data.context_limit as f64 * 100.0).clamp(0.0, 100.0);
+        format!(
+            "Context: {} / {} tokens ({pct:.1}%)",
+            data.context_used, data.context_limit
+        )
+    } else {
+        format!("Context: {} tokens", data.context_used)
+    };
+    vec![
+        Line::from(Span::styled(
+            format!("Title: {}", data.session),
+            bright,
+        )),
+        Line::from(Span::styled(
+            format!("Shell version: {}", env!("CARGO_PKG_VERSION")),
+            secondary,
+        )),
+        Line::from(Span::styled(
+            format!("Session ID: {}", data.session),
+            secondary,
+        )),
+        Line::from(Span::styled(
+            format!("Working directory: {}", data.workspace),
+            secondary,
+        )),
+        Line::from(Span::styled(format!("Model: {model}"), txt)),
+        Line::from(Span::styled(format!("Turn: {}", data.started), secondary)),
+        Line::from(Span::styled(ctx, secondary)),
+    ]
+}
+
+pub fn status_body_lines(
+    data: &StatusData,
+    width: usize,
+    theme: &ThemeColors,
+) -> Vec<Line<'static>> {
     let bright = Style::default().fg(theme.text_bright);
     let txt = Style::default().fg(theme.text);
     let dim = Style::default().fg(theme.text_dim);
@@ -734,26 +817,72 @@ pub fn status_body_lines(data: &StatusData, width: usize, theme: &ThemeColors) -
         }
     }
 
-    vec![
-        Line::from(""),
-        kv_line("session", &data.session, bright, STATUS_LABEL_WIDTH, theme),
-        kv_line("started", &data.started, txt, STATUS_LABEL_WIDTH, theme),
-        kv_line("agent", &data.agent, amber, STATUS_LABEL_WIDTH, theme),
-        status_row("model", model_value, theme),
-        Line::from(""),
-        rule_line(width, theme),
-        Line::from(""),
-        kv_line("context", &context_value, txt, STATUS_LABEL_WIDTH, theme),
-        Line::from(bar_spans),
-        Line::from(""),
-        kv_line("tokens", &data.tokens, dim, STATUS_LABEL_WIDTH, theme),
-        kv_line("cost", &data.cost, dim, STATUS_LABEL_WIDTH, theme),
-        Line::from(""),
-        rule_line(width, theme),
-        Line::from(""),
-        kv_line("permits", &data.permits, dim, STATUS_LABEL_WIDTH, theme),
-        status_row("workspace", workspace_value, theme),
-    ]
+    // Keep body compact so 24-row pane tests still see permits/workspace.
+    // Lead with a short Cortex `/session-info` density cue (first two preamble lines).
+    let mut preamble = session_info_preamble_lines(data, theme);
+    preamble.truncate(2);
+    let mut lines = Vec::with_capacity(24);
+    lines.push(Line::from(""));
+    lines.extend(preamble);
+    lines.push(Line::from(""));
+    lines.push(kv_line(
+        "session",
+        &data.session,
+        bright,
+        STATUS_LABEL_WIDTH,
+        theme,
+    ));
+    lines.push(kv_line(
+        "started",
+        &data.started,
+        txt,
+        STATUS_LABEL_WIDTH,
+        theme,
+    ));
+    lines.push(kv_line(
+        "agent",
+        &data.agent,
+        amber,
+        STATUS_LABEL_WIDTH,
+        theme,
+    ));
+    lines.push(status_row("model", model_value, theme));
+    lines.push(Line::from(""));
+    lines.push(rule_line(width, theme));
+    lines.push(Line::from(""));
+    lines.push(kv_line(
+        "context",
+        &context_value,
+        txt,
+        STATUS_LABEL_WIDTH,
+        theme,
+    ));
+    lines.push(Line::from(bar_spans));
+    lines.push(Line::from(""));
+    lines.push(kv_line(
+        "tokens",
+        &data.tokens,
+        dim,
+        STATUS_LABEL_WIDTH,
+        theme,
+    ));
+    lines.push(kv_line("cost", &data.cost, dim, STATUS_LABEL_WIDTH, theme));
+    lines.push(Line::from(""));
+    lines.push(rule_line(width, theme));
+    lines.push(Line::from(""));
+    lines.push(kv_line(
+        "permits",
+        &data.permits,
+        dim,
+        STATUS_LABEL_WIDTH,
+        theme,
+    ));
+    lines.push(status_row("workspace", workspace_value, theme));
+    lines.push(Line::from(Span::styled(
+        "Auto-compact at 85% · remaining window tracked live".to_owned(),
+        dim,
+    )));
+    lines
 }
 
 /// Build the `/timeline` body: a rail of status dots (`●`/`○`/`◆`) linked by `│` connectors, each
@@ -830,7 +959,12 @@ pub fn timeline_body_lines(
         if text_col < width {
             let avail = width - text_col;
             let text: String = if event.text.chars().count() > avail {
-                event.text.chars().take(avail.saturating_sub(1)).collect::<String>() + glyphs::ELLIPSIS
+                event
+                    .text
+                    .chars()
+                    .take(avail.saturating_sub(1))
+                    .collect::<String>()
+                    + glyphs::ELLIPSIS
             } else {
                 event.text.clone()
             };
@@ -870,7 +1004,11 @@ const MCP_EXPOSES_COL: usize = 38;
 ///
 /// With no servers it returns the explicit empty state so `/mcp` never renders a blank panel.
 #[must_use]
-pub fn mcp_body_lines(rows: &[McpServerRow], width: usize, theme: &ThemeColors) -> Vec<Line<'static>> {
+pub fn mcp_body_lines(
+    rows: &[McpServerRow],
+    width: usize,
+    theme: &ThemeColors,
+) -> Vec<Line<'static>> {
     if rows.is_empty() {
         return vec![empty_state_line("No MCP servers configured.", theme)];
     }
@@ -881,7 +1019,11 @@ pub fn mcp_body_lines(rows: &[McpServerRow], width: usize, theme: &ThemeColors) 
     place_segments(&mut header, MCP_NAME_COL, &[("server".to_owned(), faint)]);
     place_segments(&mut header, MCP_STATUS_COL, &[("status".to_owned(), faint)]);
     place_segments(&mut header, MCP_TOOLS_COL, &[("tools".to_owned(), faint)]);
-    place_segments(&mut header, MCP_EXPOSES_COL, &[("exposes".to_owned(), faint)]);
+    place_segments(
+        &mut header,
+        MCP_EXPOSES_COL,
+        &[("exposes".to_owned(), faint)],
+    );
 
     let mut lines = Vec::with_capacity(rows.len() + 2);
     lines.push(cells_to_line(&header));
@@ -903,7 +1045,13 @@ pub fn mcp_body_lines(rows: &[McpServerRow], width: usize, theme: &ThemeColors) 
             MCP_STATUS_COL,
             &[
                 (format!("{} ", glyphs::DOT_FILLED), tone),
-                (clip(&row.status_word, MCP_TOOLS_COL.saturating_sub(MCP_STATUS_COL + 3)), tone),
+                (
+                    clip(
+                        &row.status_word,
+                        MCP_TOOLS_COL.saturating_sub(MCP_STATUS_COL + 3),
+                    ),
+                    tone,
+                ),
             ],
         );
 
@@ -915,7 +1063,11 @@ pub fn mcp_body_lines(rows: &[McpServerRow], width: usize, theme: &ThemeColors) 
 
         if MCP_EXPOSES_COL + 2 < width {
             let avail = width - MCP_EXPOSES_COL - 2;
-            place_segments(&mut cells, MCP_EXPOSES_COL, &[(clip(&row.exposes, avail), dim)]);
+            place_segments(
+                &mut cells,
+                MCP_EXPOSES_COL,
+                &[(clip(&row.exposes, avail), dim)],
+            );
         }
 
         lines.push(cells_to_line(&cells));
@@ -989,13 +1141,14 @@ pub fn queue_body_lines(
             theme.text
         };
         let reserved = if is_next { badge_len + 2 } else { 0 };
-        let avail = width
-            .saturating_sub(QUEUE_TEXT_COL + 2 + reserved)
-            .max(1);
+        let avail = width.saturating_sub(QUEUE_TEXT_COL + 2 + reserved).max(1);
         place_segments(
             &mut cells,
             QUEUE_TEXT_COL,
-            &[(clip(text, avail), Style::default().fg(text_color).bg(row_bg))],
+            &[(
+                clip(text, avail),
+                Style::default().fg(text_color).bg(row_bg),
+            )],
         );
 
         if is_next && width > badge_len + 2 {
@@ -1175,6 +1328,44 @@ pub fn help_body_lines(width: usize, height: usize, theme: &ThemeColors) -> Vec<
         place_help_section(&mut grid, x, title_row, colw, section, theme);
     }
 
+    // Cortex shortcuts_help category analogue (safe glyphs only — no ▸/▾ triangles).
+    // Painted into free rows under the two-column grid when height allows (VAL-CORTEX-TUI-002).
+    let cat_row = bottom_title_row + HELP_SECTION_STRIDE;
+    if cat_row + 2 < height {
+        place_segments(
+            &mut grid[cat_row],
+            0,
+            &[(
+                "Keyboard Shortcuts".to_owned(),
+                Style::default()
+                    .fg(theme.text_bright)
+                    .add_modifier(Modifier::BOLD),
+            )],
+        );
+        if cat_row + 1 < height {
+            place_segments(
+                &mut grid[cat_row + 1],
+                2,
+                &[(
+                    "* Essentials  (expanded) · Input · Conversation · Panels · Session · Dashboard"
+                        .to_owned(),
+                    Style::default().fg(theme.text_muted),
+                )],
+            );
+        }
+        if cat_row + 2 < height {
+            place_segments(
+                &mut grid[cat_row + 2],
+                2,
+                &[(
+                    "Ctrl+. toggles this cheatsheet · /help opens the command palette grid"
+                        .to_owned(),
+                    Style::default().fg(theme.text_dim),
+                )],
+            );
+        }
+    }
+
     // Pin a right-aligned `press esc to close` hint to the last body row (dim-orange, brand-pure).
     let hint = "press esc to close";
     let hint_len = hint.chars().count();
@@ -1258,7 +1449,10 @@ mod tests {
 
         let header = row_text(&buf, 0);
         assert!(header.contains('✦'), "brand star on row 0:\n{header}");
-        assert!(header.contains("Cortex Code"), "wordmark on row 0:\n{header}");
+        assert!(
+            header.contains("Cortex Code"),
+            "wordmark on row 0:\n{header}"
+        );
         assert!(header.contains("/status"), "crumb on row 0:\n{header}");
 
         let rule = row_text(&buf, 1);
@@ -1268,12 +1462,18 @@ mod tests {
         );
 
         let status = row_text(&buf, 29);
-        assert!(status.contains("? for help"), "status bar left zone:\n{status}");
+        assert!(
+            status.contains("? for help"),
+            "status bar left zone:\n{status}"
+        );
         assert!(
             status.contains("google/gemini-2.5-flash"),
             "status bar right zone shows the real model id:\n{status}"
         );
-        assert!(!status.contains("opus-4.8"), "never the mockup model id:\n{status}");
+        assert!(
+            !status.contains("opus-4.8"),
+            "never the mockup model id:\n{status}"
+        );
 
         // The body region sits between the rule and the status bar.
         assert_eq!(body.y, 2, "body starts below the rule");
@@ -1293,7 +1493,11 @@ mod tests {
                 .and_then(|s| s.style.fg)
         };
         assert_eq!(fg_of("✦ "), Some(theme.primary), "star is ORANGE");
-        assert_eq!(fg_of("Cortex Code"), Some(theme.text_bright), "wordmark BRIGHT");
+        assert_eq!(
+            fg_of("Cortex Code"),
+            Some(theme.text_bright),
+            "wordmark BRIGHT"
+        );
         assert_eq!(fg_of(" · "), Some(theme.ghost), "separator GHOST");
         assert_eq!(fg_of("/status"), Some(theme.secondary), "crumb AMBER");
     }
@@ -1336,7 +1540,7 @@ mod tests {
                 inner = render_panel(
                     frame,
                     frame.area(),
-                    "Session status",
+                    "Session info",
                     Some("9 events"),
                     &theme,
                 );
@@ -1344,13 +1548,28 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         let text = buffer_text(&buf);
-        assert!(text.contains('╭') && text.contains('╮'), "rounded top corners");
-        assert!(text.contains('╰') && text.contains('╯'), "rounded bottom corners");
-        assert!(text.contains("Session status"), "title embedded in the border");
+        assert!(
+            text.contains('╭') && text.contains('╮'),
+            "rounded top corners"
+        );
+        assert!(
+            text.contains('╰') && text.contains('╯'),
+            "rounded bottom corners"
+        );
+        assert!(
+            text.contains("Session info"),
+            "title embedded in the border"
+        );
         let top = row_text(&buf, 0);
-        assert!(top.contains("9 events"), "note rides the top border:\n{top}");
+        assert!(
+            top.contains("9 events"),
+            "note rides the top border:\n{top}"
+        );
         // The inner region excludes the border on all sides.
-        assert!(inner.y >= 1 && inner.height <= 10, "inner excludes the border");
+        assert!(
+            inner.y >= 1 && inner.height <= 10,
+            "inner excludes the border"
+        );
     }
 
     #[test]
@@ -1362,9 +1581,17 @@ mod tests {
         // The label span is padded to the fixed width so both values begin at the same column.
         assert_eq!(short.spans[0].content.chars().count(), 12);
         assert_eq!(long.spans[0].content.chars().count(), 12);
-        assert_eq!(short.spans[0].style.fg, Some(theme.text_muted), "label FAINT");
+        assert_eq!(
+            short.spans[0].style.fg,
+            Some(theme.text_muted),
+            "label FAINT"
+        );
         assert_eq!(short.spans[1].content.as_ref(), "build");
-        assert_eq!(short.spans[1].style.fg, Some(theme.text_bright), "value styled");
+        assert_eq!(
+            short.spans[1].style.fg,
+            Some(theme.text_bright),
+            "value styled"
+        );
     }
 
     #[test]
@@ -1427,7 +1654,13 @@ mod tests {
                     width: body.width - VIEW_MARGIN * 2,
                     height: body.height,
                 };
-                render_panel(frame, panel, ViewKind::Mcp.title(), Some("0 servers"), &theme);
+                render_panel(
+                    frame,
+                    panel,
+                    ViewKind::Mcp.title(),
+                    Some("0 servers"),
+                    &theme,
+                );
             })
             .unwrap();
         let text = buffer_text(&terminal.backend().buffer().clone());
@@ -1462,7 +1695,10 @@ mod tests {
             cost: "$0.84 this session".to_owned(),
             permits: "edit allow · bash allow-all · web allow".to_owned(),
             workspace: "/projects/cortex-code".to_owned(),
-            git: Some(GitInfo { branch: "main".to_owned(), clean: true }),
+            git: Some(GitInfo {
+                branch: "main".to_owned(),
+                clean: true,
+            }),
         }
     }
 
@@ -1496,21 +1732,50 @@ mod tests {
         let buf = render_lines(lines, 84, 24);
         let text = buffer_text(&buf);
 
-        for label in ["session", "started", "agent", "model", "context", "tokens", "cost", "permits", "workspace"] {
+        for label in [
+            "session",
+            "started",
+            "agent",
+            "model",
+            "context",
+            "tokens",
+            "cost",
+            "permits",
+            "workspace",
+        ] {
             assert!(text.contains(label), "status row {label} present");
         }
-        assert!(text.contains("fix streaming buffer limit"), "real session title");
+        assert!(
+            text.contains("fix streaming buffer limit"),
+            "real session title"
+        );
         assert!(text.contains("google/gemini-2.5-flash"), "real model id");
         assert!(text.contains("42,318 / 200,000 tokens"), "context counts");
         assert!(text.contains("✓ clean"), "git-clean marker present");
 
         // The agent value is AMBER (secondary).
-        assert_eq!(cell_fg(&buf, "build"), Some(theme.secondary), "agent value AMBER");
+        assert_eq!(
+            cell_fg(&buf, "build"),
+            Some(theme.secondary),
+            "agent value AMBER"
+        );
         // The clean marker is the OKG success green — the only status green.
-        assert_eq!(cell_fg(&buf, "✓ clean"), Some(theme.success), "clean marker OKG");
+        assert_eq!(
+            cell_fg(&buf, "✓ clean"),
+            Some(theme.success),
+            "clean marker OKG"
+        );
         // No numeric value is green (brand purity): the token/cost/context values are neutral.
-        assert_ne!(cell_fg(&buf, "42,318"), Some(theme.success), "context number not green");
-        assert_ne!(cell_fg(&buf, "$0.84"), Some(theme.success), "cost not green");
+        assert_ne!(
+            cell_fg(&buf, "42,318"),
+            Some(theme.success),
+            "context number not green"
+        );
+        assert_ne!(
+            cell_fg(&buf, "$0.84"),
+            Some(theme.success),
+            "cost not green"
+        );
     }
 
     #[test]
@@ -1523,9 +1788,37 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(text.contains('█'), "usage bar has filled cells");
         assert!(text.contains('░'), "usage bar has empty cells");
-        assert!(text.contains("21%"), "percentage label (42318/200000 ≈ 21%)");
-        assert_eq!(cell_fg(&buf, "21%"), Some(theme.secondary), "percentage AMBER");
-        assert_eq!(cell_fg(&buf, "█"), Some(theme.primary), "filled cells ORANGE");
+        assert!(
+            text.contains("21%"),
+            "percentage label (42318/200000 ≈ 21%)"
+        );
+        assert_eq!(
+            cell_fg(&buf, "21%"),
+            Some(theme.secondary),
+            "percentage AMBER"
+        );
+        assert_eq!(
+            cell_fg(&buf, "█"),
+            Some(theme.primary),
+            "filled cells ORANGE"
+        );
+    }
+
+    #[test]
+    fn session_info_preamble_has_title_model_context() {
+        let theme = ThemeColors::from_name("dark");
+        let data = status_fixture();
+        let lines = session_info_preamble_lines(&data, &theme);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref().to_owned()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Title:"), "{text}");
+        assert!(text.contains("Model:"), "{text}");
+        assert!(text.contains("Context:"), "{text}");
+        assert!(text.contains("Shell version:"), "{text}");
+        assert!(text.contains("Working directory:"), "{text}");
     }
 
     #[test]
@@ -1535,7 +1828,11 @@ mod tests {
         let data = status_fixture();
         let lines = status_body_lines(&data, 84, &theme);
         let buf = render_lines(lines, 84, 24);
-        assert_eq!(cell_fg(&buf, "default"), Some(theme.border), "variant tag dim-orange");
+        assert_eq!(
+            cell_fg(&buf, "default"),
+            Some(theme.border),
+            "variant tag dim-orange"
+        );
     }
 
     #[test]
@@ -1544,10 +1841,30 @@ mod tests {
         // colored author column, and dim clipped text — all within the panel.
         let theme = ThemeColors::from_name("dark");
         let events = vec![
-            TimelineEvent { dot: TimelineDot::Filled, time: "10:02".to_owned(), who: "session started".to_owned(), text: "build · gemini-2.5-flash".to_owned() },
-            TimelineEvent { dot: TimelineDot::Filled, time: "10:03".to_owned(), who: "you".to_owned(), text: "cap the streaming buffer".to_owned() },
-            TimelineEvent { dot: TimelineDot::Hollow, time: "10:03".to_owned(), who: "assistant".to_owned(), text: "planning the change".to_owned() },
-            TimelineEvent { dot: TimelineDot::Diamond, time: "10:04".to_owned(), who: "read".to_owned(), text: "stream_processor.rs".to_owned() },
+            TimelineEvent {
+                dot: TimelineDot::Filled,
+                time: "10:02".to_owned(),
+                who: "session started".to_owned(),
+                text: "build · gemini-2.5-flash".to_owned(),
+            },
+            TimelineEvent {
+                dot: TimelineDot::Filled,
+                time: "10:03".to_owned(),
+                who: "you".to_owned(),
+                text: "cap the streaming buffer".to_owned(),
+            },
+            TimelineEvent {
+                dot: TimelineDot::Hollow,
+                time: "10:03".to_owned(),
+                who: "assistant".to_owned(),
+                text: "planning the change".to_owned(),
+            },
+            TimelineEvent {
+                dot: TimelineDot::Diamond,
+                time: "10:04".to_owned(),
+                who: "read".to_owned(),
+                text: "stream_processor.rs".to_owned(),
+            },
         ];
         let lines = timeline_body_lines(&events, 80, 24, &theme);
         let buf = render_lines(lines, 80, 24);
@@ -1557,15 +1874,34 @@ mod tests {
         assert!(text.contains('○'), "hollow dot present");
         assert!(text.contains('◆'), "diamond dot present");
         assert!(text.contains('│'), "vertical connectors present");
-        assert!(text.contains("10:02") && text.contains("session started"), "ts + who present");
+        assert!(
+            text.contains("10:02") && text.contains("session started"),
+            "ts + who present"
+        );
         assert!(!glyphs::contains_braille(&text), "no braille in the rail");
 
         // Author coloring: AMBER for a ◆ event, BRIGHT for `you`, else normal text.
-        assert_eq!(cell_fg(&buf, "read"), Some(theme.secondary), "◆ author AMBER");
-        assert_eq!(cell_fg(&buf, "you"), Some(theme.text_bright), "you author BRIGHT");
-        assert_eq!(cell_fg(&buf, "assistant"), Some(theme.text), "assistant author TXT");
+        assert_eq!(
+            cell_fg(&buf, "read"),
+            Some(theme.secondary),
+            "◆ author AMBER"
+        );
+        assert_eq!(
+            cell_fg(&buf, "you"),
+            Some(theme.text_bright),
+            "you author BRIGHT"
+        );
+        assert_eq!(
+            cell_fg(&buf, "assistant"),
+            Some(theme.text),
+            "assistant author TXT"
+        );
         // The timestamp column is faint.
-        assert_eq!(cell_fg(&buf, "10:02"), Some(theme.text_muted), "timestamp FAINT");
+        assert_eq!(
+            cell_fg(&buf, "10:02"),
+            Some(theme.text_muted),
+            "timestamp FAINT"
+        );
         // The connector is drawn in the ghost tone.
         assert_eq!(cell_fg(&buf, "│"), Some(theme.ghost), "connector GHOST");
     }
@@ -1585,7 +1921,11 @@ mod tests {
             .collect();
         // 6 rows fit at most (6+1)/2 = 3 events (event, connector, event, connector, event = 5 rows).
         let lines = timeline_body_lines(&events, 80, 6, &theme);
-        assert!(lines.len() <= 6, "rendered rows fit within max_rows: {}", lines.len());
+        assert!(
+            lines.len() <= 6,
+            "rendered rows fit within max_rows: {}",
+            lines.len()
+        );
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.clone()))
@@ -1644,7 +1984,11 @@ mod tests {
         // The header labels sit at their fixed columns.
         assert!(header[..].starts_with("server"), "server column at col 0");
         assert_eq!(
-            header.chars().skip(MCP_STATUS_COL).take(6).collect::<String>(),
+            header
+                .chars()
+                .skip(MCP_STATUS_COL)
+                .take(6)
+                .collect::<String>(),
             "status",
             "status column at +16"
         );
@@ -1662,7 +2006,10 @@ mod tests {
             "tool count at the tools column"
         );
         assert!(
-            row.chars().skip(MCP_EXPOSES_COL).collect::<String>().starts_with("resolve-library-id"),
+            row.chars()
+                .skip(MCP_EXPOSES_COL)
+                .collect::<String>()
+                .starts_with("resolve-library-id"),
             "exposes at +38:\n{row}"
         );
     }
@@ -1676,12 +2023,32 @@ mod tests {
         let buf = render_lines(lines, 84, 12);
 
         // The status dot sits at MCP_STATUS_COL of each server row (rows start at buffer row 2).
-        assert_eq!(buf[(MCP_STATUS_COL as u16, 2)].symbol(), "●", "ready dot present");
-        assert_eq!(buf[(MCP_STATUS_COL as u16, 2)].fg, theme.success, "ready dot OKG green");
-        assert_eq!(buf[(MCP_STATUS_COL as u16, 3)].fg, theme.secondary, "degraded dot AMBER");
-        assert_eq!(buf[(MCP_STATUS_COL as u16, 4)].fg, theme.error, "error dot ERR red");
+        assert_eq!(
+            buf[(MCP_STATUS_COL as u16, 2)].symbol(),
+            "●",
+            "ready dot present"
+        );
+        assert_eq!(
+            buf[(MCP_STATUS_COL as u16, 2)].fg,
+            theme.success,
+            "ready dot OKG green"
+        );
+        assert_eq!(
+            buf[(MCP_STATUS_COL as u16, 3)].fg,
+            theme.secondary,
+            "degraded dot AMBER"
+        );
+        assert_eq!(
+            buf[(MCP_STATUS_COL as u16, 4)].fg,
+            theme.error,
+            "error dot ERR red"
+        );
         // The status word carries the same tone.
-        assert_eq!(cell_fg(&buf, "ready"), Some(theme.success), "ready word OKG");
+        assert_eq!(
+            cell_fg(&buf, "ready"),
+            Some(theme.success),
+            "ready word OKG"
+        );
         assert_eq!(cell_fg(&buf, "error"), Some(theme.error), "error word ERR");
     }
 
@@ -1695,8 +2062,9 @@ mod tests {
             status_word: "ready".to_owned(),
             tone: McpStatusTone::Ready,
             tool_count: None,
-            exposes: "scrape, search, crawl, map, extract, batch, deep-research, watch, monitor, act"
-                .to_owned(),
+            exposes:
+                "scrape, search, crawl, map, extract, batch, deep-research, watch, monitor, act"
+                    .to_owned(),
         }];
         let width = 60usize;
         let lines = mcp_body_lines(&rows, width, &theme);
@@ -1707,10 +2075,16 @@ mod tests {
             "—",
             "no tool count renders an em dash:\n{row}"
         );
-        assert!(row.contains('…'), "long exposes is clipped with an ellipsis:\n{row}");
+        assert!(
+            row.contains('…'),
+            "long exposes is clipped with an ellipsis:\n{row}"
+        );
         // The clipped exposes keeps at least a 2-col gap before the (border) right edge.
         let exposes: String = row.chars().skip(MCP_EXPOSES_COL).collect();
-        assert!(exposes.trim_end().chars().count() <= width - MCP_EXPOSES_COL - 2, "≥2-col gap kept");
+        assert!(
+            exposes.trim_end().chars().count() <= width - MCP_EXPOSES_COL - 2,
+            "≥2-col gap kept"
+        );
     }
 
     #[test]
@@ -1741,7 +2115,10 @@ mod tests {
         let buf = render_lines(lines, 84, 12);
         let text = buffer_text(&buf);
 
-        assert!(text.contains("runs automatically after the current turn finishes"), "intro line");
+        assert!(
+            text.contains("runs automatically after the current turn finishes"),
+            "intro line"
+        );
         for prompt in &prompts {
             let head: String = prompt.chars().take(10).collect();
             assert!(text.contains(&head), "prompt {head:?} present");
@@ -1752,9 +2129,17 @@ mod tests {
         }
         // The `next` badge is present and AMBER.
         assert!(text.contains("next"), "run-next badge present");
-        assert_eq!(cell_fg(&buf, "next"), Some(theme.secondary), "next badge AMBER");
+        assert_eq!(
+            cell_fg(&buf, "next"),
+            Some(theme.secondary),
+            "next badge AMBER"
+        );
         // The head-of-queue number is ORANGE (selected + next).
-        assert_eq!(cell_fg(&buf, "1"), Some(theme.primary), "row 1 number ORANGE");
+        assert_eq!(
+            cell_fg(&buf, "1"),
+            Some(theme.primary),
+            "row 1 number ORANGE"
+        );
     }
 
     #[test]
@@ -1777,9 +2162,17 @@ mod tests {
             );
         }
         // A non-selected row (row 2) is not filled with SELBG.
-        assert_ne!(buf[(10u16, 2u16)].bg, theme.surface[3], "unselected row has no SELBG fill");
+        assert_ne!(
+            buf[(10u16, 2u16)].bg,
+            theme.surface[3],
+            "unselected row has no SELBG fill"
+        );
         // The selected prompt text is BRIGHT.
-        assert_eq!(cell_fg(&buf, "update CHANGELOG"), Some(theme.text_bright), "selected text BRIGHT");
+        assert_eq!(
+            cell_fg(&buf, "update CHANGELOG"),
+            Some(theme.text_bright),
+            "selected text BRIGHT"
+        );
     }
 
     #[test]
@@ -1802,9 +2195,17 @@ mod tests {
         ];
         let line = footer_hint_line(&hints, 60, &theme);
         let buf = render_lines(vec![line], 60, 1);
-        assert_eq!(cell_fg(&buf, "↵"), Some(theme.border), "key glyph dim-orange");
+        assert_eq!(
+            cell_fg(&buf, "↵"),
+            Some(theme.border),
+            "key glyph dim-orange"
+        );
         assert_eq!(cell_fg(&buf, "edit"), Some(theme.text_muted), "label FAINT");
-        assert_eq!(cell_fg(&buf, "esc"), Some(theme.border), "esc key dim-orange");
+        assert_eq!(
+            cell_fg(&buf, "esc"),
+            Some(theme.border),
+            "esc key dim-orange"
+        );
     }
 
     #[test]
@@ -1858,11 +2259,30 @@ mod tests {
         let text = buffer_text(&buf);
 
         for cmd in [
-            "/new", "/sessions", "/fork", "/rename", "/compact", "/export", "/models", "/agents",
-            "/variant", "/subagents", "/skills", "/status", "/timeline", "/diff", "/queue", "/mcp",
-            "/review", "/init", "^K/^N",
+            "/new",
+            "/sessions",
+            "/fork",
+            "/rename",
+            "/compact",
+            "/export",
+            "/models",
+            "/agents",
+            "/variant",
+            "/subagents",
+            "/skills",
+            "/status",
+            "/timeline",
+            "/diff",
+            "/queue",
+            "/mcp",
+            "/review",
+            "/init",
+            "^K/^N",
         ] {
-            assert!(text.contains(cmd), "help lists the real builtin {cmd}:\n{text}");
+            assert!(
+                text.contains(cmd),
+                "help lists the real builtin {cmd}:\n{text}"
+            );
         }
         assert!(
             text.contains("prev/next message"),
@@ -1874,9 +2294,17 @@ mod tests {
         );
         // The key column is AMBER (secondary) and the description column is DIM.
         assert_eq!(cell_fg(&buf, "/new"), Some(theme.secondary), "key AMBER");
-        assert_eq!(cell_fg(&buf, "fresh session"), Some(theme.text_dim), "desc DIM");
+        assert_eq!(
+            cell_fg(&buf, "fresh session"),
+            Some(theme.text_dim),
+            "desc DIM"
+        );
         // The section titles are ORANGE (primary).
-        assert_eq!(cell_fg(&buf, "SESSION"), Some(theme.primary), "section title ORANGE");
+        assert_eq!(
+            cell_fg(&buf, "SESSION"),
+            Some(theme.primary),
+            "section title ORANGE"
+        );
     }
 
     #[test]
@@ -1909,13 +2337,19 @@ mod tests {
         let theme = ThemeColors::from_name("dark");
         let lines = help_body_lines(84, 24, &theme);
         let text = buffer_text(&render_lines(lines, 84, 24));
-        assert!(!glyphs::contains_braille(&text), "no braille in the help grid");
+        assert!(
+            !glyphs::contains_braille(&text),
+            "no braille in the help grid"
+        );
         for forbidden in ['▸', '▾', '⌘', '⬡', '“', '”', '‘', '’'] {
             assert!(!text.contains(forbidden), "forbidden glyph {forbidden:?}");
         }
         assert!(!text.contains(">_"), "no `>_` cliché");
         // The `⇥ cycle agent` affordance renders the safe tab glyph.
-        assert!(text.contains('⇥'), "the tab affordance uses the safe `⇥` glyph");
+        assert!(
+            text.contains('⇥'),
+            "the tab affordance uses the safe `⇥` glyph"
+        );
     }
 
     fn review_fixture() -> ReviewData {
@@ -1970,21 +2404,46 @@ mod tests {
         let buf = render_lines(lines, 84, 24);
         let text = buffer_text(&buf);
 
-        assert!(text.contains("reviewed the working tree against main"), "intro line");
+        assert!(
+            text.contains("reviewed the working tree against main"),
+            "intro line"
+        );
         assert!(text.contains('●'), "severity dots present");
-        assert!(!glyphs::contains_braille(&text), "no braille in the findings rail");
+        assert!(
+            !glyphs::contains_braille(&text),
+            "no braille in the findings rail"
+        );
         for loc in ["buffer.rs:42", "mod.rs:18", "lib.rs:90"] {
             assert!(text.contains(loc), "location {loc} present");
         }
-        assert!(text.contains("1 high · 2 medium · 1 low · 1 info"), "summary line present");
+        assert!(
+            text.contains("1 high · 2 medium · 1 low · 1 info"),
+            "summary line present"
+        );
 
         // Severity dot colors: high→RED, medium→AMBER, low→ORANGE_D, info→FAINT.
         assert_eq!(cell_fg(&buf, "high"), Some(theme.error), "high word RED");
-        assert_eq!(cell_fg(&buf, "med"), Some(theme.secondary), "med word AMBER");
-        assert_eq!(cell_fg(&buf, "low"), Some(theme.border), "low word ORANGE_D");
-        assert_eq!(cell_fg(&buf, "info"), Some(theme.text_muted), "info word FAINT");
+        assert_eq!(
+            cell_fg(&buf, "med"),
+            Some(theme.secondary),
+            "med word AMBER"
+        );
+        assert_eq!(
+            cell_fg(&buf, "low"),
+            Some(theme.border),
+            "low word ORANGE_D"
+        );
+        assert_eq!(
+            cell_fg(&buf, "info"),
+            Some(theme.text_muted),
+            "info word FAINT"
+        );
         // The location column is AMBER.
-        assert_eq!(cell_fg(&buf, "buffer.rs:42"), Some(theme.secondary), "location AMBER");
+        assert_eq!(
+            cell_fg(&buf, "buffer.rs:42"),
+            Some(theme.secondary),
+            "location AMBER"
+        );
 
         // The first finding row aligns its dot/severity/location/text at the fixed columns.
         let first = row_text(&buf, 2);
@@ -1994,12 +2453,20 @@ mod tests {
             "dot at the fixed dot column:\n{first}"
         );
         assert_eq!(
-            first.chars().skip(REVIEW_SEV_COL).take(4).collect::<String>(),
+            first
+                .chars()
+                .skip(REVIEW_SEV_COL)
+                .take(4)
+                .collect::<String>(),
             "high",
             "severity word at the fixed column:\n{first}"
         );
         assert!(
-            first.chars().skip(REVIEW_LOC_COL).collect::<String>().starts_with("buffer.rs:42"),
+            first
+                .chars()
+                .skip(REVIEW_LOC_COL)
+                .collect::<String>()
+                .starts_with("buffer.rs:42"),
             "location at the fixed column:\n{first}"
         );
         assert!(
@@ -2048,7 +2515,10 @@ mod tests {
         let lines = review_body_lines(&data, width, 24, &theme);
         let buf = render_lines(lines, width as u16, 24);
         let row = row_text(&buf, 2);
-        assert!(row.contains('…'), "overlong text is clipped with an ellipsis:\n{row}");
+        assert!(
+            row.contains('…'),
+            "overlong text is clipped with an ellipsis:\n{row}"
+        );
         assert!(
             row.trim_end().chars().count() <= width,
             "the finding row never overruns the width:\n{row}"
@@ -2075,8 +2545,15 @@ mod tests {
         // VAL-VIEW-050: no braille, thin triangles, curly quotes, or `>_` in the review body.
         let theme = ThemeColors::from_name("dark");
         let data = review_fixture();
-        let text = buffer_text(&render_lines(review_body_lines(&data, 84, 24, &theme), 84, 24));
-        assert!(!glyphs::contains_braille(&text), "no braille in the review body");
+        let text = buffer_text(&render_lines(
+            review_body_lines(&data, 84, 24, &theme),
+            84,
+            24,
+        ));
+        assert!(
+            !glyphs::contains_braille(&text),
+            "no braille in the review body"
+        );
         for forbidden in ['▸', '▾', '⌘', '⬡', '“', '”', '‘', '’'] {
             assert!(!text.contains(forbidden), "forbidden glyph {forbidden:?}");
         }

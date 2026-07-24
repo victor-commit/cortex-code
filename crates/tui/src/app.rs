@@ -4176,7 +4176,15 @@ impl App {
             "help" => self.open_help_view(),
             "new" => self.new_session(),
             "export" => self.open_export_dialog(),
-            "status" => self.open_status_view(),
+            "status" | "session-info" => self.open_status_view(),
+            "mc" | "mission-control" => self.open_mission_control(false),
+            "mc-failure" => self.open_mission_control(true),
+            "mc-pool" => self.open_mc_stub(crate::mission_control::McStubKind::Concurrency),
+            "mc-launch" => self.open_mc_stub(crate::mission_control::McStubKind::Launch),
+            "mc-launch-blocked" => {
+                self.open_mc_stub(crate::mission_control::McStubKind::LaunchBlocked)
+            }
+            "mc-board" => self.open_mc_stub(crate::mission_control::McStubKind::TeamBoard),
             "init" => self.open_init_dialog(),
             "review" => self.open_review_view(),
             "diff" => self.open_diff_viewer(),
@@ -5155,6 +5163,22 @@ impl App {
     fn open_status_view(&mut self) {
         self.status_snapshot = Some(self.build_status_data());
         self.open_view(crate::view::ViewKind::Status);
+    }
+
+    /// Open Mission Control V2 premium home (or the failure DNA variant). Esc returns to the
+    /// conversation origin so draft semantics restore (VAL-CORTEX-CROSS-001).
+    fn open_mission_control(&mut self, failure: bool) {
+        let kind = if failure {
+            crate::view::ViewKind::MissionControlFailure
+        } else {
+            crate::view::ViewKind::MissionControl
+        };
+        self.open_view(kind);
+    }
+
+    /// Open a thin MC residual stub that points back to the single-page home (non-primary orch).
+    fn open_mc_stub(&mut self, kind: crate::mission_control::McStubKind) {
+        self.open_view(crate::view::ViewKind::McStub(kind));
     }
 
     /// Open the full-screen code-review view (`/review`) with the shared view chrome, replacing the
@@ -19979,6 +20003,124 @@ mod tests {
         assert!(
             !marker.exists(),
             "idle remote poll should clear stale markers to avoid poisoning the next turn"
+        );
+    }
+
+    // --- M3 surfaces: pickers, help/status, auth, Mission Control (VAL-CORTEX-TUI-*) ---
+
+    #[test]
+    fn m3_slash_and_model_round_trip_returns_to_conversation() {
+        // VAL-CORTEX-TUI-001: open slash menu → models picker → Esc back to origin.
+        let mut a = app();
+        type_str(&mut a, "/");
+        assert!(a.slash_menu_open(), "slash menu opens on /");
+        assert!(
+            a.slash_matches()
+                .iter()
+                .any(|m| m.name == "models" || m.name == "model"),
+            "slash menu lists model picker"
+        );
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.slash_menu_open());
+        type_str(&mut a, "/models");
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.dialog_open(), "models dialog opens");
+        assert_eq!(
+            a.dialog.as_ref().map(|d| d.kind),
+            Some(DialogKind::Models)
+        );
+        // Draft was the slash command; after dispatch the composer is clear and origin is conversation.
+        a.on_key(key(KeyCode::Esc));
+        assert!(!a.dialog_open(), "Esc closes model picker");
+        assert!(a.active_view().is_none());
+        assert!(!a.slash_menu_open());
+    }
+
+    #[test]
+    fn m3_help_and_status_are_reachable() {
+        // VAL-CORTEX-TUI-002
+        let mut a = app();
+        type_str(&mut a, "/help");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Help));
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.active_view().is_none());
+
+        type_str(&mut a, "/status");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Status));
+        assert!(a.status_snapshot().is_some());
+        a.on_key(key(KeyCode::Esc));
+
+        // Cortex /session-info alias lands on the same status view.
+        type_str(&mut a, "/session-info");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(a.active_view(), Some(crate::view::ViewKind::Status));
+    }
+
+    #[test]
+    fn m3_connect_auth_entry_opens_without_crash() {
+        // VAL-CORTEX-TUI-003
+        let mut a = app();
+        type_str(&mut a, "/connect");
+        a.on_key(key(KeyCode::Enter));
+        assert!(a.connect_active(), "/connect opens auth entry");
+        a.on_key(key(KeyCode::Esc));
+        // Esc backs out or closes — either way no panic and shell remains usable.
+        assert!(!a.should_quit);
+    }
+
+    #[test]
+    fn m3_mission_control_home_and_round_trip() {
+        // VAL-CORTEX-TUI-004 + VAL-CORTEX-CROSS-001
+        let mut a = app();
+        a.open_mission_control(false);
+        assert_eq!(
+            a.active_view(),
+            Some(crate::view::ViewKind::MissionControl)
+        );
+        a.on_key(key(KeyCode::Esc));
+        assert!(
+            a.active_view().is_none(),
+            "Esc returns to conversation origin"
+        );
+        // Composer accepts new input after MC close.
+        type_str(&mut a, "after-mc");
+        assert!(
+            a.input_value().contains("after-mc"),
+            "composer editable after MC: {}",
+            a.input_value()
+        );
+
+        // Failure variant (direct open — no leftover composer text).
+        a.open_mission_control(true);
+        assert_eq!(
+            a.active_view(),
+            Some(crate::view::ViewKind::MissionControlFailure)
+        );
+        a.on_key(key(KeyCode::Esc));
+
+        // Residual stub points home language via paint; app surface is open/close only.
+        a.open_mc_stub(crate::mission_control::McStubKind::Concurrency);
+        assert!(matches!(
+            a.active_view(),
+            Some(crate::view::ViewKind::McStub(
+                crate::mission_control::McStubKind::Concurrency
+            ))
+        ));
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.active_view().is_none());
+
+        // Slash alias: /mc from empty composer.
+        while !a.input_value().is_empty() {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        type_str(&mut a, "/mc");
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.active_view(),
+            Some(crate::view::ViewKind::MissionControl),
+            "slash /mc opens Mission Control"
         );
     }
 }

@@ -2678,11 +2678,18 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
 /// The chrome, crumb, status bar, and brand palette are shared across every view so the surfaces
 /// read consistently; a view opened with no data renders an explicit empty state, never a blank
 /// panel.
+///
+/// Mission Control surfaces are a special case: they own the full frame with Cortex MC V2 premium
+/// paint (`.: Mission Control`) and skip the copper breadcrumb stack (VAL-CORTEX-TUI-004).
 fn draw_full_screen_view(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeColors) {
     use crate::view::{self, ViewKind};
     let Some(kind) = app.active_view() else {
         return;
     };
+    if kind.is_mission_control_surface() {
+        draw_mission_control_surface(frame, kind, area, theme);
+        return;
+    }
     let body = view::render_chrome(frame, area, app, kind.crumb(), theme);
     if body.width <= view::VIEW_MARGIN * 2 || body.height < 2 {
         return;
@@ -2705,8 +2712,91 @@ fn draw_full_screen_view(frame: &mut Frame, app: &App, area: Rect, theme: &style
         ViewKind::Queue => draw_queue_view_body(frame, app, inner, theme),
         ViewKind::Help => draw_help_view_body(frame, inner, theme),
         ViewKind::Review => draw_review_view_body(frame, app, inner, theme),
+        ViewKind::MissionControl
+        | ViewKind::MissionControlFailure
+        | ViewKind::McStub(_) => {
+            // Handled above via is_mission_control_surface.
+        }
         _ => draw_view_placeholder(frame, inner, theme),
     }
+}
+
+/// Full-frame Mission Control V2 premium paint (home, failure, or residual stub).
+fn draw_mission_control_surface(
+    frame: &mut Frame,
+    kind: crate::view::ViewKind,
+    area: Rect,
+    theme: &style::ThemeColors,
+) {
+    use crate::mission_control::{render_home_lines, render_stub_lines, McVariant};
+    use crate::view::ViewKind;
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.background)),
+        area,
+    );
+    let width = area.width as usize;
+    let height = area.height as usize;
+    let lines_raw: Vec<String> = match kind {
+        ViewKind::MissionControl => render_home_lines(McVariant::RunningAll, width),
+        ViewKind::MissionControlFailure => render_home_lines(McVariant::OneFailed, width),
+        ViewKind::McStub(stub) => render_stub_lines(stub, width),
+        _ => render_home_lines(McVariant::RunningAll, width),
+    };
+    let orange = Style::default()
+        .fg(theme.primary)
+        .bg(theme.background)
+        .add_modifier(Modifier::BOLD);
+    let bright = Style::default()
+        .fg(theme.text_bright)
+        .bg(theme.background)
+        .add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.text_muted).bg(theme.background);
+    let text_st = Style::default().fg(theme.text).bg(theme.background);
+    let ok = Style::default().fg(theme.success).bg(theme.background);
+    let bad = Style::default().fg(theme.error).bg(theme.background);
+    let dim = Style::default().fg(theme.text_dim).bg(theme.background);
+
+    let mut styled: Vec<Line<'static>> = Vec::with_capacity(lines_raw.len());
+    for (i, raw) in lines_raw.iter().enumerate() {
+        let style = if i == 0
+            || raw.contains(".: Mission Control")
+            || raw.contains("● RUNNING")
+            || raw.starts_with("Execute")
+            || raw.starts_with("Read")
+        {
+            orange
+        } else if raw.contains('✗') || raw.contains("failed") || raw.contains("Failed") {
+            bad
+        } else if raw.contains('✓') {
+            ok
+        } else if raw.starts_with("Workers")
+            || raw.starts_with("Features")
+            || raw.starts_with("Stream")
+            || raw.starts_with("Progress Log")
+        {
+            bright
+        } else if raw.contains(crate::mission_control::MC_FOOTER)
+            || raw.contains("Esc Mission Control")
+        {
+            dim
+        } else if raw.starts_with('─') {
+            muted
+        } else {
+            text_st
+        };
+        // Clip to pane width.
+        let clipped: String = raw.chars().take(width).collect();
+        styled.push(Line::from(Span::styled(clipped, style)));
+    }
+    // Fit into available height.
+    if styled.len() > height {
+        styled.truncate(height);
+    }
+    frame.render_widget(Paragraph::new(styled), area);
 }
 
 /// The `/help` view body: a two-column command-reference grid (Session/Model & agent/Views/Editing)

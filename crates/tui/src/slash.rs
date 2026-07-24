@@ -70,6 +70,38 @@ pub const BUILTINS: &[SlashCommand] = &[
         description: "Open the status view",
     },
     SlashCommand {
+        name: "session-info",
+        description: "Show session info (status analogue)",
+    },
+    SlashCommand {
+        name: "mc",
+        description: "Open Mission Control home",
+    },
+    SlashCommand {
+        name: "mission-control",
+        description: "Open Mission Control home",
+    },
+    SlashCommand {
+        name: "mc-failure",
+        description: "Open Mission Control failure variant",
+    },
+    SlashCommand {
+        name: "mc-pool",
+        description: "Mission Control pool residual (points home)",
+    },
+    SlashCommand {
+        name: "mc-launch",
+        description: "Mission Control assign residual (points home)",
+    },
+    SlashCommand {
+        name: "mc-launch-blocked",
+        description: "Mission Control blocked-assign residual",
+    },
+    SlashCommand {
+        name: "mc-board",
+        description: "Mission Control assignment residual",
+    },
+    SlashCommand {
         name: "timeline",
         description: "Open the session timeline",
     },

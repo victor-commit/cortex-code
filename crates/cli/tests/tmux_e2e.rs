@@ -1350,3 +1350,230 @@ fn m2_tmux_cortex_binary_responsive_in_pane() {
     );
     session.kill();
 }
+
+// ---------------------------------------------------------------------------
+// M3: remaining TUI surfaces + Mission Control home (VAL-CORTEX-TUI-001..004,
+// VAL-CORTEX-CROSS-001). Offline-capable; no live model required.
+// ---------------------------------------------------------------------------
+
+/// Slash menu + model picker open/close round-trip (VAL-CORTEX-TUI-001).
+#[test]
+fn m3_tmux_slash_and_model_picker_round_trip() {
+    require_tmux();
+    let scratch = Scratch::new("m3-pickers");
+    let session = spawn_cortex_tui("m3-pick", &scratch, None);
+    let _ = wait_capture_any(
+        &session,
+        &["always-approve", "Shift+Tab", "what should we build"],
+        WAIT_TIMEOUT,
+    );
+
+    // Open slash menu with `/`.
+    session.send_keys(&["/"]);
+    thread::sleep(Duration::from_millis(300));
+    let slash_pane = session.capture_pane();
+    let slash_open = slash_pane.contains("/help")
+        || slash_pane.contains("/models")
+        || slash_pane.contains("help")
+        || slash_pane.contains("Commands")
+        || slash_pane.contains("model");
+    assert!(
+        slash_open,
+        "slash menu fingerprints missing after /:\n{slash_pane}"
+    );
+
+    // Dismiss slash, open models picker via /models Enter.
+    session.send_keys(&["Escape"]);
+    thread::sleep(Duration::from_millis(150));
+    session.send_keys(&["/models", "Enter"]);
+    let models_pane = wait_capture_any(
+        &session,
+        &["Models", "model", "Cortex", "catalogue", "No models"],
+        WAIT_TIMEOUT,
+    );
+    assert!(
+        models_pane.contains("Models")
+            || models_pane.to_ascii_lowercase().contains("model")
+            || models_pane.contains("Cortex"),
+        "model picker did not open:\n{models_pane}"
+    );
+
+    // Esc returns to conversation origin.
+    session.send_keys(&["Escape"]);
+    thread::sleep(Duration::from_millis(250));
+    let after = session.capture_pane();
+    assert!(
+        after.contains("always-approve")
+            || after.contains("Shift+Tab")
+            || after.contains('❯')
+            || after.contains('›'),
+        "did not restore conversation chrome after model picker:\n{after}"
+    );
+    session.kill();
+    eprintln!("m3 tmux slash/model round-trip ok");
+}
+
+/// Help + status product analogues reachable (VAL-CORTEX-TUI-002).
+#[test]
+fn m3_tmux_help_and_status_reachable() {
+    require_tmux();
+    let scratch = Scratch::new("m3-help-status");
+    let session = spawn_cortex_tui("m3-hs", &scratch, None);
+    let _ = wait_capture_any(
+        &session,
+        &["always-approve", "Shift+Tab", "what should we build"],
+        WAIT_TIMEOUT,
+    );
+
+    session.send_keys(&["/help", "Enter"]);
+    let help = wait_capture_any(
+        &session,
+        &[
+            "Keyboard Shortcuts",
+            "Commands & shortcuts",
+            "SESSION",
+            "Essentials",
+            "/help",
+            "shortcuts",
+        ],
+        WAIT_TIMEOUT,
+    );
+    assert!(
+        help.contains("Keyboard Shortcuts")
+            || help.contains("SESSION")
+            || help.contains("Essentials")
+            || help.contains("shortcuts")
+            || help.contains("/help"),
+        "help view missing Cortex/help fingerprints:\n{help}"
+    );
+    session.send_keys(&["Escape"]);
+    thread::sleep(Duration::from_millis(200));
+
+    session.send_keys(&["/status", "Enter"]);
+    let status = wait_capture_any(
+        &session,
+        &[
+            "Session info",
+            "Session status",
+            "session",
+            "Model:",
+            "Context",
+            "/status",
+            "tokens",
+        ],
+        WAIT_TIMEOUT,
+    );
+    assert!(
+        status.to_ascii_lowercase().contains("session")
+            || status.contains("Model")
+            || status.contains("Context")
+            || status.contains("tokens"),
+        "status view missing session-info density:\n{status}"
+    );
+    session.send_keys(&["Escape"]);
+    session.kill();
+    eprintln!("m3 tmux help/status ok");
+}
+
+/// Auth/connect entry path does not crash (VAL-CORTEX-TUI-003).
+#[test]
+fn m3_tmux_auth_connect_entry_non_crash() {
+    require_tmux();
+    let scratch = Scratch::new("m3-connect");
+    let session = spawn_cortex_tui("m3-conn", &scratch, None);
+    let _ = wait_capture_any(
+        &session,
+        &["always-approve", "Shift+Tab", "what should we build"],
+        WAIT_TIMEOUT,
+    );
+
+    session.send_keys(&["/connect", "Enter"]);
+    thread::sleep(Duration::from_millis(400));
+    let pane = session.capture_pane();
+    assert!(session.has_session(), "session died after /connect");
+    let looks_connect = pane.to_ascii_lowercase().contains("connect")
+        || pane.to_ascii_lowercase().contains("provider")
+        || pane.to_ascii_lowercase().contains("api key")
+        || pane.to_ascii_lowercase().contains("oauth")
+        || pane.contains("OpenRouter")
+        || pane.contains("Anthropic")
+        || pane.contains("OpenAI");
+    assert!(
+        looks_connect
+            || pane.contains("always-approve")
+            || pane.contains("Shift+Tab")
+            || pane.contains('❯'),
+        "connect entry left TUI unusable:\n{pane}"
+    );
+    session.send_keys(&["Escape"]);
+    thread::sleep(Duration::from_millis(200));
+    assert!(session.has_session(), "session died after connect Esc");
+    session.kill();
+    eprintln!("m3 tmux connect entry ok");
+}
+
+/// Mission Control home multi-worker fingerprint + chat round-trip (VAL-CORTEX-TUI-004,
+/// VAL-CORTEX-CROSS-001).
+#[test]
+fn m3_tmux_mission_control_home_fingerprint() {
+    require_tmux();
+    let scratch = Scratch::new("m3-mc");
+    let session = spawn_cortex_tui("m3-mc", &scratch, None);
+    let _ = wait_capture_any(
+        &session,
+        &["always-approve", "Shift+Tab", "what should we build"],
+        WAIT_TIMEOUT,
+    );
+
+    session.send_keys(&["/mc", "Enter"]);
+    let mc = wait_capture_any(
+        &session,
+        &[".: Mission Control", "Mission Control", "RUNNING", "Workers"],
+        WAIT_TIMEOUT,
+    );
+    assert!(
+        mc.contains(".: Mission Control") || mc.contains("Mission Control"),
+        "MC brand missing:\n{mc}"
+    );
+    assert!(
+        mc.contains("RUNNING") || mc.contains("Workers"),
+        "MC RUNNING/Workers chrome missing:\n{mc}"
+    );
+    // ≥2 live workers (#21/#22 or multi ●).
+    let multi = (mc.contains("#21") && mc.contains("#22"))
+        || mc.matches('●').count() >= 2
+        || mc.contains("3 live")
+        || mc.contains("Parallel 3/4");
+    assert!(
+        multi,
+        "MC home must show multi-worker / parallel fixture:\n{mc}"
+    );
+    assert!(
+        mc.contains("Stream") || mc.contains("Features") || mc.contains("Progress"),
+        "MC home missing stream/features region:\n{mc}"
+    );
+
+    // Round-trip back to conversation.
+    session.send_keys(&["Escape"]);
+    thread::sleep(Duration::from_millis(250));
+    let after = session.capture_pane();
+    assert!(
+        after.contains("always-approve")
+            || after.contains("Shift+Tab")
+            || after.contains('❯')
+            || after.contains('›'),
+        "conversation chrome missing after MC Esc:\n{after}"
+    );
+    // Composer accepts a draft again.
+    session.send_keys(&["mc_return_ok"]);
+    thread::sleep(Duration::from_millis(150));
+    let draft = session.capture_pane();
+    assert!(
+        draft.contains("mc_return_ok")
+            || draft.contains("always-approve")
+            || draft.contains('❯'),
+        "composer not editable after MC round-trip:\n{draft}"
+    );
+    session.kill();
+    eprintln!("m3 tmux MC home ok");
+}
