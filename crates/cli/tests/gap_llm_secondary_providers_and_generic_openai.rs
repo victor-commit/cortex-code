@@ -55,6 +55,10 @@ impl Scratch {
         command.current_dir(&self.project);
         command.env("HOME", self.home());
         command.env("CORTEX_DATA_DIR", &self.data_dir);
+        // env_clear already drops ambient XDG; keep intentional so future
+        // partial-env callers stay hermetic against mission gate wrappers.
+        command.env_remove("XDG_CONFIG_HOME");
+        command.env_remove("XDG_DATA_HOME");
         command.args(args);
         command
     }
@@ -397,6 +401,11 @@ models = [{{ id = "{model_id}", name = "Local Test Model", tool_call = true, con
         .current_dir(&scratch.project)
         .env("HOME", scratch.home())
         .env("CORTEX_DATA_DIR", &scratch.data_dir)
+        // Ambient XDG (e.g. mission hermetic gate wrappers under /tmp/cortex-mission-xdg)
+        // must not inject host/mission model prefs that fight project provider policy
+        // (enabled=["local"], disabled=["openrouter"]).
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
         .env_remove("OPENROUTER_API_KEY");
     let output = run(command);
     handle.join().expect("join fixture");
