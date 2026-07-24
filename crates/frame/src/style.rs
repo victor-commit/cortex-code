@@ -469,6 +469,47 @@ impl ThemeColors {
         }
     }
 
+    /// CortexNight product chrome — magenta accent on `#141414` (pure-structure / mockups-v3 DNA).
+    ///
+    /// Not copper. Accent is TokyoNight magenta `#bb9af7`. This is the product default look for
+    /// authenticated Cortex shell surfaces (M1+).
+    pub fn cortexnight() -> Self {
+        Self {
+            primary: Color::Rgb(0xbb, 0x9a, 0xf7),   // #bb9af7 magenta accent
+            secondary: Color::Rgb(0xc8, 0xc8, 0xc8), // #c8c8c8
+            accent: Color::Rgb(0xbb, 0x9a, 0xf7),
+            background: Color::Rgb(0x14, 0x14, 0x14), // #141414
+            surface: [
+                Color::Rgb(0x1c, 0x1c, 0x1c), // bar
+                Color::Rgb(0x24, 0x24, 0x24), // surface
+                Color::Rgb(0x2a, 0x2a, 0x2a),
+                Color::Rgb(0x32, 0x32, 0x37), // selection-ish
+            ],
+            text: Color::Rgb(0xe1, 0xe1, 0xe1),
+            text_dim: Color::Rgb(0x6c, 0x6c, 0x6c),
+            text_muted: Color::Rgb(0x58, 0x58, 0x58),
+            text_bright: Color::Rgb(0xf3, 0xf3, 0xf3),
+            ghost: Color::Rgb(0x32, 0x32, 0x37),
+            selection_fg: Color::Rgb(0x14, 0x14, 0x14),
+            selection_bg: Color::Rgb(0xbb, 0x9a, 0xf7),
+            success: Color::Rgb(0x9e, 0xce, 0x6a),
+            warning: Color::Rgb(0xe0, 0xaf, 0x68),
+            error: Color::Rgb(0xf7, 0x76, 0x8e),
+            info: Color::Rgb(0x7a, 0xa2, 0xf7),
+            border: Color::Rgb(0x32, 0x32, 0x37),
+            border_focus: Color::Rgb(0xbb, 0x9a, 0xf7),
+            card_border: Color::Rgb(0x32, 0x32, 0x37),
+            soft: Color::Rgb(0x1c, 0x1c, 0x22),
+            search_hit: Color::Rgb(0x3a, 0x35, 0x48),
+            search_hit_current: Color::Rgb(0xbb, 0x9a, 0xf7),
+            diff_add_fg: Color::Rgb(0x9e, 0xce, 0x6a),
+            diff_add_bg: Color::Rgb(0x06, 0x38, 0x06),
+            diff_del_fg: Color::Rgb(0xf7, 0x76, 0x8e),
+            diff_del_bg: Color::Rgb(0x42, 0x0e, 0x14),
+            diff_line_number: Color::Rgb(0x6c, 0x6c, 0x6c),
+        }
+    }
+
     /// Get a theme by name.
     pub fn from_name(name: &str) -> Self {
         let key = name.to_lowercase();
@@ -484,6 +525,7 @@ impl ThemeColors {
             "ocean" | "ocean_dark" => Self::ocean_dark(),
             "monokai" => Self::monokai(),
             "vscode" | "vscode_dark" | "vscode-dark" => Self::vscode(),
+            "cortexnight" | "cortexnight" | "cortex-night" | "cortex_night" => Self::cortexnight(),
             // Default (and any unknown name) resolves to the mono-orange brand `dark`.
             _ => Self::dark(),
         }
@@ -528,9 +570,10 @@ impl ThemeColors {
     }
 }
 
-/// The five canonical chrome themes. `dark` (the mono-orange brand) is first, so it is the
-/// built-in default before any config is loaded.
-const BUILTIN_THEME_NAMES: &[&str] = &["dark", "light", "monokai", "ocean", "vscode"];
+/// Canonical chrome themes. `cortexnight` is the product Cortex shell palette (M1+ conversation DNA);
+/// `dark` remains the first entry so legacy mono-orange default theme name stays stable until the
+/// global theme switch lands with surface migrations.
+const BUILTIN_THEME_NAMES: &[&str] = &["dark", "cortexnight", "light", "monokai", "ocean", "vscode"];
 
 static CUSTOM_THEMES: Lazy<RwLock<BTreeMap<String, ThemeColors>>> =
     Lazy::new(|| RwLock::new(BTreeMap::new()));
@@ -944,9 +987,25 @@ mod tests {
         let _guard = CUSTOM_THEME_TEST_LOCK.lock().expect("theme test lock");
         ThemeColors::clear_custom_themes();
         let themes = ThemeColors::available_themes();
-        assert_eq!(themes, &["dark", "light", "monokai", "ocean", "vscode"]);
-        // `dark` is first so it is the built-in default.
+        assert_eq!(
+            themes,
+            &["dark", "cortexnight", "light", "monokai", "ocean", "vscode"]
+        );
+        // `dark` is first so it is the built-in default name for legacy config.
         assert_eq!(themes.first(), Some(&"dark"));
+        assert!(themes.contains(&"cortexnight"));
+    }
+
+    #[test]
+    fn cortexnight_theme_identity() {
+        let t = ThemeColors::cortexnight();
+        assert_eq!(t.background, Color::Rgb(0x14, 0x14, 0x14));
+        assert_eq!(t.text, Color::Rgb(0xe1, 0xe1, 0xe1));
+        assert_eq!(t.primary, Color::Rgb(0xbb, 0x9a, 0xf7));
+        assert_eq!(ThemeColors::from_name("cortexnight"), t);
+        assert_eq!(ThemeColors::from_name("cortexnight"), t);
+        // Not copper.
+        assert_ne!(t.primary, Color::Rgb(0xd9, 0x82, 0x5f));
     }
 
     #[test]

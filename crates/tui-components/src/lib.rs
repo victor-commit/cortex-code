@@ -125,6 +125,8 @@
 pub mod borders;
 pub mod card;
 pub mod checkbox;
+/// Shared Cortex shell chrome (top bar, jewel, putty, turn-status, nameplate bans).
+pub mod chrome;
 pub mod color_scheme;
 pub mod component;
 pub mod dropdown;
@@ -156,6 +158,13 @@ pub mod prelude {
     pub use crate::borders::{BorderStyle, RoundedBorder};
     pub use crate::card::{Card, CardBuilder};
     pub use crate::checkbox::{CheckboxGroup, CheckboxItem};
+    pub use crate::chrome::{
+        auth_top_bar_line, default_model_chip, default_putty_line, format_context_budget,
+        format_turn_timer, has_context_budget_form, model_chip, putty_product_separators_hold,
+        reject_copper_residual, reject_structure_residual, render_chrome_fingerprint,
+        thought_line, turn_status_busy_line, user_wash_line, DEFAULT_PUTTY, MODEL_LABEL,
+        PROMPT_ARROW,
+    };
     pub use crate::color_scheme::ColorScheme;
     pub use crate::component::{Component, ComponentResult, FocusState};
     pub use crate::dropdown::{Dropdown, DropdownItem, DropdownPosition, DropdownState};

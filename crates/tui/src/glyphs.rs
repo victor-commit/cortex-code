@@ -16,10 +16,14 @@
 
 // --- Brand marks ---
 
-/// Brand star / assistant author mark (AMBER).
+/// Brand star / assistant author mark (AMBER). Legacy copper surfaces only — not product chrome.
 pub const BRAND_STAR: &str = "✦";
-/// Prompt / user mark / selection marker (ORANGE).
+/// Legacy prompt / selection marker (`›`) used by pickers and non-conversation chrome.
 pub const PROMPT: &str = "›";
+/// Cortex product prompt arrow (U+276F) for user wash and composer jewel (pure-structure DNA).
+pub const PROMPT_ARROW: &str = "❯";
+/// Thought / group diamond (not an agent nameplate).
+pub const THOUGHT_DIAMOND: &str = "◆";
 /// Shell-mode prompt / command prefix (`!`, ORANGE) used by the `!` shell surface.
 pub const SHELL_PREFIX: &str = "!";
 
@@ -233,7 +237,10 @@ mod tests {
     #[test]
     fn no_braille_anywhere_in_inventory() {
         for g in inventory() {
-            assert!(!contains_braille(g), "braille codepoint in inventory: {g:?}");
+            assert!(
+                !contains_braille(g),
+                "braille codepoint in inventory: {g:?}"
+            );
         }
     }
 
