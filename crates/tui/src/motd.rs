@@ -3,11 +3,12 @@
 //!
 //! On a fresh launch the transcript is empty, so [`push_home`] emits the welcome card followed by
 //! two bordered meta panels at the top of the same buffer the conversation stacks into. The card
-//! carries the `✦ Cortex Code · v<version>` wordmark in its top border, the brain mascot block-art,
-//! a real/dynamic greeting, and a tip/caps row; the meta panels show the real working directory,
-//! organization, plan/provider, and the active model id. Everything draws through theme tokens and
-//! the safe glyph set, and every value is sourced from the real running binary (no `Mathis` /
-//! `opus-4.8` / `v0.4.2` mockup placeholders).
+//! carries the neutral `✦ Cortex · v<version>` shell wordmark in its top border (VAL-CORTEX-UX-002:
+//! never the copper `Cortex Code` plate), the brain mascot block-art, a real/dynamic greeting, and
+//! a tip/caps row; the meta panels show the real working directory, organization, plan/provider,
+//! and the active model id. Everything draws through theme tokens and the safe glyph set, and every
+//! value is sourced from the real running binary (no `Mathis` / `opus-4.8` / `v0.4.2` mockup
+//! placeholders).
 
 use std::path::{Path, PathBuf};
 
@@ -127,7 +128,12 @@ pub fn push_home(
 
 /// Compact fallback for very narrow terminals: the wordmark, mascot, and (on the pristine home) a
 /// one-line model summary, drawn without the bordered frame so nothing overflows.
-fn push_compact_home(lines: &mut Vec<Line<'static>>, model: &str, theme: &ThemeColors, show_meta: bool) {
+fn push_compact_home(
+    lines: &mut Vec<Line<'static>>,
+    model: &str,
+    theme: &ThemeColors,
+    show_meta: bool,
+) {
     let mut title = brand::wordmark(theme);
     title
         .spans
@@ -239,13 +245,13 @@ fn tip_spans(theme: &ThemeColors) -> Vec<Span<'static>> {
     ]
 }
 
-/// The card's titled top border: `╭─ ✦ Cortex Code  ·  v0.1.0 ─…─╮`.
+/// The card's titled top border: `╭─ ✦ Cortex  ·  v0.1.0 ─…─╮`.
 fn card_top(theme: &ThemeColors, width: usize) -> Line<'static> {
     let bs = Style::default().fg(theme.card_border);
     let card_w = width.saturating_sub(2 * MARGIN);
     let version = version_string();
-    // Title content width: ✦(1) + ' '(1) + "Cortex Code"(11) + "  ·  "(5) + version.
-    let title_w = 1 + 1 + glyphs_count("Cortex Code") + 5 + version.chars().count();
+    // Title content width: ✦(1) + ' '(1) + wordmark + "  ·  "(5) + version.
+    let title_w = 1 + 1 + glyphs_count(brand::WORDMARK_NAME) + 5 + version.chars().count();
     // Inner (between corners) = card_w - 2. Used by "─ "(2) + title + " "(1) + fill.
     let inner = card_w.saturating_sub(2);
     let fill = inner.saturating_sub(2 + title_w + 1);
@@ -474,7 +480,11 @@ mod tests {
     #[test]
     fn current_dir_is_home_relative_when_under_home() {
         let home = Path::new("/home/dev");
-        assert_eq!(home_relative(home, Some(home)), "~", "home itself collapses to ~");
+        assert_eq!(
+            home_relative(home, Some(home)),
+            "~",
+            "home itself collapses to ~"
+        );
         assert_eq!(
             home_relative(Path::new("/home/dev/projects/x"), Some(home)),
             "~/projects/x",
@@ -498,8 +508,27 @@ mod tests {
         let mut lines = Vec::new();
         push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, true);
         let text = rendered(&lines);
-        assert!(text.contains('✦'), "brand star in the title border:\n{text}");
-        assert!(text.contains("Cortex Code"), "wordmark name:\n{text}");
+        assert!(
+            text.contains('✦'),
+            "brand star in the title border:\n{text}"
+        );
+        assert!(
+            text.contains(brand::WORDMARK_NAME),
+            "neutral shell wordmark name:\n{text}"
+        );
+        assert!(
+            text.contains("Cortex"),
+            "neutral Cortex shell identity:\n{text}"
+        );
+        // VAL-CORTEX-UX-002: primary home MOTD must not show the copper `Cortex Code` plate.
+        assert!(
+            !text.contains("Cortex Code"),
+            "bans retired Cortex Code wordmark plate:\n{text}"
+        );
+        assert!(
+            !text.contains("✦ Cortex Code"),
+            "bans ✦ Cortex Code MOTD title:\n{text}"
+        );
         assert!(text.contains("v0.1.0"), "real version:\n{text}");
         assert!(!text.contains("v0.4.2"), "never the mockup version");
     }
@@ -517,8 +546,9 @@ mod tests {
         let name = top
             .spans
             .iter()
-            .find(|s| s.content.as_ref() == "Cortex Code")
+            .find(|s| s.content.as_ref() == brand::WORDMARK_NAME)
             .expect("name span");
+        assert_eq!(name.content.as_ref(), "Cortex");
         assert_eq!(name.style.fg, Some(theme.text_bright), "name is BRIGHT");
         // The frame uses the dim card border, not the brighter active border.
         let corner = top
@@ -615,7 +645,10 @@ mod tests {
             "the real model id is shown, not `opus-4.8`:\n{text}"
         );
         assert!(!text.contains("opus-4.8"), "never the mockup model literal");
-        assert!(text.contains(&current_dir_display()), "real cwd shown:\n{text}");
+        assert!(
+            text.contains(&current_dir_display()),
+            "real cwd shown:\n{text}"
+        );
     }
 
     #[test]
@@ -627,8 +660,18 @@ mod tests {
         let mut lines = Vec::new();
         push_home(&mut lines, "google/gemini-2.5-flash", 92, &theme, false);
         let text = rendered(&lines);
-        assert!(text.contains("Cortex Code"), "card wordmark still present:\n{text}");
-        assert!(text.contains("Welcome back,"), "card greeting still present:\n{text}");
+        assert!(
+            text.contains(brand::WORDMARK_NAME),
+            "card wordmark still present:\n{text}"
+        );
+        assert!(
+            !text.contains("Cortex Code"),
+            "VAL-CORTEX-UX-002: no Cortex Code plate without show_meta:\n{text}"
+        );
+        assert!(
+            text.contains("Welcome back,"),
+            "card greeting still present:\n{text}"
+        );
         for fragment in ["Directory", "Org", "Plan ", "Model "] {
             assert!(
                 !text.contains(fragment),
@@ -644,13 +687,15 @@ mod tests {
         let theme = ThemeColors::dark();
         let mut lines = Vec::new();
         push_meta_panels(&mut lines, "google/gemini-2.5-flash", 92, &theme);
-        assert_eq!(lines.len(), 4, "two 4-row panels rendered as 4 combined rows");
+        assert_eq!(
+            lines.len(),
+            4,
+            "two 4-row panels rendered as 4 combined rows"
+        );
         for line in &lines {
             let text = plain(line);
             assert!(
-                text.matches('│').count() >= 4
-                    || text.contains('╭')
-                    || text.contains('╰'),
+                text.matches('│').count() >= 4 || text.contains('╭') || text.contains('╰'),
                 "panel row has paired borders:\n{text}"
             );
         }

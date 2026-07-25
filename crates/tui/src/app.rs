@@ -260,7 +260,7 @@ impl SidebarPanel {
         }
     }
 
-    /// The lowercase breadcrumb crumb shown after `✦ Cortex Code ·` in the split header (one of
+    /// The lowercase breadcrumb crumb shown after `✦ Cortex ·` in the split header (one of
     /// context/files/lsp/mcp/todo/subagents/queue), matching the active panel.
     #[must_use]
     pub const fn crumb(self) -> &'static str {
@@ -17663,13 +17663,13 @@ mod tests {
 
     #[test]
     fn toast_screen_shows_the_chat_breadcrumb() {
-        // VAL-MD-027: with one or more toasts active the chrome shows `✦ Cortex Code · chat` over
+        // VAL-MD-027: with one or more toasts active the chrome shows `✦ Cortex · chat` over
         // the conversation (the trailing `chat` crumb in AMBER).
         let mut a = app();
         a.push_toast(ToastLevel::Success, "registry schema updated");
         let buf = render_buffer(&a, 92, 30);
         let row0 = (0..92).map(|x| buf[(x, 0)].symbol()).collect::<String>();
-        assert!(row0.contains("Cortex Code"), "wordmark on row 0:\n{row0}");
+        assert!(row0.contains(crate::brand::WORDMARK_NAME), "wordmark on row 0:\n{row0}");
         assert!(
             row0.contains("chat"),
             "trailing `chat` crumb on row 0:\n{row0}"

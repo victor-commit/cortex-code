@@ -211,7 +211,7 @@ pub const BUILTINS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "exit",
-        description: "Exit Cortex Code",
+        description: "Exit Cortex",
     },
 ];
 

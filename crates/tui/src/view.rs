@@ -2,7 +2,7 @@
 //! review).
 //!
 //! Every full-screen view wraps its body in the same chrome so the surfaces read consistently:
-//! - row 0: the wordmark header `✦ Cortex Code · <crumb>` (the crumb is the slash command that
+//! - row 0: the wordmark header `✦ Cortex · <crumb>` (the crumb is the slash command that
 //!   opened the view),
 //! - row 1: a full-width horizontal rule,
 //! - the body region (rows 2..H-2), wrapped by [`render_panel`],
@@ -134,7 +134,7 @@ impl ViewKind {
 /// and the status bar.
 ///
 /// Draws the near-black brand canvas across the whole area (so no cell falls through to
-/// terminal-default black), the `✦ Cortex Code · <crumb>` header on row 0, a full-width rule on row
+/// terminal-default black), the `✦ Cortex · <crumb>` header on row 0, a full-width rule on row
 /// 1, and the shared 3-zone status bar on the bottom row. The returned rect spans the full width for
 /// rows `2..H-2`; callers inset it with [`VIEW_MARGIN`] before wrapping it in [`render_panel`].
 pub fn render_chrome(
@@ -158,7 +158,7 @@ pub fn render_chrome(
 
     let width = area.width as usize;
 
-    // Row 0: `✦ Cortex Code · <crumb>`.
+    // Row 0: `✦ Cortex · <crumb>`.
     let header_area = Rect { height: 1, ..area };
     frame.render_widget(
         Paragraph::new(header_line(crumb, width, theme))
@@ -207,10 +207,10 @@ pub fn render_chrome(
     }
 }
 
-/// The wordmark header line: `✦` (ORANGE) + `Cortex Code` (BRIGHT) + ` · ` (GHOST) + crumb (AMBER),
+/// The wordmark header line: `✦` (ORANGE) + `Cortex` (BRIGHT) + ` · ` (GHOST) + crumb (AMBER),
 /// inset by [`VIEW_MARGIN`]. A compound crumb (`chat · rendering`) renders its interior ` · `
 /// separators in the GHOST tone and only its trailing segment in AMBER, so the wave-6 breadcrumb
-/// reads `✦ Cortex Code · chat · rendering` with a single amber tail crumb.
+/// reads `✦ Cortex · chat · rendering` with a single amber tail crumb.
 fn header_line(crumb: &str, width: usize, theme: &ThemeColors) -> Line<'static> {
     let base = Style::default().fg(theme.text).bg(theme.background);
     let mut cells = vec![(' ', base); width.max(1)];
@@ -220,7 +220,7 @@ fn header_line(crumb: &str, width: usize, theme: &ThemeColors) -> Line<'static> 
             Style::default().fg(theme.primary).bg(theme.background),
         ),
         (
-            "Cortex Code".to_owned(),
+            crate::brand::WORDMARK_NAME.to_owned(),
             Style::default()
                 .fg(theme.text_bright)
                 .bg(theme.background)
@@ -1417,7 +1417,7 @@ mod tests {
 
     #[test]
     fn crumb_matches_the_slash_command_for_every_view() {
-        // VAL-VIEW-049: the crumb after `Cortex Code ·` equals the opening slash command.
+        // VAL-VIEW-049: the crumb after `Cortex ·` equals the opening slash command.
         assert_eq!(ViewKind::Status.crumb(), "/status");
         assert_eq!(ViewKind::Timeline.crumb(), "/timeline");
         assert_eq!(ViewKind::Queue.crumb(), "/queue");
@@ -1433,7 +1433,7 @@ mod tests {
 
     #[test]
     fn chrome_renders_header_rule_and_status_bar() {
-        // VAL-VIEW-048/049: row 0 is `✦ Cortex Code · <crumb>`, row 1 is a full-width rule, and the
+        // VAL-VIEW-048/049: row 0 is `✦ Cortex · <crumb>`, row 1 is a full-width rule, and the
         // bottom row is the shared 3-zone status bar with the REAL model id (never `opus-4.8`).
         let a = app();
         let theme = ThemeColors::from_name(a.theme());
@@ -1450,7 +1450,7 @@ mod tests {
         let header = row_text(&buf, 0);
         assert!(header.contains('✦'), "brand star on row 0:\n{header}");
         assert!(
-            header.contains("Cortex Code"),
+            header.contains(crate::brand::WORDMARK_NAME),
             "wordmark on row 0:\n{header}"
         );
         assert!(header.contains("/status"), "crumb on row 0:\n{header}");
@@ -1494,7 +1494,7 @@ mod tests {
         };
         assert_eq!(fg_of("✦ "), Some(theme.primary), "star is ORANGE");
         assert_eq!(
-            fg_of("Cortex Code"),
+            fg_of(crate::brand::WORDMARK_NAME),
             Some(theme.text_bright),
             "wordmark BRIGHT"
         );

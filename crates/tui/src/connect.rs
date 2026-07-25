@@ -1,7 +1,7 @@
 //! The mid-session `/connect` provider-auth flow.
 //!
 //! Opened by the `/connect` slash command (not boot-only), this full-screen overlay reuses the
-//! `auth_login.png` mono-orange language: the shared `✦ Cortex Code · connect` chrome, a centered
+//! `auth_login.png` mono-orange language: the shared `✦ Cortex · connect` chrome, a centered
 //! titled panel, an arrow-navigable selection bar, and the same MASKED key-input widget
 //! ([`crate::auth_login::masked_input_box`]). Unlike the boot auth screen its provider list is
 //! GENERALIZED to the full provider catalogue ([`providers::connectable_providers`], every profile
@@ -52,7 +52,7 @@ use crate::view;
 /// same 3-minute-class budget for an interactive authorization).
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The breadcrumb crumb shown after `✦ Cortex Code ·` on the connect screen.
+/// The breadcrumb crumb shown after `✦ Cortex ·` on the connect screen.
 const CRUMB: &str = "connect";
 /// The amber title embedded in the panel's top border.
 const PANEL_TITLE: &str = "Connect a provider";
@@ -393,7 +393,9 @@ impl ConnectState {
 
     /// The highlighted provider row (clamped defensively).
     fn selected_provider(&self) -> &ProviderRow {
-        let idx = self.provider_selected.min(self.providers.len().saturating_sub(1));
+        let idx = self
+            .provider_selected
+            .min(self.providers.len().saturating_sub(1));
         &self.providers[idx]
     }
 
@@ -408,7 +410,8 @@ impl ConnectState {
         match self.step {
             Step::Provider if !self.providers.is_empty() => {
                 let n = self.providers.len() as i32;
-                self.provider_selected = (self.provider_selected as i32 + delta).rem_euclid(n) as usize;
+                self.provider_selected =
+                    (self.provider_selected as i32 + delta).rem_euclid(n) as usize;
             }
             Step::Method if !self.methods.is_empty() => {
                 let n = self.methods.len() as i32;
@@ -718,7 +721,7 @@ impl Default for ConnectState {
     }
 }
 
-/// Render the mid-session `/connect` screen into `area`: the shared `✦ Cortex Code · connect` chrome
+/// Render the mid-session `/connect` screen into `area`: the shared `✦ Cortex · connect` chrome
 /// then the centered titled panel with the step-appropriate body (provider list / method list /
 /// masked key entry / connected confirmation).
 pub fn draw_connect(frame: &mut Frame, app: &App, area: Rect, theme: &ThemeColors) {
@@ -764,7 +767,12 @@ fn panel_body_lines(
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(height.max(1));
     match state.step {
         Step::Provider => {
-            lines.push(content_row(width, base, "select a provider to connect", faint));
+            lines.push(content_row(
+                width,
+                base,
+                "select a provider to connect",
+                faint,
+            ));
             lines.push(row(width, base, &[]));
             // Window the provider list so the highlighted row stays visible within the panel.
             let capacity = height.saturating_sub(4).max(1);
@@ -775,7 +783,12 @@ fn panel_body_lines(
         }
         Step::Method => {
             let display = state.selected_provider().display;
-            lines.push(content_row(width, base, &format!("sign in to {display}"), faint));
+            lines.push(content_row(
+                width,
+                base,
+                &format!("sign in to {display}"),
+                faint,
+            ));
             lines.push(row(width, base, &[]));
             for idx in 0..state.methods.len() {
                 lines.push(method_row(state, idx, width, theme));
@@ -809,7 +822,12 @@ fn panel_body_lines(
             lines.push(row(width, base, &[]));
             match state.oauth_authorize_url() {
                 Some(url) => {
-                    lines.push(content_row(width, base, "open this URL to authorize:", faint));
+                    lines.push(content_row(
+                        width,
+                        base,
+                        "open this URL to authorize:",
+                        faint,
+                    ));
                     // The URL can exceed the panel width; wrap it so the whole (secret-free) URL is
                     // visible for the user to open.
                     let wrap_at = width.saturating_sub(CONTENT_COL).max(1);
@@ -977,7 +995,12 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 /// One provider row: the selected row is a strong inverse bar (solid ORANGE fill, near-black text,
 /// `›` marker, amber `▎` edge); other rows show the name (BRIGHT) and a right-aligned connected
 /// status (`✓ connected` OKG-green / `○ not connected` FAINT).
-fn provider_row(state: &ConnectState, idx: usize, width: usize, theme: &ThemeColors) -> Line<'static> {
+fn provider_row(
+    state: &ConnectState,
+    idx: usize,
+    width: usize,
+    theme: &ThemeColors,
+) -> Line<'static> {
     let provider = &state.providers[idx];
     let selected = idx == state.provider_selected;
     let status = if provider.connected {
@@ -1002,7 +1025,12 @@ fn provider_row(state: &ConnectState, idx: usize, width: usize, theme: &ThemeCol
 
 /// One method row: the selected row is the strong inverse bar; other rows show the method label
 /// (BRIGHT) and its faint description in the meta column.
-fn method_row(state: &ConnectState, idx: usize, width: usize, theme: &ThemeColors) -> Line<'static> {
+fn method_row(
+    state: &ConnectState,
+    idx: usize,
+    width: usize,
+    theme: &ThemeColors,
+) -> Line<'static> {
     let method = state.methods[idx];
     let selected = idx == state.method_selected;
     list_row(
@@ -1030,8 +1058,16 @@ fn list_row(
         let ink = Style::default().fg(theme.background).bg(bg);
         let edge = Style::default().fg(theme.secondary).bg(bg);
         let mut cells = vec![(' ', ink); width.max(1)];
-        place_segments(&mut cells, EDGE_COL, &[(glyphs::SELECTION_EDGE.to_owned(), edge)]);
-        place_segments(&mut cells, MARKER_COL, &[(glyphs::SELECT_MARKER.to_owned(), ink)]);
+        place_segments(
+            &mut cells,
+            EDGE_COL,
+            &[(glyphs::SELECTION_EDGE.to_owned(), edge)],
+        );
+        place_segments(
+            &mut cells,
+            MARKER_COL,
+            &[(glyphs::SELECT_MARKER.to_owned(), ink)],
+        );
         place_segments(&mut cells, NAME_COL, &[(name.to_owned(), ink)]);
         place_segments(&mut cells, META_COL, &[(meta.to_owned(), ink)]);
         return cells_to_line(&cells);
@@ -1114,7 +1150,11 @@ fn hints_line(step: Step, width: usize, theme: &ThemeColors) -> Line<'static> {
 
 /// A single content row: `text` in `text_style` placed at [`CONTENT_COL`] over a `base`-painted row.
 fn content_row(width: usize, base: Style, text: &str, text_style: Style) -> Line<'static> {
-    row(width, base, &[(CONTENT_COL, vec![(text.to_owned(), text_style)])])
+    row(
+        width,
+        base,
+        &[(CONTENT_COL, vec![(text.to_owned(), text_style)])],
+    )
 }
 
 /// One panel-interior row: a `width`-wide cell buffer painted with `base` (so every cell carries an
@@ -1163,7 +1203,10 @@ mod tests {
     }
 
     fn buffer_text(buf: &Buffer) -> String {
-        buf.content().iter().map(ratatui::buffer::Cell::symbol).collect()
+        buf.content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
     }
 
     fn unique_auth_path(tag: &str) -> std::path::PathBuf {
@@ -1186,12 +1229,20 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(text.contains("Connect a provider"), "panel title:\n{text}");
         assert!(text.contains("OpenRouter"), "openrouter is listed:\n{text}");
-        assert!(text.contains("Anthropic") || text.contains("Azure") || text.contains("Groq"),
-            "multiple providers listed:\n{text}");
+        assert!(
+            text.contains("Anthropic") || text.contains("Azure") || text.contains("Groq"),
+            "multiple providers listed:\n{text}"
+        );
         // The excluded Zen provider (either brand id) never appears.
         let zen_a = ["open", "code"].concat();
-        assert!(!text.to_lowercase().contains(&zen_a), "excluded Zen id absent:\n{text}");
-        assert!(!text.to_lowercase().contains("zen"), "excluded Zen id absent:\n{text}");
+        assert!(
+            !text.to_lowercase().contains(&zen_a),
+            "excluded Zen id absent:\n{text}"
+        );
+        assert!(
+            !text.to_lowercase().contains("zen"),
+            "excluded Zen id absent:\n{text}"
+        );
     }
 
     #[test]
@@ -1202,7 +1253,11 @@ mod tests {
         let mut state = ConnectState::new();
         assert_eq!(state.selected_provider().id, "openrouter");
         state.enter_provider();
-        assert_eq!(state.methods, vec![Method::ApiKey], "openrouter offers only API key");
+        assert_eq!(
+            state.methods,
+            vec![Method::ApiKey],
+            "openrouter offers only API key"
+        );
 
         // Move to copilot (OAuth-capable) and check both methods are offered.
         let mut state = ConnectState::new();
@@ -1213,8 +1268,14 @@ mod tests {
             .expect("copilot connectable");
         state.provider_selected = copilot;
         state.enter_provider();
-        assert!(state.methods.contains(&Method::ApiKey), "API key always offered");
-        assert!(state.methods.contains(&Method::OAuth), "OAuth offered for copilot");
+        assert!(
+            state.methods.contains(&Method::ApiKey),
+            "API key always offered"
+        );
+        assert!(
+            state.methods.contains(&Method::OAuth),
+            "OAuth offered for copilot"
+        );
     }
 
     #[test]
@@ -1227,10 +1288,19 @@ mod tests {
             press(&mut app, KeyCode::Char(c));
         }
         let text = buffer_text(&render(&app));
-        assert!(text.contains("paste API key for OpenRouter:"), "key prompt:\n{text}");
+        assert!(
+            text.contains("paste API key for OpenRouter:"),
+            "key prompt:\n{text}"
+        );
         assert!(text.contains('•'), "masked bullets present:\n{text}");
-        assert!(!text.contains("SECRETKEY12345"), "raw key must never appear:\n{text}");
-        assert!(!text.contains("SECRET"), "no raw key substring appears:\n{text}");
+        assert!(
+            !text.contains("SECRETKEY12345"),
+            "raw key must never appear:\n{text}"
+        );
+        assert!(
+            !text.contains("SECRET"),
+            "no raw key substring appears:\n{text}"
+        );
     }
 
     #[test]
@@ -1247,12 +1317,20 @@ mod tests {
         assert!(state.confirm_api_key_to(&path), "credential stored");
         assert_eq!(state.step, Step::Connected, "flow advances to connected");
         assert!(
-            state.providers.iter().find(|p| p.id == "openrouter").unwrap().connected,
+            state
+                .providers
+                .iter()
+                .find(|p| p.id == "openrouter")
+                .unwrap()
+                .connected,
             "openrouter reads as connected after storing"
         );
         // The stored file exists and holds the provider entry (mode 0600 is enforced by the store).
         let body = std::fs::read_to_string(&path).expect("auth file written");
-        assert!(body.contains("openrouter"), "auth.json holds the provider entry");
+        assert!(
+            body.contains("openrouter"),
+            "auth.json holds the provider entry"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1320,9 +1398,18 @@ mod tests {
         // chrome wordmark, and only safe glyphs.
         let buf = render(&app_with_connect());
         let text = buffer_text(&buf);
-        assert!(text.contains('╭') && text.contains('╮'), "rounded top corners:\n{text}");
-        assert!(text.contains('╰') && text.contains('╯'), "rounded bottom corners");
-        assert!(text.contains("Cortex Code · connect"), "shared connect chrome:\n{text}");
+        assert!(
+            text.contains('╭') && text.contains('╮'),
+            "rounded top corners:\n{text}"
+        );
+        assert!(
+            text.contains('╰') && text.contains('╯'),
+            "rounded bottom corners"
+        );
+        assert!(
+            text.contains("Cortex · connect"),
+            "shared connect chrome:\n{text}"
+        );
         assert!(!glyphs::contains_braille(&text), "no braille anywhere");
         for forbidden in ['▸', '▾', '⌘', '⬡', '“', '”', '‘', '’'] {
             assert!(!text.contains(forbidden), "forbidden glyph {forbidden:?}");
@@ -1343,7 +1430,11 @@ mod tests {
             .find(|s| s.content.as_ref() == glyphs::SELECTION_EDGE)
             .expect("amber edge present");
         assert_eq!(edge.style.fg, Some(theme.secondary), "edge is AMBER");
-        assert_eq!(edge.style.bg, Some(theme.primary), "edge sits on the ORANGE fill");
+        assert_eq!(
+            edge.style.bg,
+            Some(theme.primary),
+            "edge sits on the ORANGE fill"
+        );
         let fill = line
             .spans
             .iter()
@@ -1399,7 +1490,10 @@ mod tests {
         let mut state = ConnectState::new();
         state.refresh_connected_from(&path);
         assert_eq!(state.selected_provider().id, "openrouter");
-        assert!(state.selected_provider().connected, "openrouter starts connected");
+        assert!(
+            state.selected_provider().connected,
+            "openrouter starts connected"
+        );
 
         state.request_disconnect();
         assert_eq!(
@@ -1409,8 +1503,15 @@ mod tests {
         );
         assert!(path.exists(), "nothing is removed before the confirmation");
 
-        assert!(state.disconnect_to(&path), "confirming removes the credential");
-        assert_eq!(state.step, Step::Disconnected, "flow advances to the disconnected note");
+        assert!(
+            state.disconnect_to(&path),
+            "confirming removes the credential"
+        );
+        assert_eq!(
+            state.step,
+            Step::Disconnected,
+            "flow advances to the disconnected note"
+        );
         assert!(
             !state
                 .providers
@@ -1429,10 +1530,20 @@ mod tests {
                 .connected,
             "the other provider stays connected"
         );
-        let body = std::fs::read_to_string(&path).expect("auth file still holds the other provider");
-        assert!(!body.contains("openrouter"), "openrouter entry removed from auth.json:\n{body}");
-        assert!(!body.contains("sk-or-secret"), "removed secret is gone from disk:\n{body}");
-        assert!(body.contains("groq"), "the other provider is preserved:\n{body}");
+        let body =
+            std::fs::read_to_string(&path).expect("auth file still holds the other provider");
+        assert!(
+            !body.contains("openrouter"),
+            "openrouter entry removed from auth.json:\n{body}"
+        );
+        assert!(
+            !body.contains("sk-or-secret"),
+            "removed secret is gone from disk:\n{body}"
+        );
+        assert!(
+            body.contains("groq"),
+            "the other provider is preserved:\n{body}"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1445,7 +1556,10 @@ mod tests {
         state.refresh_connected_from(&path);
         state.request_disconnect();
         assert!(state.disconnect_to(&path), "the sole credential is removed");
-        assert!(!path.exists(), "removing the last provider deletes the store file");
+        assert!(
+            !path.exists(),
+            "removing the last provider deletes the store file"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1475,7 +1589,11 @@ mod tests {
         state.request_disconnect();
         assert_eq!(state.step, Step::ConfirmDisconnect);
         state.cancel_disconnect();
-        assert_eq!(state.step, Step::Provider, "cancel returns to the provider step");
+        assert_eq!(
+            state.step,
+            Step::Provider,
+            "cancel returns to the provider step"
+        );
         assert!(path.exists(), "cancel removes nothing");
         assert!(
             state
@@ -1505,7 +1623,11 @@ mod tests {
         std::fs::remove_file(&path).expect("remove auth file out-of-band");
 
         assert!(!state.disconnect_to(&path), "no entry remained to remove");
-        assert_eq!(state.step, Step::Disconnected, "still lands on a disconnected-note screen");
+        assert_eq!(
+            state.step,
+            Step::Disconnected,
+            "still lands on a disconnected-note screen"
+        );
 
         let theme = ThemeColors::from_name("dark");
         let note: String = panel_body_lines(&state, 64, 22, &theme)
@@ -1545,7 +1667,10 @@ mod tests {
             !confirm.contains("sk-or-secret-xyz"),
             "no secret appears on the confirm screen:\n{confirm}"
         );
-        assert!(!glyphs::contains_braille(&confirm), "no braille on the confirm screen");
+        assert!(
+            !glyphs::contains_braille(&confirm),
+            "no braille on the confirm screen"
+        );
 
         assert!(state.disconnect_to(&path));
         let done: String = panel_body_lines(&state, 64, 22, &theme)
@@ -1663,7 +1788,9 @@ mod tests {
         let request = format!(
             "GET /callback?code={code}&state={state} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
         );
-        stream.write_all(request.as_bytes()).expect("write callback");
+        stream
+            .write_all(request.as_bytes())
+            .expect("write callback");
         let mut buffer = Vec::new();
         let _ = stream.read_to_end(&mut buffer);
     }
@@ -1699,8 +1826,16 @@ mod tests {
         let (token_base, server) = spawn_token_server(r#"{"access_token":"unused"}"#);
         let path = unique_auth_path("oauth-url");
         let mut state = oauth_state_for_copilot();
-        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
-        assert_eq!(state.step, Step::OAuthWaiting, "flow enters the waiting step");
+        state.begin_oauth(
+            fixture_endpoints(&token_base),
+            path.clone(),
+            "copilot".to_owned(),
+        );
+        assert_eq!(
+            state.step,
+            Step::OAuthWaiting,
+            "flow enters the waiting step"
+        );
 
         let (authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
         assert!(
@@ -1821,7 +1956,10 @@ mod tests {
             shut_down,
             "cancel shuts the OAuth worker (and its loopback listener) down promptly, not after 180s"
         );
-        assert!(!path.exists(), "a cancelled flow exchanges and stores nothing");
+        assert!(
+            !path.exists(),
+            "a cancelled flow exchanges and stores nothing"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -1835,7 +1973,11 @@ mod tests {
         );
         let path = unique_auth_path("oauth-store");
         let mut state = oauth_state_for_copilot();
-        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
+        state.begin_oauth(
+            fixture_endpoints(&token_base),
+            path.clone(),
+            "copilot".to_owned(),
+        );
         let (authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
         let csrf_state = query_param(&authorize_url, "state").expect("state");
 
@@ -1867,7 +2009,10 @@ mod tests {
             "client_id",
             "fixture-client",
         ] {
-            assert!(body.contains(expected), "stored credential has `{expected}`:\n{body}");
+            assert!(
+                body.contains(expected),
+                "stored credential has `{expected}`:\n{body}"
+            );
         }
         #[cfg(unix)]
         {
@@ -1897,7 +2042,11 @@ mod tests {
         let (token_base, server) = spawn_token_server(r#"{"access_token":"must-not-be-stored"}"#);
         let path = unique_auth_path("oauth-badstate");
         let mut state = oauth_state_for_copilot();
-        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
+        state.begin_oauth(
+            fixture_endpoints(&token_base),
+            path.clone(),
+            "copilot".to_owned(),
+        );
         let (_authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
 
         // Deliver a callback with a forged (mismatched) state.
@@ -1905,7 +2054,11 @@ mod tests {
         wait_for_result(&mut state);
         drop(server);
 
-        assert_eq!(state.step, Step::Method, "bad state returns to the method step");
+        assert_eq!(
+            state.step,
+            Step::Method,
+            "bad state returns to the method step"
+        );
         assert!(state.error.is_some(), "an inline error is surfaced");
         assert!(
             !state
@@ -1931,7 +2084,11 @@ mod tests {
         let (token_base, server) = spawn_token_server(r#"{"access_token":"unused"}"#);
         let path = unique_auth_path("oauth-denied");
         let mut state = oauth_state_for_copilot();
-        state.begin_oauth(fixture_endpoints(&token_base), path.clone(), "copilot".to_owned());
+        state.begin_oauth(
+            fixture_endpoints(&token_base),
+            path.clone(),
+            "copilot".to_owned(),
+        );
         let (_authorize_url, redirect_uri) = wait_for_awaiting(&mut state);
 
         // A denial callback carries `error=access_denied` (no code).
@@ -1948,14 +2105,20 @@ mod tests {
             let request = format!(
                 "GET /callback?error=access_denied HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
             );
-            stream.write_all(request.as_bytes()).expect("write callback");
+            stream
+                .write_all(request.as_bytes())
+                .expect("write callback");
             let mut buffer = Vec::new();
             let _ = stream.read_to_end(&mut buffer);
         }
         wait_for_result(&mut state);
         drop(server);
 
-        assert_eq!(state.step, Step::Method, "a denial returns to the method step");
+        assert_eq!(
+            state.step,
+            Step::Method,
+            "a denial returns to the method step"
+        );
         assert!(state.error.is_some(), "an inline error is surfaced");
         assert!(!path.exists(), "a denied authorization stores nothing");
 

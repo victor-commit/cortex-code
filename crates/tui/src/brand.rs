@@ -1,4 +1,4 @@
-//! Brand assets shared by the home/MOTD and onboarding surfaces: the `✦ Cortex Code` wordmark
+//! Brand assets shared by the home/MOTD and onboarding surfaces: the neutral `✦ Cortex` wordmark
 //! lockup and the brain mascot block-art.
 //!
 //! Both are rendered through theme tokens (never hardcoded RGB) so they follow the active chrome
@@ -6,6 +6,9 @@
 //! cliché) and the mascot is built from the safe block set `█ ▄ ▀ ▌ ▐`, so it renders mono-orange
 //! with zero tofu. The mascot art is sourced from the shared `tui-components` widget, wiring that
 //! previously-dead asset into the live render path for later milestones (M1 MOTD, M9 onboarding).
+//!
+//! Wave-2 retirement (VAL-CORTEX-UX-002): primary plates use the short shell identity `Cortex`,
+//! never the copper product compound `Cortex Code`.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,14 +17,16 @@ use tui_components::style::ThemeColors;
 
 use crate::glyphs;
 
-/// The product name shown in the brand wordmark.
-pub const WORDMARK_NAME: &str = "Cortex Code";
+/// The product name shown in the brand wordmark (neutral shell identity).
+///
+/// Must not be the retired copper compound `Cortex Code` (VAL-CORTEX-UX-002).
+pub const WORDMARK_NAME: &str = "Cortex";
 
 /// The brain mascot block-art (4 lines, safe blocks only), shared with the `tui-components`
 /// `WelcomeCard`/mascot widgets so home and onboarding draw the identical art.
 pub const MASCOT_LINES: [&str; 4] = MASCOT_MINIMAL_LINES;
 
-/// Build the `✦ Cortex Code` brand lockup as one styled line: the `✦` star in the brand accent
+/// Build the `✦ Cortex` brand lockup as one styled line: the `✦` star in the brand accent
 /// (ORANGE on the default theme) and the product name in the bright text tone.
 #[must_use]
 pub fn wordmark(theme: &ThemeColors) -> Line<'static> {
@@ -77,13 +82,15 @@ mod tests {
         let text = plain(&wordmark(&theme));
         assert!(text.contains('✦'), "the brand star is present: {text:?}");
         assert!(
-            text.contains("Cortex Code"),
+            text.contains(WORDMARK_NAME),
             "the product name follows the star: {text:?}"
         );
         assert!(
-            text.starts_with('✦'),
-            "the star leads the lockup: {text:?}"
+            !text.contains("Cortex Code"),
+            "VAL-CORTEX-UX-002: retired copper compound must not appear: {text:?}"
         );
+        assert_eq!(WORDMARK_NAME, "Cortex");
+        assert!(text.starts_with('✦'), "the star leads the lockup: {text:?}");
         assert!(!text.contains(">_"), "the `>_` cliché never appears");
     }
 
@@ -94,7 +101,8 @@ mod tests {
         // Star carries the brand accent (ORANGE on the default theme); the name is the bright tone.
         assert_eq!(spans[0].content.as_ref(), "✦");
         assert_eq!(spans[0].style.fg, Some(theme.primary));
-        assert_eq!(spans[2].content.as_ref(), "Cortex Code");
+        assert_eq!(spans[2].content.as_ref(), WORDMARK_NAME);
+        assert_eq!(spans[2].content.as_ref(), "Cortex");
         assert_eq!(spans[2].style.fg, Some(theme.text_bright));
     }
 

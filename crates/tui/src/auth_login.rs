@@ -1,7 +1,7 @@
 //! The interactive provider auth/login screen (`auth_login.png`).
 //!
 //! Invoked by `cortex auth login` with no provider argument (on a TTY), this replaces the
-//! old print-and-exit login with a full-screen TUI: the shared `✦ Cortex Code · auth · login`
+//! old print-and-exit login with a full-screen TUI: the shared `✦ Cortex · auth · login`
 //! chrome, a centered titled sign-in panel listing the real providers (openrouter, anthropic,
 //! openai (codex), azure openai, github copilot) with their auth-method tag and logged-in status,
 //! an arrow-navigable selection bar, a MASKED API-key input box, a 0600 stored-credential note,
@@ -25,7 +25,7 @@ use crate::glyphs;
 use crate::ui::{cells_to_line, place_segments};
 use crate::view;
 
-/// The breadcrumb crumb shown after `✦ Cortex Code ·` on the auth screen (`auth · login`, both
+/// The breadcrumb crumb shown after `✦ Cortex ·` on the auth screen (`auth · login`, both
 /// segments amber).
 const CRUMB: &str = "auth · login";
 /// The amber title embedded in the sign-in panel's top border.
@@ -246,7 +246,7 @@ impl Default for AuthLoginState {
     }
 }
 
-/// Render the interactive auth/login screen into `area`: the `✦ Cortex Code · auth · login` chrome
+/// Render the interactive auth/login screen into `area`: the `✦ Cortex · auth · login` chrome
 /// (breadcrumb + rule + 3-zone status bar), then the centered titled sign-in panel with the
 /// provider list, masked key input, stored-credential note, and key hints.
 pub fn draw_auth_login(frame: &mut Frame, app: &App, area: Rect, theme: &ThemeColors) {
@@ -289,7 +289,7 @@ pub fn draw_auth_login(frame: &mut Frame, app: &App, area: Rect, theme: &ThemeCo
     );
 }
 
-/// The auth breadcrumb header line: `✦` (ORANGE) + `Cortex Code` (BRIGHT) + ` · ` (GHOST) + `auth`
+/// The auth breadcrumb header line: `✦` (ORANGE) + `Cortex` (BRIGHT) + ` · ` (GHOST) + `auth`
 /// (AMBER) + ` · ` (GHOST) + `login` (AMBER). Unlike the shared view header this ambers BOTH crumb
 /// segments, matching the `auth · login` chrome.
 fn auth_header_line(width: usize, theme: &ThemeColors) -> Line<'static> {
@@ -308,7 +308,7 @@ fn auth_header_line(width: usize, theme: &ThemeColors) -> Line<'static> {
         view::VIEW_MARGIN as usize,
         &[
             (format!("{} ", glyphs::BRAND_STAR), orange),
-            ("Cortex Code".to_owned(), bright),
+            (crate::brand::WORDMARK_NAME.to_owned(), bright),
             (sep.clone(), ghost),
             ("auth".to_owned(), amber),
             (sep, ghost),
@@ -321,13 +321,21 @@ fn auth_header_line(width: usize, theme: &ThemeColors) -> Line<'static> {
 /// Build the sign-in panel interior (the region inside the titled border): the subtitle, the five
 /// provider rows, then the method-specific detail block (masked key input + stored note, or the
 /// OAuth affordance), and the key-hints footer. `width` is the panel's inner width.
-fn panel_body_lines(state: &AuthLoginState, width: usize, theme: &ThemeColors) -> Vec<Line<'static>> {
+fn panel_body_lines(
+    state: &AuthLoginState,
+    width: usize,
+    theme: &ThemeColors,
+) -> Vec<Line<'static>> {
     let base = Style::default().fg(theme.text).bg(theme.background);
     let faint = Style::default().fg(theme.text_muted).bg(theme.background);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(16);
     // Row 0: `select a provider` subtitle.
-    lines.push(row(width, base, &[(CONTENT_COL, vec![(SUBTITLE.to_owned(), faint)])]));
+    lines.push(row(
+        width,
+        base,
+        &[(CONTENT_COL, vec![(SUBTITLE.to_owned(), faint)])],
+    ));
     // Row 1: blank.
     lines.push(row(width, base, &[]));
     // Rows 2..6: the five provider rows.
@@ -345,7 +353,10 @@ fn panel_body_lines(state: &AuthLoginState, width: usize, theme: &ThemeColors) -
             lines.push(row(
                 width,
                 base,
-                &[(CONTENT_COL, vec![(label, Style::default().fg(theme.text).bg(theme.background))])],
+                &[(
+                    CONTENT_COL,
+                    vec![(label, Style::default().fg(theme.text).bg(theme.background))],
+                )],
             ));
             // Rows 9..11: the orange-bordered masked input box.
             lines.extend(masked_input_box(
@@ -363,7 +374,10 @@ fn panel_body_lines(state: &AuthLoginState, width: usize, theme: &ThemeColors) -
                 base,
                 &[(
                     CONTENT_COL,
-                    vec![(format!("{} uses OAuth", spec.display), Style::default().fg(theme.text).bg(theme.background))],
+                    vec![(
+                        format!("{} uses OAuth", spec.display),
+                        Style::default().fg(theme.text).bg(theme.background),
+                    )],
                 )],
             ));
             // Row 9: blank.
@@ -419,8 +433,16 @@ fn provider_row(
         let ink = Style::default().fg(theme.background).bg(bg);
         let edge = Style::default().fg(theme.secondary).bg(bg);
         let mut cells = vec![(' ', ink); width.max(1)];
-        place_segments(&mut cells, EDGE_COL, &[(glyphs::SELECTION_EDGE.to_owned(), edge)]);
-        place_segments(&mut cells, MARKER_COL, &[(glyphs::SELECT_MARKER.to_owned(), ink)]);
+        place_segments(
+            &mut cells,
+            EDGE_COL,
+            &[(glyphs::SELECTION_EDGE.to_owned(), edge)],
+        );
+        place_segments(
+            &mut cells,
+            MARKER_COL,
+            &[(glyphs::SELECT_MARKER.to_owned(), ink)],
+        );
         place_segments(&mut cells, NAME_COL, &[(spec.display.to_owned(), ink)]);
         place_segments(&mut cells, METHOD_COL, &[(spec.kind.tag().to_owned(), ink)]);
         place_segments(&mut cells, STATUS_COL, &[(status_text, ink)]);
@@ -457,9 +479,21 @@ pub(crate) fn masked_input_box(
 ) -> [Line<'static>; 3] {
     let box_w = width.saturating_sub(CONTENT_COL * 2).max(4);
     [
-        box_border(width, box_w, theme, glyphs::BOX_TOP_LEFT, glyphs::BOX_TOP_RIGHT),
+        box_border(
+            width,
+            box_w,
+            theme,
+            glyphs::BOX_TOP_LEFT,
+            glyphs::BOX_TOP_RIGHT,
+        ),
         masked_input_mid(key_len, key_prefix, focused, width, box_w, theme),
-        box_border(width, box_w, theme, glyphs::BOX_BOTTOM_LEFT, glyphs::BOX_BOTTOM_RIGHT),
+        box_border(
+            width,
+            box_w,
+            theme,
+            glyphs::BOX_BOTTOM_LEFT,
+            glyphs::BOX_BOTTOM_RIGHT,
+        ),
     ]
 }
 
@@ -506,8 +540,16 @@ fn masked_input_mid(
 
     let mut cells = vec![(' ', base); width.max(1)];
     let right_border_col = CONTENT_COL + box_w.saturating_sub(1);
-    place_segments(&mut cells, CONTENT_COL, &[(glyphs::BOX_VERTICAL.to_owned(), orange)]);
-    place_segments(&mut cells, right_border_col, &[(glyphs::BOX_VERTICAL.to_owned(), orange)]);
+    place_segments(
+        &mut cells,
+        CONTENT_COL,
+        &[(glyphs::BOX_VERTICAL.to_owned(), orange)],
+    );
+    place_segments(
+        &mut cells,
+        right_border_col,
+        &[(glyphs::BOX_VERTICAL.to_owned(), orange)],
+    );
 
     // Interior content: prefix hint + bullets + caret, clipped to keep both borders + padding.
     let content_start = CONTENT_COL + 2;
@@ -678,7 +720,10 @@ mod tests {
     }
 
     fn buffer_text(buf: &Buffer) -> String {
-        buf.content().iter().map(ratatui::buffer::Cell::symbol).collect()
+        buf.content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
     }
 
     fn row_text(buf: &Buffer, y: u16) -> String {
@@ -700,7 +745,7 @@ mod tests {
 
     #[test]
     fn breadcrumb_reads_cortex_code_auth_login_both_amber() {
-        // VAL-ONB-014: `✦ Cortex Code · auth · login`, with `auth` and `login` both amber.
+        // VAL-ONB-014: `✦ Cortex · auth · login`, with `auth` and `login` both amber.
         let theme = ThemeColors::from_name("dark");
         let line = auth_header_line(92, &theme);
         let fg_of = |needle: &str| {
@@ -710,11 +755,18 @@ mod tests {
                 .and_then(|s| s.style.fg)
         };
         assert_eq!(fg_of("✦ "), Some(theme.primary), "star ORANGE");
-        assert_eq!(fg_of("Cortex Code"), Some(theme.text_bright), "wordmark BRIGHT");
+        assert_eq!(
+            fg_of(crate::brand::WORDMARK_NAME),
+            Some(theme.text_bright),
+            "wordmark BRIGHT"
+        );
         assert_eq!(fg_of("auth"), Some(theme.secondary), "auth crumb AMBER");
         assert_eq!(fg_of("login"), Some(theme.secondary), "login crumb AMBER");
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("Cortex Code · auth · login"), "crumb text:\n{text}");
+        assert!(
+            text.contains("Cortex · auth · login"),
+            "crumb text:\n{text}"
+        );
     }
 
     #[test]
@@ -722,9 +774,18 @@ mod tests {
         // VAL-ONB-015/016: a rounded titled sign-in panel + `select a provider` subtitle.
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
-        assert!(text.contains('╭') && text.contains('╮'), "rounded top corners");
-        assert!(text.contains('╰') && text.contains('╯'), "rounded bottom corners");
-        assert!(text.contains("Sign in — cortex auth login"), "panel title:\n{text}");
+        assert!(
+            text.contains('╭') && text.contains('╮'),
+            "rounded top corners"
+        );
+        assert!(
+            text.contains('╰') && text.contains('╯'),
+            "rounded bottom corners"
+        );
+        assert!(
+            text.contains("Sign in — cortex auth login"),
+            "panel title:\n{text}"
+        );
         assert!(text.contains("select a provider"), "subtitle:\n{text}");
     }
 
@@ -733,7 +794,13 @@ mod tests {
         // VAL-ONB-017/018: the five real providers, each with an aligned method tag.
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
-        for name in ["openrouter", "anthropic", "openai (codex)", "azure openai", "github copilot"] {
+        for name in [
+            "openrouter",
+            "anthropic",
+            "openai (codex)",
+            "azure openai",
+            "github copilot",
+        ] {
             assert!(text.contains(name), "provider `{name}` present:\n{text}");
         }
         assert!(text.contains("[api-key]"), "api-key method tag present");
@@ -745,7 +812,10 @@ mod tests {
         // VAL-ONB-019: `✓ logged in` vs `○ not logged in` markers.
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
-        assert!(text.contains("not logged in"), "a not-logged-in row present:\n{text}");
+        assert!(
+            text.contains("not logged in"),
+            "a not-logged-in row present:\n{text}"
+        );
         // The hollow marker distinguishes not-logged-in rows.
         assert!(text.contains('○'), "hollow not-logged-in marker present");
     }
@@ -765,7 +835,11 @@ mod tests {
             .find(|s| s.content.as_ref() == glyphs::SELECTION_EDGE)
             .expect("amber edge present");
         assert_eq!(edge.style.fg, Some(theme.secondary), "edge is AMBER");
-        assert_eq!(edge.style.bg, Some(theme.primary), "edge sits on the ORANGE fill");
+        assert_eq!(
+            edge.style.bg,
+            Some(theme.primary),
+            "edge sits on the ORANGE fill"
+        );
         // The rest of the row is a solid ORANGE fill with near-black ink; the `›` marker and the
         // provider name share that ink run.
         let fill = selected
@@ -775,7 +849,10 @@ mod tests {
             .expect("selected provider name present on the fill");
         assert_eq!(fill.style.bg, Some(theme.primary), "row fill is ORANGE");
         assert_eq!(fill.style.fg, Some(theme.background), "text is near-black");
-        assert!(fill.content.contains(glyphs::SELECT_MARKER), "`›` selection marker present");
+        assert!(
+            fill.content.contains(glyphs::SELECT_MARKER),
+            "`›` selection marker present"
+        );
     }
 
     #[test]
@@ -783,7 +860,10 @@ mod tests {
         // VAL-ONB-025: the label reads `paste API key for <provider>:` for the selection.
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
-        assert!(text.contains("paste API key for openrouter:"), "key prompt:\n{text}");
+        assert!(
+            text.contains("paste API key for openrouter:"),
+            "key prompt:\n{text}"
+        );
     }
 
     #[test]
@@ -798,8 +878,14 @@ mod tests {
         let buf = render(&app);
         let text = buffer_text(&buf);
         assert!(text.contains('•'), "masked bullets present:\n{text}");
-        assert!(!text.contains("SECRETKEY12345"), "raw key must never appear:\n{text}");
-        assert!(!text.contains("SECRET"), "no raw key substring appears:\n{text}");
+        assert!(
+            !text.contains("SECRETKEY12345"),
+            "raw key must never appear:\n{text}"
+        );
+        assert!(
+            !text.contains("SECRET"),
+            "no raw key substring appears:\n{text}"
+        );
     }
 
     #[test]
@@ -807,10 +893,16 @@ mod tests {
         // VAL-ONB-024/031: no caret while the list is focused; the caret appears after `tab`.
         let mut app = app_with_auth();
         let before = buffer_text(&render(&app));
-        assert!(!before.contains('▏'), "no caret before focusing the key field");
+        assert!(
+            !before.contains('▏'),
+            "no caret before focusing the key field"
+        );
         press(&mut app, KeyCode::Tab);
         let after = buffer_text(&render(&app));
-        assert!(after.contains('▏'), "caret appears once the key field is focused");
+        assert!(
+            after.contains('▏'),
+            "caret appears once the key field is focused"
+        );
     }
 
     #[test]
@@ -867,12 +959,18 @@ mod tests {
 
         // The path is ellipsized (it cannot fit whole), but both the leading prefix and the
         // trailing filename survive.
-        assert!(text.contains(glyphs::ELLIPSIS), "long path is middle-ellipsized:\n{text}");
+        assert!(
+            text.contains(glyphs::ELLIPSIS),
+            "long path is middle-ellipsized:\n{text}"
+        );
         assert!(
             text.contains("credential stored in /var/lib"),
             "the `✓ credential stored in <head` prefix survives:\n{text}"
         );
-        assert!(text.contains("auth.json"), "the trailing filename survives:\n{text}");
+        assert!(
+            text.contains("auth.json"),
+            "the trailing filename survives:\n{text}"
+        );
 
         // The green `(0600)` suffix is present, is its own span, and is green (unclipped).
         let perm = line
@@ -897,7 +995,10 @@ mod tests {
             text.chars().count()
         );
         // And the note ends exactly with the intact `(0600)` (the suffix is not clipped away).
-        assert!(text.trim_end().ends_with("(0600)"), "note ends with the intact (0600):\n{text}");
+        assert!(
+            text.trim_end().ends_with("(0600)"),
+            "note ends with the intact (0600):\n{text}"
+        );
     }
 
     #[test]
@@ -906,8 +1007,14 @@ mod tests {
         // `(0600)`) is visible on the rendered screen — the panel is wide enough not to clip it.
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
-        assert!(text.contains("credential stored in"), "note visible:\n{text}");
-        assert!(text.contains("(0600)"), "0600 note is not clipped by the panel width:\n{text}");
+        assert!(
+            text.contains("credential stored in"),
+            "note visible:\n{text}"
+        );
+        assert!(
+            text.contains("(0600)"),
+            "0600 note is not clipped by the panel width:\n{text}"
+        );
     }
 
     #[test]
@@ -915,10 +1022,21 @@ mod tests {
         // VAL-ONB-027: the footer advertises enter/tab/↑↓/esc.
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
-        for hint in ["enter", "sign in", "tab", "next field", "select", "esc", "cancel"] {
+        for hint in [
+            "enter",
+            "sign in",
+            "tab",
+            "next field",
+            "select",
+            "esc",
+            "cancel",
+        ] {
             assert!(text.contains(hint), "hint `{hint}` present:\n{text}");
         }
-        assert!(text.contains('↑') && text.contains('↓'), "↑↓ select hint present");
+        assert!(
+            text.contains('↑') && text.contains('↓'),
+            "↑↓ select hint present"
+        );
     }
 
     #[test]
@@ -931,7 +1049,11 @@ mod tests {
         state.move_selection(-1);
         assert_eq!(state.selected, 0, "up moves back");
         state.move_selection(-1);
-        assert_eq!(state.selected, PROVIDERS.len() - 1, "up wraps to the last provider");
+        assert_eq!(
+            state.selected,
+            PROVIDERS.len() - 1,
+            "up wraps to the last provider"
+        );
     }
 
     #[test]
@@ -942,7 +1064,10 @@ mod tests {
         state.toggle_focus();
         assert_eq!(state.focus, Focus::KeyInput, "tab focuses the key field");
         state.move_selection(1);
-        assert_eq!(state.selected, 0, "arrows no longer move the selection when the key field is focused");
+        assert_eq!(
+            state.selected, 0,
+            "arrows no longer move the selection when the key field is focused"
+        );
     }
 
     #[test]
@@ -958,8 +1083,14 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
-        assert!(!text.contains("paste API key for"), "no api-key prompt for oauth:\n{text}");
-        assert!(text.contains("uses OAuth"), "oauth affordance shown:\n{text}");
+        assert!(
+            !text.contains("paste API key for"),
+            "no api-key prompt for oauth:\n{text}"
+        );
+        assert!(
+            text.contains("uses OAuth"),
+            "oauth affordance shown:\n{text}"
+        );
     }
 
     #[test]
@@ -981,8 +1112,14 @@ mod tests {
         // VAL-ONB-029: the 3-zone status bar remains on the bottom row with the real model id.
         let buf = render(&app_with_auth());
         let status = row_text(&buf, 29);
-        assert!(status.contains("? for help"), "status bar left zone:\n{status}");
-        assert!(status.contains("allow all commands"), "status bar center zone:\n{status}");
+        assert!(
+            status.contains("? for help"),
+            "status bar left zone:\n{status}"
+        );
+        assert!(
+            status.contains("allow all commands"),
+            "status bar center zone:\n{status}"
+        );
         assert!(
             status.contains("google/gemini-2.5-flash"),
             "status bar right zone shows the real model id:\n{status}"

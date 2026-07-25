@@ -2,7 +2,7 @@
 //!
 //! On a pristine launch — a fresh `HOME`/`XDG_*` with no user config and no stored provider
 //! credentials — the TUI boots into this screen instead of the normal home/MOTD conversation. It
-//! shows the shared `✦ Cortex Code · welcome` chrome, a centered rounded `Cortex CLI v<version>`
+//! shows the shared `✦ Cortex · welcome` chrome, a centered rounded `Cortex CLI v<version>`
 //! card (the authentic binary version), the brain mascot beside a `Welcome!` heading + subtitle,
 //! three getting-started tips, and a first-run footer, over the persistent 3-zone status bar.
 //! Pressing Enter advances out of onboarding into the normal app surface.
@@ -27,7 +27,7 @@ use crate::motd;
 use crate::ui::{cells_to_line, place_segments};
 use crate::view;
 
-/// The breadcrumb crumb shown after `✦ Cortex Code ·` on the onboarding screen.
+/// The breadcrumb crumb shown after `✦ Cortex ·` on the onboarding screen.
 const WELCOME_CRUMB: &str = "welcome";
 /// Width (columns) of the centered welcome card.
 const CARD_W: u16 = 58;
@@ -68,8 +68,11 @@ fn card_title() -> String {
 /// Whether a user-level global config file exists at
 /// `${XDG_CONFIG_HOME:-$HOME/.config}/cortex/config.toml`.
 fn has_global_config() -> bool {
-    global_config_path(env_path("XDG_CONFIG_HOME").as_deref(), env_path("HOME").as_deref())
-        .is_some_and(|path| path.exists())
+    global_config_path(
+        env_path("XDG_CONFIG_HOME").as_deref(),
+        env_path("HOME").as_deref(),
+    )
+    .is_some_and(|path| path.exists())
 }
 
 /// Resolve the global config file path from the config-home inputs, mirroring the settings loader's
@@ -99,7 +102,7 @@ fn env_path(key: &str) -> Option<PathBuf> {
         .filter(|path| !path.as_os_str().is_empty())
 }
 
-/// Render the first-run onboarding welcome screen into `area`: the shared `✦ Cortex Code · welcome`
+/// Render the first-run onboarding welcome screen into `area`: the shared `✦ Cortex · welcome`
 /// chrome (breadcrumb + rule + 3-zone status bar), the centered rounded `Cortex CLI v<version>`
 /// card, and the first-run footer beneath it.
 pub fn draw_onboarding(frame: &mut Frame, app: &App, area: Rect, theme: &ThemeColors) {
@@ -174,9 +177,17 @@ fn card_interior_lines(width: usize, theme: &ThemeColors) -> Vec<Line<'static>> 
             ],
         ),
         // Row 3: mascot lower.
-        interior_row(width, base, &[(MASCOT_COL, vec![(mascot[2].to_owned(), orange)])]),
+        interior_row(
+            width,
+            base,
+            &[(MASCOT_COL, vec![(mascot[2].to_owned(), orange)])],
+        ),
         // Row 4: mascot legs.
-        interior_row(width, base, &[(MASCOT_COL, vec![(mascot[3].to_owned(), orange)])]),
+        interior_row(
+            width,
+            base,
+            &[(MASCOT_COL, vec![(mascot[3].to_owned(), orange)])],
+        ),
         // Row 5: blank gap.
         interior_row(width, base, &[]),
     ];
@@ -340,24 +351,37 @@ mod tests {
             Some(PathBuf::from("/home/dev/.config/cortex/config.toml")),
             "falls back to $HOME/.config"
         );
-        assert_eq!(global_config_path(None, None), None, "no config home resolvable");
+        assert_eq!(
+            global_config_path(None, None),
+            None,
+            "no config home resolvable"
+        );
     }
 
     #[test]
     fn card_title_is_the_authentic_version_never_the_mockup() {
         let title = card_title();
         assert_eq!(title, "Cortex CLI v0.1.0", "authentic binary version");
-        assert!(!title.contains("v0.4.2"), "never the mockup version literal");
+        assert!(
+            !title.contains("v0.4.2"),
+            "never the mockup version literal"
+        );
     }
 
     #[test]
     fn breadcrumb_reads_cortex_code_welcome() {
-        // VAL-ONB-003: the top breadcrumb reads `✦ Cortex Code · welcome`.
+        // VAL-ONB-003: the top breadcrumb reads `✦ Cortex · welcome`.
         let buf = render();
         let header = row_text(&buf, 0);
         assert!(header.contains('✦'), "brand star on row 0:\n{header}");
-        assert!(header.contains("Cortex Code"), "wordmark on row 0:\n{header}");
-        assert!(header.contains("welcome"), "welcome crumb on row 0:\n{header}");
+        assert!(
+            header.contains(crate::brand::WORDMARK_NAME),
+            "wordmark on row 0:\n{header}"
+        );
+        assert!(
+            header.contains("welcome"),
+            "welcome crumb on row 0:\n{header}"
+        );
     }
 
     #[test]
@@ -365,9 +389,18 @@ mod tests {
         // VAL-ONB-004/005: a rounded card whose title is the authentic `Cortex CLI v0.1.0`.
         let buf = render();
         let text = buffer_text(&buf);
-        assert!(text.contains('╭') && text.contains('╮'), "rounded top corners");
-        assert!(text.contains('╰') && text.contains('╯'), "rounded bottom corners");
-        assert!(text.contains("Cortex CLI v0.1.0"), "authentic card title:\n{text}");
+        assert!(
+            text.contains('╭') && text.contains('╮'),
+            "rounded top corners"
+        );
+        assert!(
+            text.contains('╰') && text.contains('╯'),
+            "rounded bottom corners"
+        );
+        assert!(
+            text.contains("Cortex CLI v0.1.0"),
+            "authentic card title:\n{text}"
+        );
         assert!(!text.contains("v0.4.2"), "never the mockup version");
     }
 
@@ -376,7 +409,10 @@ mod tests {
         // VAL-ONB-006/007: the brain mascot block-art, a `Welcome!` heading, and a subtitle.
         let buf = render();
         let text = buffer_text(&buf);
-        assert!(text.contains("██ ▌  ▐ ██"), "brain mascot block-art:\n{text}");
+        assert!(
+            text.contains("██ ▌  ▐ ██"),
+            "brain mascot block-art:\n{text}"
+        );
         assert!(text.contains("Welcome!"), "welcome heading");
         assert!(
             text.contains("Your AI-powered coding assistant."),
@@ -400,7 +436,10 @@ mod tests {
         // VAL-ONB-009: a faint action line and a dim-orange first-run line beneath the card.
         let buf = render();
         let text = buffer_text(&buf);
-        assert!(text.contains("press enter to start"), "action line:\n{text}");
+        assert!(
+            text.contains("press enter to start"),
+            "action line:\n{text}"
+        );
         assert!(text.contains("? for help"), "help hint on the action line");
         assert!(
             text.contains("first run") && text.contains("let's get you set up"),
@@ -413,7 +452,10 @@ mod tests {
         // VAL-ONB-010: the 3-zone status bar remains on the bottom row with the real model id.
         let buf = render();
         let status = row_text(&buf, 29);
-        assert!(status.contains("? for help"), "status bar left zone:\n{status}");
+        assert!(
+            status.contains("? for help"),
+            "status bar left zone:\n{status}"
+        );
         assert!(
             status.contains("allow all commands"),
             "status bar center zone:\n{status}"
@@ -437,14 +479,22 @@ mod tests {
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.contains('▐'))
             .expect("mascot span");
-        assert_eq!(mascot_span.style.fg, Some(theme.primary), "mascot is ORANGE");
+        assert_eq!(
+            mascot_span.style.fg,
+            Some(theme.primary),
+            "mascot is ORANGE"
+        );
         // The bullet is dim-orange.
         let bullet_span = lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content == glyphs::BULLET)
             .expect("bullet span");
-        assert_eq!(bullet_span.style.fg, Some(theme.border), "bullet is ORANGE_D");
+        assert_eq!(
+            bullet_span.style.fg,
+            Some(theme.border),
+            "bullet is ORANGE_D"
+        );
     }
 
     #[test]

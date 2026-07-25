@@ -114,7 +114,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     // When the sidebar is open the screen splits into a live conversation on the LEFT and the
-    // sidebar column on the RIGHT, wrapped in the shared `✦ Cortex Code · <panel>` chrome (header +
+    // sidebar column on the RIGHT, wrapped in the shared `✦ Cortex · <panel>` chrome (header +
     // rule + a full-width status bar). Otherwise the conversation spans the full width and draws its
     // own one-line status bar — except in plan mode, which wraps the conversation in the same shared
     // chrome under a `plan mode` breadcrumb (and gains an amber footer banner above the composer).
@@ -2673,7 +2673,7 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCol
     }
 }
 
-/// Draw an open full-screen Wave-2 view: the shared chrome (a `✦ Cortex Code · <crumb>` header, a
+/// Draw an open full-screen Wave-2 view: the shared chrome (a `✦ Cortex · <crumb>` header, a
 /// rule, and the 3-zone status bar) wrapping a titled panel whose body is rendered per view kind.
 /// The chrome, crumb, status bar, and brand palette are shared across every view so the surfaces
 /// read consistently; a view opened with no data renders an explicit empty state, never a blank
@@ -3016,7 +3016,7 @@ fn draw_view_placeholder(frame: &mut Frame, area: Rect, theme: &style::ThemeColo
     );
 }
 
-/// Render the `/diff` viewer as a full-screen Wave-2 view: the shared chrome (`✦ Cortex Code ·
+/// Render the `/diff` viewer as a full-screen Wave-2 view: the shared chrome (`✦ Cortex ·
 /// /diff` header + rule + 3-zone status bar) wrapping a titled `Changes` panel. The panel body is a
 /// multi-file diff accordion — one disclosure row per changed file (`▼` open / `▶` collapsed) with
 /// the open file's hunk body unfolded inline (line-numbered red/green rows reusing the wave0
@@ -4392,7 +4392,7 @@ fn draw_palette(frame: &mut Frame, app: &App, area: Rect, theme: &style::ThemeCo
 }
 
 /// The geometry of an open sidebar split: the live conversation on the left and the sidebar box on
-/// the right, wrapped in the shared `✦ Cortex Code · <panel>` chrome (header + rule + status bar).
+/// the right, wrapped in the shared `✦ Cortex · <panel>` chrome (header + rule + status bar).
 #[derive(Debug, Clone, Copy)]
 struct SidebarSplit {
     /// The left conversation region (`MAINX`/`MAINW`), below the chrome header + rule.
@@ -6109,7 +6109,7 @@ mod tests {
         let lines = transcript_lines(&a, 92);
         let card_idx = lines
             .iter()
-            .position(|l| plain(l).contains("Cortex Code"))
+            .position(|l| plain(l).contains(crate::brand::WORDMARK_NAME))
             .expect("MOTD card wordmark present at the top");
         let user_idx = lines
             .iter()
@@ -6262,7 +6262,8 @@ mod tests {
         );
 
         // The full MOTD card is still visible (nothing scrolled) and no meta panels / transcript.
-        assert!(screen.contains("Cortex Code"), "MOTD card still visible while typing");
+        assert!(screen.contains(crate::brand::WORDMARK_NAME), "MOTD card still visible while typing");
+        assert!(!screen.contains("Cortex Code"), "VAL-CORTEX-UX-002: no copper plate while typing");
         assert!(!screen.contains("Directory"), "no meta panels while typing");
         assert!(!screen.contains('▲'), "nothing clipped off the top while typing");
     }
@@ -6401,7 +6402,7 @@ mod tests {
 
     #[test]
     fn sidebar_open_renders_breadcrumb_box_subtitle_rule_and_status_bar() {
-        // VAL-SIDE-001/004/005/006/007: opening the sidebar draws the `✦ Cortex Code · context`
+        // VAL-SIDE-001/004/005/006/007: opening the sidebar draws the `✦ Cortex · context`
         // breadcrumb, a rounded sidebar box titled `Context` with a subtitle + ghost rule, and the
         // 3-zone status bar (real model id) on the bottom row.
         let mut a = app();
@@ -6411,7 +6412,7 @@ mod tests {
 
         let row0 = buf_row(&buf, 0);
         assert!(row0.contains('✦'), "breadcrumb star on row 0:\n{row0}");
-        assert!(row0.contains("Cortex Code"), "breadcrumb wordmark:\n{row0}");
+        assert!(row0.contains(crate::brand::WORDMARK_NAME), "breadcrumb wordmark:\n{row0}");
         assert!(
             row0.contains("context"),
             "breadcrumb crumb equals the active panel:\n{row0}"
@@ -6976,7 +6977,7 @@ mod tests {
 
     #[test]
     fn home_screen_renders_the_brand_lockup_and_brain_mascot() {
-        // VAL-FOUND-005/006/007: the home/MOTD shows the `✦ Cortex Code` wordmark and the brain
+        // VAL-FOUND-005/006/007: the home/MOTD shows the `✦ Cortex` wordmark and the brain
         // mascot block-art in the brand accent, with no `>_` cliché and zero tofu.
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -6996,8 +6997,12 @@ mod tests {
 
         assert!(screen.contains('✦'), "the brand star renders:\n{screen}");
         assert!(
-            screen.contains("Cortex Code"),
+            screen.contains(crate::brand::WORDMARK_NAME),
             "the wordmark name renders:\n{screen}"
+        );
+        assert!(
+            !screen.contains("Cortex Code"),
+            "VAL-CORTEX-UX-002 bans Cortex Code plate:\n{screen}"
         );
         assert!(!screen.contains(">_"), "the `>_` cliché never appears");
         assert!(
@@ -7913,8 +7918,8 @@ mod tests {
     #[test]
     fn markdown_answer_shows_chat_rendering_breadcrumb() {
         // VAL-MD-001: while a structured markdown answer is actively streaming, the screen wraps
-        // the conversation in the shared chrome with a `✦ Cortex Code · chat · rendering` header
-        // (✦ ORANGE, `Cortex Code` BRIGHT, ` · ` GHOST, trailing `rendering` AMBER). This is a
+        // the conversation in the shared chrome with a `✦ Cortex · chat · rendering` header
+        // (✦ ORANGE, `Cortex` BRIGHT, ` · ` GHOST, trailing `rendering` AMBER). This is a
         // streaming-state affordance only (VAL-CONV-021/063 lock the static `▲ N lines above`
         // row-0 for a non-streaming/loaded conversation), so the turn must still be busy.
         use ratatui::Terminal;
@@ -7937,10 +7942,10 @@ mod tests {
 
         let row0: String = (0..92).map(|x| buffer[(x, 0)].symbol()).collect::<Vec<_>>().concat();
         assert!(
-            row0.contains("Cortex Code") && row0.contains("chat") && row0.contains("rendering"),
+            row0.contains(crate::brand::WORDMARK_NAME) && row0.contains("chat") && row0.contains("rendering"),
             "row 0 shows the chat·rendering breadcrumb: {row0:?}"
         );
-        // The trailing `rendering` crumb is AMBER; `Cortex Code` is BRIGHT; the star is ORANGE.
+        // The trailing `rendering` crumb is AMBER; `Cortex` is BRIGHT; the star is ORANGE.
         let cell_fg = |needle: char| {
             (0..92)
                 .map(|x| buffer[(x, 0)].clone())
@@ -7958,8 +7963,8 @@ mod tests {
     #[test]
     fn code_block_answer_shows_chat_code_breadcrumb() {
         // VAL-MD-011: a settled (non-streaming) answer containing a fenced code block wraps the
-        // conversation in the shared chrome with a `✦ Cortex Code · chat · code` header (✦ ORANGE,
-        // `Cortex Code` BRIGHT, ` · ` GHOST, trailing `code` crumb AMBER). The turn is finished, so
+        // conversation in the shared chrome with a `✦ Cortex · chat · code` header (✦ ORANGE,
+        // `Cortex` BRIGHT, ` · ` GHOST, trailing `code` crumb AMBER). The turn is finished, so
         // this is the settled counterpart of the streaming `chat · rendering` crumb.
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -7980,7 +7985,7 @@ mod tests {
 
         let row0: String = (0..92).map(|x| buffer[(x, 0)].symbol()).collect::<Vec<_>>().concat();
         assert!(
-            row0.contains("Cortex Code") && row0.contains("chat") && row0.contains("code"),
+            row0.contains(crate::brand::WORDMARK_NAME) && row0.contains("chat") && row0.contains("code"),
             "row 0 shows the chat·code breadcrumb: {row0:?}"
         );
         // The star is ORANGE and the trailing `code` crumb is AMBER.
@@ -10032,7 +10037,7 @@ mod tests {
 
         // VAL-PERM-041: the chrome breadcrumb reads `attachments`.
         assert!(
-            rows[0].contains("Cortex Code") && rows[0].contains("attachments"),
+            rows[0].contains(crate::brand::WORDMARK_NAME) && rows[0].contains("attachments"),
             "attachments breadcrumb on row 0:\n{}",
             rows[0]
         );
@@ -10864,7 +10869,7 @@ mod tests {
         let rendered = screen(&terminal);
         let row0 = rendered.lines().next().unwrap_or("");
         assert!(
-            row0.contains('✦') && row0.contains("Cortex Code") && row0.contains("find"),
+            row0.contains('✦') && row0.contains(crate::brand::WORDMARK_NAME) && row0.contains("find"),
             "row 0 shows the chat·find breadcrumb: {row0}"
         );
     }
@@ -11225,7 +11230,7 @@ mod tests {
 
         let row0 = buf_row(&buf, 0);
         assert!(row0.contains('✦'), "breadcrumb star on row 0:\n{row0}");
-        assert!(row0.contains("Cortex Code"), "breadcrumb wordmark:\n{row0}");
+        assert!(row0.contains(crate::brand::WORDMARK_NAME), "breadcrumb wordmark:\n{row0}");
         assert!(row0.contains("plan mode"), "breadcrumb crumb is `plan mode`:\n{row0}");
 
         let screen = buf_text(&buf);

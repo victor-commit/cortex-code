@@ -6,7 +6,7 @@
 //! and is modal (Esc returns to the conversation).
 //!
 //! Structure, top-to-bottom (VAL-THEME-001):
-//! - a header wordmark `✦ Cortex Code · chat` with a horizontal rule beneath it,
+//! - a header wordmark `✦ Cortex · chat` with a horizontal rule beneath it,
 //! - a `› you  show me the validator` user line,
 //! - a `✦ Cortex  here is the schema check:` assistant line,
 //! - a fenced Rust code block (language tag + `theme: <name>` tag, per-line numbers, theme syntax),
@@ -45,7 +45,8 @@ const COMPOSER_PLACEHOLDER: &str = "what should we build today…";
 /// The canonical four-line Rust snippet rendered in the gallery's fenced code block (VAL-THEME-006):
 /// `fn validate`, a `let n = a["tool"]` line with a `// name` comment, `REGISTRY.has(n)`, and the
 /// closing brace.
-const SNIPPET: &str = "fn validate(a: &Value) -> bool {\n    let n = a[\"tool\"];  // name\n    REGISTRY.has(n)\n}";
+const SNIPPET: &str =
+    "fn validate(a: &Value) -> bool {\n    let n = a[\"tool\"];  // name\n    REGISTRY.has(n)\n}";
 
 /// Normalize a configured theme name to its short display form (`ocean_dark` → `ocean`,
 /// `vscode-dark` → `vscode`), leaving the canonical names (`dark`/`light`/`monokai`/`ocean`/
@@ -75,7 +76,7 @@ pub fn draw_theme_gallery(frame: &mut Frame, app: &App, area: Rect, theme: &Them
     let width = area.width as usize;
     let name = display_theme_name(app.theme());
 
-    // Row 0: `✦ Cortex Code · chat`.
+    // Row 0: `✦ Cortex · chat`.
     frame.render_widget(
         Paragraph::new(header_line(width, theme)).style(Style::default().bg(theme.background)),
         Rect { height: 1, ..area },
@@ -135,7 +136,7 @@ pub fn draw_theme_gallery(frame: &mut Frame, app: &App, area: Rect, theme: &Them
     );
 }
 
-/// The header wordmark line: `✦` (primary) + `Cortex Code` (bright, bold) + ` · ` (ghost) + `chat`
+/// The header wordmark line: `✦` (primary) + `Cortex` (bright, bold) + ` · ` (ghost) + `chat`
 /// (secondary/amber), inset by [`MARGIN`], on the theme background.
 fn header_line(width: usize, theme: &ThemeColors) -> Line<'static> {
     let base = Style::default().fg(theme.text).bg(theme.background);
@@ -146,7 +147,7 @@ fn header_line(width: usize, theme: &ThemeColors) -> Line<'static> {
             Style::default().fg(theme.primary).bg(theme.background),
         ),
         (
-            "Cortex Code".to_owned(),
+            crate::brand::WORDMARK_NAME.to_owned(),
             Style::default()
                 .fg(theme.text_bright)
                 .bg(theme.background)
@@ -200,10 +201,7 @@ fn body_lines(app: &App, name: &str, width: usize, theme: &ThemeColors) -> Vec<L
     // The fenced Rust code block, inset by MARGIN and bound to the active theme (VAL-THEME-004/006).
     let code_width = width.saturating_sub(MARGIN * 2).max(8) as u16;
     let code_lines = frame::markdown::render_gallery_code_block(SNIPPET, "rust", name, code_width);
-    let margin_span = Span::styled(
-        " ".repeat(MARGIN),
-        Style::default().bg(theme.background),
-    );
+    let margin_span = Span::styled(" ".repeat(MARGIN), Style::default().bg(theme.background));
     for line in code_lines {
         let mut spans = Vec::with_capacity(line.spans.len() + 1);
         spans.push(margin_span.clone());
@@ -342,7 +340,10 @@ fn status_bar_line(app: &App, name: &str, width: usize, theme: &ThemeColors) -> 
         &mut cells,
         MARGIN,
         &[
-            ("?".to_owned(), Style::default().fg(theme.border).bg(surface)),
+            (
+                "?".to_owned(),
+                Style::default().fg(theme.border).bg(surface),
+            ),
             (
                 " for help".to_owned(),
                 Style::default().fg(theme.text_muted).bg(surface),
@@ -357,10 +358,7 @@ fn status_bar_line(app: &App, name: &str, width: usize, theme: &ThemeColors) -> 
     place_segments(
         &mut cells,
         center_start,
-        &[(
-            center,
-            Style::default().fg(theme.text_dim).bg(surface),
-        )],
+        &[(center, Style::default().fg(theme.text_dim).bg(surface))],
     );
 
     // Right zone: the real active model id, flush to the right margin.
@@ -425,7 +423,10 @@ mod tests {
         let buf = render("dark");
         let header = row_text(&buf, 0);
         assert!(header.contains('✦'), "brand star on row 0:\n{header}");
-        assert!(header.contains("Cortex Code"), "wordmark on row 0:\n{header}");
+        assert!(
+            header.contains(crate::brand::WORDMARK_NAME),
+            "wordmark on row 0:\n{header}"
+        );
         assert!(header.contains("chat"), "chat crumb on row 0:\n{header}");
 
         let rule = row_text(&buf, 1);
@@ -441,9 +442,15 @@ mod tests {
         assert!(text.contains(ASSISTANT_TEXT), "assistant text present");
         assert!(text.contains("rust"), "code language label present");
         assert!(text.contains("fn validate"), "rust snippet fn present");
-        assert!(text.contains("a[\"tool\"]"), "rust snippet let line present");
+        assert!(
+            text.contains("a[\"tool\"]"),
+            "rust snippet let line present"
+        );
         assert!(text.contains("// name"), "rust snippet comment present");
-        assert!(text.contains("REGISTRY.has(n)"), "rust snippet call present");
+        assert!(
+            text.contains("REGISTRY.has(n)"),
+            "rust snippet call present"
+        );
         assert!(text.contains("valid"), "status dot `valid`");
         assert!(text.contains("82% ctx"), "status dot `82% ctx`");
         assert!(text.contains("1 error"), "status dot `1 error`");
@@ -458,7 +465,10 @@ mod tests {
         for n in ["1", "2", "3", "4"] {
             assert!(text.contains(n), "line number {n} present");
         }
-        assert!(text.contains("theme: dark"), "code-block theme tag present:\n{text}");
+        assert!(
+            text.contains("theme: dark"),
+            "code-block theme tag present:\n{text}"
+        );
     }
 
     #[test]
@@ -472,7 +482,10 @@ mod tests {
             bar.contains("google/gemini-2.5-flash"),
             "right zone shows the real model id:\n{bar}"
         );
-        assert!(!bar.contains("opus-4.8"), "never the mockup model id:\n{bar}");
+        assert!(
+            !bar.contains("opus-4.8"),
+            "never the mockup model id:\n{bar}"
+        );
     }
 
     #[test]
@@ -501,7 +514,11 @@ mod tests {
         let star = &buf[(MARGIN as u16, 0)];
         assert_eq!(star.symbol(), "✦");
         assert_eq!(star.fg, Color::Rgb(232, 146, 86), "star is brand ORANGE");
-        assert_eq!(star.bg, Color::Rgb(13, 13, 13), "near-black canvas behind the star");
+        assert_eq!(
+            star.bg,
+            Color::Rgb(13, 13, 13),
+            "near-black canvas behind the star"
+        );
     }
 
     #[test]
@@ -550,7 +567,10 @@ mod tests {
             let text = all_text(&render(name));
             assert!(!glyphs::contains_braille(&text), "{name}: no braille");
             for forbidden in ['▸', '▾', '⌘', '⬡', '“', '”', '‘', '’'] {
-                assert!(!text.contains(forbidden), "{name}: forbidden glyph {forbidden:?}");
+                assert!(
+                    !text.contains(forbidden),
+                    "{name}: forbidden glyph {forbidden:?}"
+                );
             }
             assert!(!text.contains(">_"), "{name}: no `>_` cliché");
         }
@@ -574,8 +594,16 @@ mod tests {
         };
         let dark_kw = kw_fg(&dark);
         let light_kw = kw_fg(&light);
-        assert_eq!(dark_kw, Color::Rgb(232, 146, 86), "dark `fn` keyword is orange");
-        assert_eq!(light_kw, Color::Rgb(0, 0, 200), "light `fn` keyword is blue");
+        assert_eq!(
+            dark_kw,
+            Color::Rgb(232, 146, 86),
+            "dark `fn` keyword is orange"
+        );
+        assert_eq!(
+            light_kw,
+            Color::Rgb(0, 0, 200),
+            "light `fn` keyword is blue"
+        );
         assert_ne!(dark_kw, light_kw, "syntax palette follows the chrome theme");
     }
 
@@ -622,8 +650,16 @@ mod tests {
         let buf = render("monokai");
         let star = &buf[(MARGIN as u16, 0)];
         assert_eq!(star.symbol(), "✦");
-        assert_eq!(star.fg, Color::Rgb(166, 226, 46), "monokai primary is lime-green");
-        assert_eq!(star.bg, Color::Rgb(39, 40, 34), "monokai background #272822");
+        assert_eq!(
+            star.fg,
+            Color::Rgb(166, 226, 46),
+            "monokai primary is lime-green"
+        );
+        assert_eq!(
+            star.bg,
+            Color::Rgb(39, 40, 34),
+            "monokai background #272822"
+        );
         // The assistant `✦` mark carries the cyan secondary accent.
         let (ay, _) = token_pos(&buf, "here is").expect("assistant line present");
         assert_eq!(
@@ -644,11 +680,31 @@ mod tests {
         // VAL-THEME-018: pink/magenta keywords (`#f92672`), lime function names (`#a6e22e`), cyan
         // types (`#66d9ef`), plus a muted comment — a varied palette, not a uniform block.
         let buf = render("monokai");
-        assert_eq!(token_fg(&buf, "fn "), Color::Rgb(249, 38, 114), "monokai keyword pink");
-        assert_eq!(token_fg(&buf, "validate"), Color::Rgb(166, 226, 46), "monokai function lime");
-        assert_eq!(token_fg(&buf, "bool"), Color::Rgb(102, 217, 239), "monokai type cyan");
-        assert_eq!(token_fg(&buf, "tool"), Color::Rgb(230, 219, 116), "monokai string yellow");
-        assert_eq!(token_fg(&buf, "// name"), Color::Rgb(117, 113, 94), "monokai comment muted");
+        assert_eq!(
+            token_fg(&buf, "fn "),
+            Color::Rgb(249, 38, 114),
+            "monokai keyword pink"
+        );
+        assert_eq!(
+            token_fg(&buf, "validate"),
+            Color::Rgb(166, 226, 46),
+            "monokai function lime"
+        );
+        assert_eq!(
+            token_fg(&buf, "bool"),
+            Color::Rgb(102, 217, 239),
+            "monokai type cyan"
+        );
+        assert_eq!(
+            token_fg(&buf, "tool"),
+            Color::Rgb(230, 219, 116),
+            "monokai string yellow"
+        );
+        assert_eq!(
+            token_fg(&buf, "// name"),
+            Color::Rgb(117, 113, 94),
+            "monokai comment muted"
+        );
         // VAL-THEME-018: the bare SCREAMING_SNAKE_CASE `REGISTRY` classifies as `constant` and gets
         // the monokai constant purple (#ae81ff), not the default/plain fallback.
         assert_eq!(
@@ -675,7 +731,11 @@ mod tests {
         let star = &buf[(MARGIN as u16, 0)];
         assert_eq!(star.symbol(), "✦");
         assert_eq!(star.fg, Color::Rgb(0, 200, 200), "ocean primary is cyan");
-        assert_eq!(star.bg, Color::Rgb(10, 25, 47), "ocean navy background #0a192f");
+        assert_eq!(
+            star.bg,
+            Color::Rgb(10, 25, 47),
+            "ocean navy background #0a192f"
+        );
         let (ay, _) = token_pos(&buf, "here is").expect("assistant line present");
         assert_eq!(
             buf[(MARGIN as u16, ay)].fg,
@@ -694,10 +754,26 @@ mod tests {
         // VAL-THEME-020: cyan keywords/types, a soft-green `"tool"` string, and a muted blue-grey
         // `// name` comment on the navy code surface.
         let buf = render("ocean");
-        assert_eq!(token_fg(&buf, "fn "), Color::Rgb(0, 200, 200), "ocean keyword cyan");
-        assert_eq!(token_fg(&buf, "bool"), Color::Rgb(120, 210, 230), "ocean type cyan");
-        assert_eq!(token_fg(&buf, "tool"), Color::Rgb(130, 220, 170), "ocean string soft-green");
-        assert_eq!(token_fg(&buf, "// name"), Color::Rgb(80, 110, 140), "ocean comment blue-grey");
+        assert_eq!(
+            token_fg(&buf, "fn "),
+            Color::Rgb(0, 200, 200),
+            "ocean keyword cyan"
+        );
+        assert_eq!(
+            token_fg(&buf, "bool"),
+            Color::Rgb(120, 210, 230),
+            "ocean type cyan"
+        );
+        assert_eq!(
+            token_fg(&buf, "tool"),
+            Color::Rgb(130, 220, 170),
+            "ocean string soft-green"
+        );
+        assert_eq!(
+            token_fg(&buf, "// name"),
+            Color::Rgb(80, 110, 140),
+            "ocean comment blue-grey"
+        );
         let (kw, st, cmt) = (
             token_fg(&buf, "fn "),
             token_fg(&buf, "tool"),
@@ -715,8 +791,16 @@ mod tests {
         let buf = render("vscode");
         let star = &buf[(MARGIN as u16, 0)];
         assert_eq!(star.symbol(), "✦");
-        assert_eq!(star.fg, Color::Rgb(0, 122, 204), "vscode primary is VS Code blue #007ACC");
-        assert_eq!(star.bg, Color::Rgb(30, 30, 30), "vscode neutral background #1e1e1e");
+        assert_eq!(
+            star.fg,
+            Color::Rgb(0, 122, 204),
+            "vscode primary is VS Code blue #007ACC"
+        );
+        assert_eq!(
+            star.bg,
+            Color::Rgb(30, 30, 30),
+            "vscode neutral background #1e1e1e"
+        );
         let (ay, _) = token_pos(&buf, "here is").expect("assistant line present");
         assert_eq!(
             buf[(MARGIN as u16, ay)].fg,
@@ -736,10 +820,26 @@ mod tests {
         // (`#DCDCAA`), an orange-brown `"tool"` string (`#CE9178`), and a green `// name` comment
         // (`#6A9955`); varied, NOT a washed-out uniformly-green block.
         let buf = render("vscode");
-        assert_eq!(token_fg(&buf, "fn "), Color::Rgb(86, 156, 214), "vscode keyword blue #569CD6");
-        assert_eq!(token_fg(&buf, "validate"), Color::Rgb(220, 220, 170), "vscode function yellow #DCDCAA");
-        assert_eq!(token_fg(&buf, "tool"), Color::Rgb(206, 145, 120), "vscode string orange-brown #CE9178");
-        assert_eq!(token_fg(&buf, "// name"), Color::Rgb(106, 153, 85), "vscode comment green #6A9955");
+        assert_eq!(
+            token_fg(&buf, "fn "),
+            Color::Rgb(86, 156, 214),
+            "vscode keyword blue #569CD6"
+        );
+        assert_eq!(
+            token_fg(&buf, "validate"),
+            Color::Rgb(220, 220, 170),
+            "vscode function yellow #DCDCAA"
+        );
+        assert_eq!(
+            token_fg(&buf, "tool"),
+            Color::Rgb(206, 145, 120),
+            "vscode string orange-brown #CE9178"
+        );
+        assert_eq!(
+            token_fg(&buf, "// name"),
+            Color::Rgb(106, 153, 85),
+            "vscode comment green #6A9955"
+        );
         // VAL-THEME-022: the bare SCREAMING_SNAKE_CASE `REGISTRY` classifies as `constant` and gets
         // the VS Code Dark+ light-blue constant (#4fc1ff) — NOT constant.builtin blue (#569CD6).
         assert_eq!(
@@ -755,7 +855,10 @@ mod tests {
         ];
         for i in 0..colors.len() {
             for j in (i + 1)..colors.len() {
-                assert_ne!(colors[i], colors[j], "vscode syntax palette is varied, not uniform");
+                assert_ne!(
+                    colors[i], colors[j],
+                    "vscode syntax palette is varied, not uniform"
+                );
             }
         }
     }
@@ -800,7 +903,7 @@ mod tests {
         let mut bar_rows = Vec::new();
         for name in ["dark", "light", "monokai", "ocean", "vscode"] {
             let buf = render(name);
-            header_rows.push(token_pos(&buf, "✦ Cortex Code").map(|(y, _)| y));
+            header_rows.push(token_pos(&buf, "✦ Cortex").map(|(y, _)| y));
             rule_rows.push({
                 let mut r = None;
                 for y in 0..buf.area.height {
@@ -825,7 +928,10 @@ mod tests {
             ("rule row", rule_rows),
         ] {
             assert!(v[0].is_some(), "{label} present");
-            assert!(v.iter().all(|p| *p == v[0]), "{label} identical across themes: {v:?}");
+            assert!(
+                v.iter().all(|p| *p == v[0]),
+                "{label} identical across themes: {v:?}"
+            );
         }
         for (label, v) in [
             ("user line", user_pos),
@@ -833,7 +939,10 @@ mod tests {
             ("code block", code_pos),
         ] {
             assert!(v[0].is_some(), "{label} present");
-            assert!(v.iter().all(|p| *p == v[0]), "{label} row/col identical across themes: {v:?}");
+            assert!(
+                v.iter().all(|p| *p == v[0]),
+                "{label} row/col identical across themes: {v:?}"
+            );
         }
     }
 
@@ -862,18 +971,32 @@ mod tests {
             let buf = render(name);
             // Chrome: the header star + composer prompt + user `›` all carry the active primary.
             let star = &buf[(MARGIN as u16, 0)];
-            assert_eq!(star.fg, *prim, "{name}: header wordmark recolored to the theme primary");
+            assert_eq!(
+                star.fg, *prim,
+                "{name}: header wordmark recolored to the theme primary"
+            );
             let (uy, ux) = token_pos(&buf, "› you").expect("user line");
-            assert_eq!(buf[(ux, uy)].fg, *prim, "{name}: user `›` mark uses the theme primary");
+            assert_eq!(
+                buf[(ux, uy)].fg,
+                *prim,
+                "{name}: user `›` mark uses the theme primary"
+            );
             // Syntax follows the chrome theme.
-            assert_eq!(token_fg(&buf, "fn "), *kw, "{name}: code keyword follows the chrome theme");
+            assert_eq!(
+                token_fg(&buf, "fn "),
+                *kw,
+                "{name}: code keyword follows the chrome theme"
+            );
             primaries.push(*prim);
             keywords.push(*kw);
         }
         // Per-theme distinctness (VAL-THEME-010): keyword colors are not one shared set.
         for i in 0..keywords.len() {
             for j in (i + 1)..keywords.len() {
-                assert_ne!(keywords[i], keywords[j], "syntax keyword colors differ per theme");
+                assert_ne!(
+                    keywords[i], keywords[j],
+                    "syntax keyword colors differ per theme"
+                );
             }
         }
     }
@@ -888,15 +1011,24 @@ mod tests {
             let theme = ThemeColors::from_name(name);
             let dots = status_dot_fgs(&buf);
             assert_eq!(dots.len(), 3, "{name}: exactly three status dots");
-            assert_eq!(dots[0], theme.success, "{name}: first dot is the success tone");
-            assert_eq!(dots[1], theme.warning, "{name}: second dot is the warning tone");
+            assert_eq!(
+                dots[0], theme.success,
+                "{name}: first dot is the success tone"
+            );
+            assert_eq!(
+                dots[1], theme.warning,
+                "{name}: second dot is the warning tone"
+            );
             assert_eq!(dots[2], theme.error, "{name}: third dot is the error tone");
             // All three tones are distinct and none is washed out into the background.
             assert_ne!(dots[0], dots[1], "{name}: success != warning");
             assert_ne!(dots[1], dots[2], "{name}: warning != error");
             assert_ne!(dots[0], dots[2], "{name}: success != error");
             for (i, d) in dots.iter().enumerate() {
-                assert_ne!(*d, theme.background, "{name}: dot {i} is legible against the background");
+                assert_ne!(
+                    *d, theme.background,
+                    "{name}: dot {i} is legible against the background"
+                );
             }
             let text = all_text(&buf);
             assert!(text.contains("valid"), "{name}: `valid` label");
