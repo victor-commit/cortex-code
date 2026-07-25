@@ -9,8 +9,9 @@
 //! - Secondary orch destinations collapse to thin stubs that point home.
 //!
 //! This module paints plain text fingerprints consumed by the Ratatui surface
-//! and by unit/tmux assertions (VAL-CORTEX-TUI-004 / CROSS-001). Live scheduler
-//! bindings arrive in M4; M3 ships the premium fixture shell.
+//! and by unit/tmux assertions (VAL-CORTEX-TUI-004 / CROSS-001). M4 binds live
+//! scheduler snapshots via [`live_home_lines`] / [`snapshot_to_variant`] while
+//! keeping the premium fixture shell for offline paints.
 
 use tui_components::chrome::{
     format_context_budget, DEMO_CTX_TOTAL, DEMO_CTX_USED, DEMO_CWD,
@@ -186,6 +187,139 @@ pub fn render_stub_lines(kind: McStubKind, width: usize) -> Vec<String> {
         String::new(),
         "Esc Mission Control home · residual stub only".to_owned(),
     ]
+}
+
+/// Map a live [`missions::MissionSnapshot`] to the closest MC paint variant.
+///
+/// Failure isolation: any failed feature with remaining live/completed siblings
+/// selects [`McVariant::OneFailed`]; otherwise [`McVariant::RunningAll`].
+#[must_use]
+pub fn snapshot_to_variant(snap: &missions::MissionSnapshot) -> McVariant {
+    if !snap.failed.is_empty() {
+        McVariant::OneFailed
+    } else {
+        McVariant::RunningAll
+    }
+}
+
+/// Render MC home lines from a live mission snapshot (progress_log + parallel counts).
+///
+/// Falls back to fixture geometry when the snapshot has no running workers yet, but
+/// always stamps live parallel N/max and progress tail into the paint so headless
+/// tests can assert scheduler binding without the full Ratatui loop.
+#[must_use]
+pub fn live_home_lines(snap: &missions::MissionSnapshot, width: usize) -> Vec<String> {
+    let width = width.max(80);
+    let variant = snapshot_to_variant(snap);
+    let mut lines = render_home_lines(variant, width);
+
+    // Overlay a live metrics line after the top bar so tests / UI can read real pool stats.
+    let live_n = snap.parallel_live.max(snap.running.len());
+    let max_n = snap.parallel_max.max(1);
+    let live_meta = format!(
+        "Live mission {} · Parallel {live_n}/{max_n} · done {}/{} · validation={}",
+        snap.id,
+        snap.features_done,
+        snap.features_total,
+        if snap.validation_invoked {
+            snap.last_validation.as_deref().unwrap_or("yes")
+        } else {
+            "pending"
+        }
+    );
+    // Insert after brand/top bar (index 0) and blank (index 1) → before RUNNING bar.
+    let insert_at = 2.min(lines.len());
+    lines.insert(insert_at, pad_right(&live_meta, width));
+
+    if !snap.progress_tail.is_empty() {
+        lines.push(pad_right("── live progress_log ──", width));
+        for entry in snap.progress_tail.iter().rev().take(8).collect::<Vec<_>>().into_iter().rev() {
+            let mut row = format!("  {entry}");
+            if row.chars().count() > width {
+                row = row.chars().take(width).collect();
+            }
+            lines.push(pad_right(&row, width));
+        }
+    }
+    // Re-seat footer at end.
+    lines.retain(|l| l.as_str() != MC_FOOTER);
+    while lines.len() < 38 {
+        lines.push(String::new());
+    }
+    lines.push(MC_FOOTER.to_owned());
+    lines
+}
+
+/// Apply a mission bus event into a mutable snapshot (MC event-bus subscription helper).
+///
+/// Returns `true` when the snapshot was updated. Used by tests and the TUI event pump.
+pub fn apply_mission_event(
+    snap: &mut missions::MissionSnapshot,
+    event: &events::Event,
+) -> bool {
+    match event {
+        events::Event::MissionStarted(e) if e.mission_id == snap.id || snap.id.is_empty() => {
+            snap.id = e.mission_id.clone();
+            snap.mission_dir = e.mission_dir.clone();
+            snap.parallel_max = e.max_parallel;
+            snap.status = "running".into();
+            true
+        }
+        events::Event::MissionWorkerStarted(e) if e.mission_id == snap.id => {
+            snap.parallel_live = e.live_count;
+            snap.parallel_max = e.max_parallel;
+            if !snap.running.iter().any(|w| w.feature_id == e.feature_id) {
+                snap.running.push(missions::WorkerSlotView {
+                    worker_id: e.worker_id.clone(),
+                    feature_id: e.feature_id.clone(),
+                    state: "running".into(),
+                });
+            }
+            snap.pending.retain(|id| id != &e.feature_id);
+            true
+        }
+        events::Event::MissionWorkerCompleted(e) if e.mission_id == snap.id => {
+            snap.parallel_live = e.live_count;
+            snap.running.retain(|w| w.feature_id != e.feature_id);
+            if !snap.completed.contains(&e.feature_id) {
+                snap.completed.push(e.feature_id.clone());
+            }
+            snap.features_done = snap.completed.len();
+            true
+        }
+        events::Event::MissionWorkerFailed(e) if e.mission_id == snap.id => {
+            snap.parallel_live = e.live_count;
+            snap.running.retain(|w| w.feature_id != e.feature_id);
+            if !snap.failed.contains(&e.feature_id) {
+                snap.failed.push(e.feature_id.clone());
+            }
+            true
+        }
+        events::Event::MissionProgress(e) if e.mission_id == snap.id => {
+            snap.parallel_live = e.live_count;
+            snap.progress_tail.push(format!(
+                "worker={} feature={} {}",
+                e.worker_id, e.feature_id, e.message
+            ));
+            if snap.progress_tail.len() > 24 {
+                let drain = snap.progress_tail.len() - 24;
+                snap.progress_tail.drain(0..drain);
+            }
+            true
+        }
+        events::Event::MissionValidation(e) if e.mission_id == snap.id => {
+            snap.validation_invoked = true;
+            snap.last_validation = Some(format!("{}:{}", e.milestone, e.outcome));
+            true
+        }
+        events::Event::MissionFinished(e) if e.mission_id == snap.id => {
+            snap.status = e.status.clone();
+            snap.parallel_live = 0;
+            snap.running.clear();
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Validate home paint fingerprint (unit + render gates).
@@ -607,5 +741,81 @@ mod tests {
         assert!(!text.contains("Cortex Code"));
         assert!(!text.contains("❯ You"));
         assert!(!text.contains("◆ Cortex"));
+    }
+
+    #[test]
+    fn live_snapshot_paints_parallel_and_progress() {
+        let snap = missions::MissionSnapshot {
+            id: "live-1".into(),
+            mission_dir: "/tmp/m".into(),
+            parallel_live: 3,
+            parallel_max: 4,
+            features_done: 1,
+            features_total: 3,
+            running: vec![
+                missions::WorkerSlotView {
+                    worker_id: "#21".into(),
+                    feature_id: "f-a".into(),
+                    state: "running".into(),
+                },
+                missions::WorkerSlotView {
+                    worker_id: "#22".into(),
+                    feature_id: "f-b".into(),
+                    state: "running".into(),
+                },
+            ],
+            failed: vec![],
+            pending: vec!["f-c".into()],
+            completed: vec![],
+            status: "running".into(),
+            progress_tail: vec![
+                "1 worker=#21 feature=f-a started".into(),
+                "2 worker=#22 feature=f-b started".into(),
+            ],
+            validation_invoked: false,
+            last_validation: None,
+        };
+        let text = live_home_lines(&snap, 120).join("\n");
+        assert!(text.contains(".: Mission Control"), "{text}");
+        assert!(text.contains("Parallel 3/4") || text.contains("Live mission live-1"), "{text}");
+        assert!(text.contains("progress_log") || text.contains("started"), "{text}");
+        assert_eq!(snapshot_to_variant(&snap), McVariant::RunningAll);
+    }
+
+    #[test]
+    fn apply_mission_events_updates_snapshot() {
+        let mut snap = missions::MissionSnapshot {
+            id: "m1".into(),
+            mission_dir: String::new(),
+            parallel_live: 0,
+            parallel_max: 3,
+            features_done: 0,
+            features_total: 3,
+            running: vec![],
+            failed: vec![],
+            pending: vec!["f-a".into()],
+            completed: vec![],
+            status: "created".into(),
+            progress_tail: vec![],
+            validation_invoked: false,
+            last_validation: None,
+        };
+        assert!(apply_mission_event(
+            &mut snap,
+            &events::Event::mission_worker_started("m1", "#21", "f-a", 1, 3),
+        ));
+        assert_eq!(snap.parallel_live, 1);
+        assert_eq!(snap.running.len(), 1);
+        assert!(apply_mission_event(
+            &mut snap,
+            &events::Event::mission_worker_failed("m1", "#21", "f-a", "boom", 0),
+        ));
+        assert!(snap.failed.contains(&"f-a".into()));
+        assert_eq!(snapshot_to_variant(&snap), McVariant::OneFailed);
+        assert!(apply_mission_event(
+            &mut snap,
+            &events::Event::mission_validation("m1", "ms", "passed"),
+        ));
+        assert!(snap.validation_invoked);
     }
 }

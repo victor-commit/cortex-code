@@ -23,6 +23,7 @@ mod lsp_cmd;
 mod lsp_config;
 mod man_cmd;
 mod mcp_cmd;
+mod mission_cmd;
 mod mcp_store;
 mod models_cmd;
 mod net;
@@ -156,6 +157,7 @@ fn main() -> ExitCode {
         Some(Command::Upgrade(args)) => lifecycle::run_upgrade(args).into(),
         Some(Command::Uninstall(args)) => lifecycle::run_uninstall(args).into(),
         Some(Command::Debug(args)) => debug_cmd::run(args).into(),
+        Some(Command::Mission(args)) => mission_cmd::run(args, bus.clone()).into(),
     }
 }
 
@@ -208,6 +210,7 @@ fn surface_of(command: &Option<Command>) -> Surface {
         Some(Command::Attach(_)) => Surface::Session,
         Some(Command::Upgrade(_)) | Some(Command::Uninstall(_)) => Surface::Config,
         Some(Command::Debug(_)) => Surface::Config,
+        Some(Command::Mission(_)) => Surface::Mission,
     }
 }
 

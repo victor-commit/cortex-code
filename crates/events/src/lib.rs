@@ -19,11 +19,13 @@ pub use event::{
 };
 pub use families::{
     CommandExecuted, FileEdited, FileWatcherUpdated, InstallationUpdated, LspUpdated,
-    MessagePartRemoved, MessagePartUpdated, MessageRemoved, MessageUpdated, ProjectUpdated,
-    PtyEvent, PtyExited, PtyRef, QuestionAsked, QuestionRejected, QuestionReplied,
-    SessionAgentSwitched, SessionCompactedEvent, SessionContext, SessionDiffEvent,
-    SessionErrorEvent, SessionModelSwitched, SessionRef, SessionRetried, SessionStatusEvent,
-    StepEvent, StreamBoundary, StreamDelta, TodoUpdated, ToolEnded, ToolStarted, TuiCommandExecute,
-    TuiPromptAppend, TuiSessionSelect, TuiToastShow, VcsBranchUpdated, WorkspaceEvent,
-    WorkspaceStatus, WorktreeFailed, WorktreeReady, WorktreeRemoved,
+    MessagePartRemoved, MessagePartUpdated, MessageRemoved, MessageUpdated, MissionFinished,
+    MissionProgress, MissionStarted, MissionValidation, MissionWorkerCompleted,
+    MissionWorkerFailed, MissionWorkerStarted, ProjectUpdated, PtyEvent, PtyExited, PtyRef,
+    QuestionAsked, QuestionRejected, QuestionReplied, SessionAgentSwitched, SessionCompactedEvent,
+    SessionContext, SessionDiffEvent, SessionErrorEvent, SessionModelSwitched, SessionRef,
+    SessionRetried, SessionStatusEvent, StepEvent, StreamBoundary, StreamDelta, TodoUpdated,
+    ToolEnded, ToolStarted, TuiCommandExecute, TuiPromptAppend, TuiSessionSelect, TuiToastShow,
+    VcsBranchUpdated, WorkspaceEvent, WorkspaceStatus, WorktreeFailed, WorktreeReady,
+    WorktreeRemoved,
 };

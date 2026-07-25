@@ -1,0 +1,22 @@
+[package]
+name = "missions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Clean-room parallel missions engine (missionDir store, scheduler, handoffs, validation)"
+
+[lints]
+workspace = true
+
+[dependencies]
+events = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tempfile = "3"

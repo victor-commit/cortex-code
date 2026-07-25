@@ -11,7 +11,9 @@ use crate::families::{
     SessionErrorEvent, SessionModelSwitched, SessionRef, SessionRetried, SessionStatusEvent,
     StepEvent, StreamBoundary, StreamDelta, TodoUpdated, ToolEnded, ToolStarted, TuiCommandExecute,
     TuiPromptAppend, TuiSessionSelect, TuiToastShow, VcsBranchUpdated, WorkspaceEvent,
-    WorkspaceStatus, WorktreeFailed, WorktreeReady, WorktreeRemoved,
+    WorkspaceStatus, WorktreeFailed, WorktreeReady, WorktreeRemoved, MissionStarted,
+    MissionWorkerStarted, MissionWorkerCompleted, MissionWorkerFailed, MissionProgress,
+    MissionValidation, MissionFinished,
 };
 
 /// The surface that produced an event.
@@ -44,6 +46,8 @@ pub enum Surface {
     Auth,
     /// The model-catalogue listing path (`cortex models`).
     Models,
+    /// The missions engine path (`cortex mission`).
+    Mission,
 }
 
 impl Surface {
@@ -64,6 +68,7 @@ impl Surface {
             Surface::Lsp => "lsp",
             Surface::Auth => "auth",
             Surface::Models => "models",
+            Surface::Mission => "mission",
         }
     }
 }
@@ -543,6 +548,27 @@ pub enum Event {
     /// A remote TUI requested a session be selected.
     #[serde(rename = "tui.session.select")]
     TuiSessionSelect(TuiSessionSelect),
+    /// A mission run started.
+    #[serde(rename = "mission.started")]
+    MissionStarted(MissionStarted),
+    /// A mission worker started a feature.
+    #[serde(rename = "mission.worker.started")]
+    MissionWorkerStarted(MissionWorkerStarted),
+    /// A mission worker completed a feature.
+    #[serde(rename = "mission.worker.completed")]
+    MissionWorkerCompleted(MissionWorkerCompleted),
+    /// A mission worker failed a feature (siblings continue).
+    #[serde(rename = "mission.worker.failed")]
+    MissionWorkerFailed(MissionWorkerFailed),
+    /// A mission progress log entry.
+    #[serde(rename = "mission.progress")]
+    MissionProgress(MissionProgress),
+    /// A milestone validation gate completed.
+    #[serde(rename = "mission.validation")]
+    MissionValidation(MissionValidation),
+    /// A mission run finished.
+    #[serde(rename = "mission.finished")]
+    MissionFinished(MissionFinished),
 }
 
 impl Event {
@@ -615,6 +641,13 @@ impl Event {
             Event::TuiCommandExecute(_) => "tui.command.execute",
             Event::TuiToastShow(_) => "tui.toast.show",
             Event::TuiSessionSelect(_) => "tui.session.select",
+            Event::MissionStarted(_) => "mission.started",
+            Event::MissionWorkerStarted(_) => "mission.worker.started",
+            Event::MissionWorkerCompleted(_) => "mission.worker.completed",
+            Event::MissionWorkerFailed(_) => "mission.worker.failed",
+            Event::MissionProgress(_) => "mission.progress",
+            Event::MissionValidation(_) => "mission.validation",
+            Event::MissionFinished(_) => "mission.finished",
         }
     }
 
@@ -691,6 +724,13 @@ impl Event {
             "tui.command.execute",
             "tui.toast.show",
             "tui.session.select",
+            "mission.started",
+            "mission.worker.started",
+            "mission.worker.completed",
+            "mission.worker.failed",
+            "mission.progress",
+            "mission.validation",
+            "mission.finished",
         ]
     }
 
@@ -1339,6 +1379,120 @@ impl Event {
     #[must_use]
     pub fn worktree_removed(path: impl Into<String>) -> Self {
         Event::WorktreeRemoved(WorktreeRemoved { path: path.into() })
+    }
+
+    /// Construct a `mission.started` event.
+    #[must_use]
+    pub fn mission_started(
+        mission_id: impl Into<String>,
+        mission_dir: impl Into<String>,
+        max_parallel: usize,
+    ) -> Self {
+        Event::MissionStarted(MissionStarted {
+            mission_id: mission_id.into(),
+            mission_dir: mission_dir.into(),
+            max_parallel,
+        })
+    }
+
+    /// Construct a `mission.worker.started` event.
+    #[must_use]
+    pub fn mission_worker_started(
+        mission_id: impl Into<String>,
+        worker_id: impl Into<String>,
+        feature_id: impl Into<String>,
+        live_count: usize,
+        max_parallel: usize,
+    ) -> Self {
+        Event::MissionWorkerStarted(MissionWorkerStarted {
+            mission_id: mission_id.into(),
+            worker_id: worker_id.into(),
+            feature_id: feature_id.into(),
+            live_count,
+            max_parallel,
+        })
+    }
+
+    /// Construct a `mission.worker.completed` event.
+    #[must_use]
+    pub fn mission_worker_completed(
+        mission_id: impl Into<String>,
+        worker_id: impl Into<String>,
+        feature_id: impl Into<String>,
+        live_count: usize,
+    ) -> Self {
+        Event::MissionWorkerCompleted(MissionWorkerCompleted {
+            mission_id: mission_id.into(),
+            worker_id: worker_id.into(),
+            feature_id: feature_id.into(),
+            live_count,
+        })
+    }
+
+    /// Construct a `mission.worker.failed` event.
+    #[must_use]
+    pub fn mission_worker_failed(
+        mission_id: impl Into<String>,
+        worker_id: impl Into<String>,
+        feature_id: impl Into<String>,
+        message: impl Into<String>,
+        live_count: usize,
+    ) -> Self {
+        Event::MissionWorkerFailed(MissionWorkerFailed {
+            mission_id: mission_id.into(),
+            worker_id: worker_id.into(),
+            feature_id: feature_id.into(),
+            message: message.into(),
+            live_count,
+        })
+    }
+
+    /// Construct a `mission.progress` event.
+    #[must_use]
+    pub fn mission_progress(
+        mission_id: impl Into<String>,
+        worker_id: impl Into<String>,
+        feature_id: impl Into<String>,
+        message: impl Into<String>,
+        live_count: usize,
+    ) -> Self {
+        Event::MissionProgress(MissionProgress {
+            mission_id: mission_id.into(),
+            worker_id: worker_id.into(),
+            feature_id: feature_id.into(),
+            message: message.into(),
+            live_count,
+        })
+    }
+
+    /// Construct a `mission.validation` event.
+    #[must_use]
+    pub fn mission_validation(
+        mission_id: impl Into<String>,
+        milestone: impl Into<String>,
+        outcome: impl Into<String>,
+    ) -> Self {
+        Event::MissionValidation(MissionValidation {
+            mission_id: mission_id.into(),
+            milestone: milestone.into(),
+            outcome: outcome.into(),
+        })
+    }
+
+    /// Construct a `mission.finished` event.
+    #[must_use]
+    pub fn mission_finished(
+        mission_id: impl Into<String>,
+        status: impl Into<String>,
+        completed: usize,
+        failed: usize,
+    ) -> Self {
+        Event::MissionFinished(MissionFinished {
+            mission_id: mission_id.into(),
+            status: status.into(),
+            completed,
+            failed,
+        })
     }
 }
 

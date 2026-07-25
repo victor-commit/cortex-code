@@ -20,6 +20,7 @@ members = [
     "crates/audit",
     "crates/skills",
     "crates/memory",
+    "crates/missions",
     "crates/tools",
     "crates/subagent_runner",
     "crates/tui-core",
@@ -81,6 +82,7 @@ plugins = { path = "crates/plugins" }
 audit = { path = "crates/audit" }
 skills = { path = "crates/skills" }
 memory = { path = "crates/memory" }
+missions = { path = "crates/missions" }
 tools = { path = "crates/tools" }
 subagent_runner = { path = "crates/subagent_runner" }
 tui-core = { path = "crates/tui-core" }

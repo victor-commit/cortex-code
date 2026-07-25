@@ -240,6 +240,122 @@ pub enum Command {
     /// database or writes secrets in cleartext. `--format json` emits a single strict JSON
     /// document for scripting.
     Debug(DebugArgs),
+
+    /// Create, inspect, and run clean-room parallel missions (missionDir under ~/.cortex/missions).
+    ///
+    /// Missions are Factory-similar orchestration artifacts (features queue, handoffs, validation
+    /// gates) with a **parallel** implementer pool (default 3 / max 4). Never writes under
+    /// Factory `~/.factory/missions`. Override the root with `--root` or `CORTEX_MISSIONS_ROOT`.
+    #[command(alias = "missions")]
+    Mission(MissionArgs),
+}
+
+/// `cortex mission` arguments.
+#[derive(Debug, Args)]
+pub struct MissionArgs {
+    #[command(subcommand)]
+    pub command: MissionCommand,
+}
+
+/// `cortex mission` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum MissionCommand {
+    /// Create a missionDir with features queue + validation state.
+    Create(MissionCreateArgs),
+    /// List missions under the missions root.
+    List(MissionListArgs),
+    /// Show mission status / snapshot (features, parallel, progress, validation).
+    Status(MissionStatusArgs),
+    /// Run the parallel scheduler for a mission (fixture executor by default).
+    Run(MissionRunArgs),
+}
+
+/// `cortex mission create` arguments.
+#[derive(Debug, Args)]
+pub struct MissionCreateArgs {
+    /// Optional mission id (generated when omitted).
+    #[arg(long)]
+    pub id: Option<String>,
+
+    /// Short title for mission.md.
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Seed a parallel fixture with ≥3 independent features.
+    #[arg(long, default_value_t = false)]
+    pub fixture: bool,
+
+    /// Fixture variant where one feature fails (failure isolation).
+    #[arg(long, default_value_t = false)]
+    pub isolation: bool,
+
+    /// Optional single feature id to seed (non-fixture).
+    #[arg(long)]
+    pub feature: Option<String>,
+
+    /// Parallel pool size (default 3, max 4).
+    #[arg(long)]
+    pub parallel: Option<usize>,
+
+    /// Missions root directory (default ~/.cortex/missions or CORTEX_MISSIONS_ROOT).
+    #[arg(long)]
+    pub root: Option<std::path::PathBuf>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+/// `cortex mission list` arguments.
+#[derive(Debug, Args)]
+pub struct MissionListArgs {
+    /// Missions root directory.
+    #[arg(long)]
+    pub root: Option<std::path::PathBuf>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+/// `cortex mission status` arguments.
+#[derive(Debug, Args)]
+pub struct MissionStatusArgs {
+    /// Mission id or path to missionDir.
+    #[arg(value_name = "MISSION")]
+    pub mission: String,
+
+    /// Missions root when MISSION is an id.
+    #[arg(long)]
+    pub root: Option<std::path::PathBuf>,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
+}
+
+/// `cortex mission run` arguments.
+#[derive(Debug, Args)]
+pub struct MissionRunArgs {
+    /// Mission id or path to missionDir.
+    #[arg(value_name = "MISSION")]
+    pub mission: String,
+
+    /// Missions root when MISSION is an id.
+    #[arg(long)]
+    pub root: Option<std::path::PathBuf>,
+
+    /// Parallel pool size (default 3, max 4).
+    #[arg(long)]
+    pub parallel: Option<usize>,
+
+    /// Skip milestone validation gate.
+    #[arg(long, default_value_t = false)]
+    pub no_validate: bool,
+
+    /// Do not publish mission events on the bus.
+    #[arg(long, default_value_t = false)]
+    pub no_events: bool,
+
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Debug, Args)]

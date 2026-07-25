@@ -55,6 +55,10 @@ use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 
 pub use app::{App, Status};
+pub use mission_control::{
+    apply_mission_event, live_home_lines, render_home_lines, render_stub_lines,
+    snapshot_to_variant, McStubKind, McVariant, MC_BRAND, MC_FOOTER, MC_PARALLEL_SLOTS,
+};
 
 /// Startup options for the interactive TUI.
 #[derive(Debug, Clone, Default)]

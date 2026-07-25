@@ -354,6 +354,99 @@ pub struct WorktreeReady {
     pub path: String,
 }
 
+/// A mission run started (`mission.started`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionStarted {
+    /// Mission id.
+    pub mission_id: String,
+    /// Absolute mission directory.
+    pub mission_dir: String,
+    /// Configured max parallel slots.
+    pub max_parallel: usize,
+}
+
+/// A mission worker started a feature (`mission.worker.started`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionWorkerStarted {
+    /// Mission id.
+    pub mission_id: String,
+    /// Worker slot id (`#21`).
+    pub worker_id: String,
+    /// Feature id.
+    pub feature_id: String,
+    /// Current live worker count.
+    pub live_count: usize,
+    /// Max parallel slots.
+    pub max_parallel: usize,
+}
+
+/// A mission worker completed a feature (`mission.worker.completed`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionWorkerCompleted {
+    /// Mission id.
+    pub mission_id: String,
+    /// Worker slot id.
+    pub worker_id: String,
+    /// Feature id.
+    pub feature_id: String,
+    /// Remaining live workers.
+    pub live_count: usize,
+}
+
+/// A mission worker failed a feature without killing siblings (`mission.worker.failed`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionWorkerFailed {
+    /// Mission id.
+    pub mission_id: String,
+    /// Worker slot id.
+    pub worker_id: String,
+    /// Feature id.
+    pub feature_id: String,
+    /// Scrubbed failure detail.
+    pub message: String,
+    /// Remaining live workers.
+    pub live_count: usize,
+}
+
+/// A mission progress log line (`mission.progress`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionProgress {
+    /// Mission id.
+    pub mission_id: String,
+    /// Worker slot id.
+    pub worker_id: String,
+    /// Feature id.
+    pub feature_id: String,
+    /// Progress message.
+    pub message: String,
+    /// Live worker count after the event.
+    pub live_count: usize,
+}
+
+/// Milestone validation gate result (`mission.validation`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionValidation {
+    /// Mission id.
+    pub mission_id: String,
+    /// Milestone id.
+    pub milestone: String,
+    /// `passed` | `failed` | `skipped`.
+    pub outcome: String,
+}
+
+/// A mission run finished (`mission.finished`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionFinished {
+    /// Mission id.
+    pub mission_id: String,
+    /// Final status string.
+    pub status: String,
+    /// Completed feature count.
+    pub completed: usize,
+    /// Failed feature count.
+    pub failed: usize,
+}
+
 /// A worktree operation failed (`worktree.failed`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeFailed {

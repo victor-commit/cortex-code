@@ -42,6 +42,7 @@ plugins = { workspace = true }
 audit = { workspace = true }
 skills = { workspace = true }
 memory = { workspace = true }
+missions = { workspace = true }
 tui = { workspace = true }
 server = { workspace = true, optional = true }
 acp = { workspace = true }
