@@ -1640,3 +1640,423 @@ fn m3_tmux_mission_control_home_fingerprint() {
     session.kill();
     eprintln!("m3 tmux MC home ok");
 }
+
+// ---------------------------------------------------------------------------
+// M7 UX polish regression pack (VAL-CORTEX-UX-001..004 + VAL-CORTEX-CROSS-004)
+//
+// Offline DNA covers MOTD debrand + empty-composer chord swallow in tmux.
+// Unit DNA (tui crate) covers dock-armed approve/deny, deny-clean composer,
+// and interrupt-clean composer. Live serial smoke (CORTEX_LIVE=1 + key) chains
+// always-approve tool → no chord leak, MOTD plate, deny cleanliness, interrupt.
+// ---------------------------------------------------------------------------
+
+/// Offline UX-001 + UX-002 pack: boot MOTD is debranded; bare a/y/n/d never become
+/// user turns or composer residue when no permission dock is armed.
+#[test]
+fn m7_tmux_offline_ux_pack_motd_and_chord_swallow() {
+    require_tmux();
+    let scratch = Scratch::new("m7-off-pack");
+    let session = spawn_cortex_tui("m7-off", &scratch, None);
+    let boot = wait_capture_any(
+        &session,
+        &["always-approve", "Shift+Tab", "what should we build", "Cortex"],
+        WAIT_TIMEOUT,
+    );
+
+    // VAL-CORTEX-UX-002: primary MOTD plate is neutral Cortex shell, not copper Cortex Code.
+    assert!(
+        !boot.contains("Cortex Code") && !boot.contains("✦ Cortex Code"),
+        "MOTD must not show Cortex Code brand plate:\n{boot}"
+    );
+    assert!(
+        boot.contains("Cortex") || boot.contains('✦'),
+        "MOTD/home should still show Cortex shell identity:\n{boot}"
+    );
+    // No speaker nameplates on boot (chrome invariant remains).
+    assert!(
+        !boot.contains("❯ You") && !boot.contains("◆ Cortex"),
+        "banned nameplates on M7 offline boot:\n{boot}"
+    );
+
+    // VAL-CORTEX-UX-001: spam approve/deny chords with empty composer / no dock.
+    session.send_keys(&["a", "y", "n", "d", "A", "Y", "N", "D"]);
+    thread::sleep(Duration::from_millis(250));
+    // Enter must not submit a junk turn from swallowed chords.
+    session.send_keys(&["Enter"]);
+    thread::sleep(Duration::from_millis(200));
+    let after_chords = session.capture_pane();
+    assert!(
+        !after_chords.lines().any(|line| {
+            let t = line.trim();
+            t == "❯ a"
+                || t == "❯ y"
+                || t == "❯ n"
+                || t == "❯ d"
+                || t == "❯ ay"
+                || t == "❯ nd"
+                || t == "❯ ayd"
+                || t == "❯ aynd"
+                || t.ends_with("❯ ay")
+                || t.ends_with("❯ nd")
+                || t.contains("❯ ay")
+                || t.contains("❯ nd")
+        }),
+        "empty-composer a/y/n/d must not become orphan user turns:\n{after_chords}"
+    );
+
+    // Fresh probe (not starting with a/y/n/d) proves composer is empty and editable.
+    session.send_keys(&["M7_OFF_PROBE_OK"]);
+    let probe = wait_capture_any(&session, &["M7_OFF_PROBE_OK"], WAIT_TIMEOUT);
+    assert!(
+        probe.contains("M7_OFF_PROBE_OK"),
+        "post-chord composer must accept clean probe:\n{probe}"
+    );
+    assert!(
+        !probe.contains("ayM7_OFF")
+            && !probe.contains("ndM7_OFF")
+            && !probe.contains("aM7_OFF")
+            && !probe.contains("yM7_OFF"),
+        "probe must not carry swallowed-chord residue:\n{probe}"
+    );
+
+    session.kill();
+    eprintln!("m7 offline ux pack (MOTD + chord swallow) ok");
+}
+
+/// Serial live smoke for VAL-CORTEX-CROSS-004 when `CORTEX_LIVE=1` and a key are present.
+///
+/// Chains UX-001..004 against the real OpenRouter path:
+/// 1. MOTD debrand on live boot
+/// 2. Always-approve tool turn, then bare a/y/n/d must not leak into composer/history
+/// 3. Prompt-mode deny leaves FS absent + clean composer
+/// 4. Esc interrupt clears mid-turn draft and accepts a fresh probe
+///
+/// Without live credentials this test skips cleanly (offline DNA + unit pack still gate CI).
+#[test]
+fn m7_live_ux_polish_serial_regression_pack() {
+    if !live_enabled() {
+        eprintln!("skip m7_live_ux_polish_serial_regression_pack: CORTEX_LIVE not enabled");
+        return;
+    }
+    let Some(key) = openrouter_key() else {
+        eprintln!("skip m7_live_ux_polish_serial_regression_pack: OPENROUTER_API_KEY unset/empty");
+        return;
+    };
+    require_tmux();
+    let pack_start = Instant::now();
+
+    // ----- Session 1: MOTD + always-approve tool + post-tool chord swallow (UX-001/002) -----
+    {
+        let scratch = Scratch::new("m7-live-chord");
+        let marker = scratch.work().join("m7_ux_tool_marker.txt");
+        let session = spawn_cortex_tui("m7-chord", &scratch, Some(&key));
+        let boot = wait_capture_any(
+            &session,
+            &["always-approve", "Shift+Tab", "what should we build", "Cortex"],
+            WAIT_TIMEOUT,
+        );
+        assert_no_secret_leak(&boot, &key);
+        assert!(
+            !boot.contains("Cortex Code") && !boot.contains("✦ Cortex Code"),
+            "live MOTD must not show Cortex Code plate:\n{boot}"
+        );
+
+        // Empty-composer chord spam before any tool (always-approve jewel visible).
+        session.send_keys(&["a", "y", "n", "d"]);
+        thread::sleep(Duration::from_millis(200));
+        session.send_keys(&["Enter"]);
+        thread::sleep(Duration::from_millis(200));
+        let pre = session.capture_pane();
+        assert_no_secret_leak(&pre, &key);
+        assert!(
+            !pre.lines().any(|line| {
+                let t = line.trim();
+                t == "❯ ay" || t == "❯ nd" || t == "❯ a" || t == "❯ y" || t.contains("❯ ay")
+            }),
+            "pre-tool always-approve chords must not become user turns:\n{pre}"
+        );
+
+        // Real tool under always-approve / auto path; may still surface a dock briefly.
+        session.send_keys(&[
+            "Use the bash tool exactly once to run: printf 'm7-ok' > m7_ux_tool_marker.txt . Do not read first. After success reply with exactly: m7done.",
+            "Enter",
+        ]);
+        let live_timeout = Duration::from_secs(60);
+        let start = Instant::now();
+        let mut last = String::new();
+        let mut approved = false;
+        while start.elapsed() < live_timeout {
+            last = session.capture_pane();
+            assert_no_secret_leak(&last, &key);
+            if !approved
+                && (last.contains("Allow once")
+                    || last.contains("Permission required")
+                    || (last.contains("Deny") && last.contains("Allow for this session")))
+            {
+                session.send_keys(&["y"]);
+                approved = true;
+                thread::sleep(Duration::from_millis(400));
+                continue;
+            }
+            if marker.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        assert!(
+            marker.exists(),
+            "m7 live tool marker missing; approved={approved}; pane:\n{last}"
+        );
+
+        // Wait for idle/empty composer window after tool (tool UI or done cue).
+        thread::sleep(Duration::from_millis(600));
+        // Post-tool bare chords must still be swallowed (live residual `❯ ay` / `ndWrite`).
+        session.send_keys(&["a", "y", "n", "d"]);
+        thread::sleep(Duration::from_millis(200));
+        session.send_keys(&["Enter"]);
+        thread::sleep(Duration::from_millis(250));
+        let post_tool = session.capture_pane();
+        assert_no_secret_leak(&post_tool, &key);
+        assert!(
+            !post_tool.lines().any(|line| {
+                let t = line.trim();
+                t == "❯ ay"
+                    || t == "❯ nd"
+                    || t == "❯ ayd"
+                    || t == "❯ aynd"
+                    || t.ends_with("❯ ay")
+                    || t.ends_with("❯ nd")
+                    || t.contains("❯ ay ")
+                    || t.contains("❯ nd")
+            }),
+            "post-tool always-approve chords must not leak into history:\n{post_tool}"
+        );
+        session.send_keys(&["M7_POST_TOOL_PROBE"]);
+        let probe = wait_capture_any(&session, &["M7_POST_TOOL_PROBE"], WAIT_TIMEOUT);
+        assert_no_secret_leak(&probe, &key);
+        assert!(
+            !probe.contains("ayM7_POST") && !probe.contains("ndM7_POST"),
+            "post-tool probe must not carry chord residue:\n{probe}"
+        );
+        session.kill();
+        eprintln!("m7 live pack stage1 MOTD+tool+chord ok approved={approved}");
+    }
+
+    // ----- Session 2: deny cleanliness (UX-003) -----
+    {
+        let scratch = Scratch::new("m7-live-deny");
+        let target = scratch.work().join("m7_must_not_exist.txt");
+        std::fs::write(
+            scratch.work().join("cortex.toml"),
+            "# m7 serial pack: force ask-mode for deny path (VAL-CORTEX-UX-003)\n\
+             [[permission]]\n\
+             tool = \"bash\"\n\
+             pattern = \"*\"\n\
+             action = \"ask\"\n\
+             [[permission]]\n\
+             tool = \"write\"\n\
+             pattern = \"*\"\n\
+             action = \"ask\"\n",
+        )
+        .expect("write ask-mode cortex.toml");
+
+        let session = spawn_cortex_tui("m7-deny", &scratch, Some(&key));
+        let boot = wait_capture_any(
+            &session,
+            &["always-approve", "Shift+Tab", "what should we build"],
+            WAIT_TIMEOUT,
+        );
+        assert_no_secret_leak(&boot, &key);
+
+        session.send_keys(&[
+            "Immediately use the bash tool to run exactly: printf deny-leak > m7_must_not_exist.txt . Do not read first. Just run that one command. Do not retry if denied.",
+            "Enter",
+        ]);
+        let live_timeout = Duration::from_secs(60);
+        let start = Instant::now();
+        let mut last = String::new();
+        let mut denied = false;
+        let mut deny_count = 0u32;
+        // Keep denying while the dock is armed (models often retry bash after a deny).
+        while start.elapsed() < live_timeout {
+            last = session.capture_pane();
+            assert_no_secret_leak(&last, &key);
+            let dock_open = last.contains("Allow once")
+                || last.contains("Permission required")
+                || (last.contains("Deny") && last.contains("Allow for this session"));
+            if dock_open {
+                session.send_keys(&["n"]);
+                denied = true;
+                deny_count = deny_count.saturating_add(1);
+                thread::sleep(Duration::from_millis(350));
+                continue;
+            }
+            if denied {
+                // Dock closed after at least one deny — watch FS briefly then leave the loop.
+                let watch_until = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < watch_until {
+                    last = session.capture_pane();
+                    assert_no_secret_leak(&last, &key);
+                    let dock_again = last.contains("Allow once")
+                        || last.contains("Permission required")
+                        || (last.contains("Deny") && last.contains("Allow for this session"));
+                    if dock_again {
+                        // Model retried — continue outer loop to deny again.
+                        break;
+                    }
+                    if target.exists() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(150));
+                }
+                last = session.capture_pane();
+                let dock_again = last.contains("Allow once")
+                    || last.contains("Permission required")
+                    || (last.contains("Deny") && last.contains("Allow for this session"));
+                if !dock_again {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        assert!(
+            !target.exists(),
+            "deny must leave m7_must_not_exist.txt absent; denied={denied} denies={deny_count}; pane:\n{last}"
+        );
+        if denied {
+            // If the turn is still busy after deny (retry loop), Esc so the composer is editable.
+            last = session.capture_pane();
+            if last.contains("[stop]") || last.contains("thinking") || last.contains("running") {
+                session.send_keys(&["Escape"]);
+                thread::sleep(Duration::from_millis(400));
+            }
+            // Ensure no dock remains before typing the probe.
+            for _ in 0..6 {
+                last = session.capture_pane();
+                let dock_open = last.contains("Allow once")
+                    || last.contains("Permission required")
+                    || (last.contains("Deny") && last.contains("Allow for this session"));
+                if dock_open {
+                    session.send_keys(&["n"]);
+                    thread::sleep(Duration::from_millis(250));
+                    continue;
+                }
+                break;
+            }
+            let after = session.capture_pane();
+            assert_no_secret_leak(&after, &key);
+            assert!(
+                !after.lines().any(|line| {
+                    let t = line.trim();
+                    t == "❯ n" || t == "❯ d" || t == "❯ ay" || t == "❯ nd" || t.ends_with("❯ n")
+                }),
+                "deny must not leak dock keys as orphan user turns:\n{after}"
+            );
+            session.send_keys(&["M7_DENY_PROBE"]);
+            let probe = wait_capture_any(&session, &["M7_DENY_PROBE"], WAIT_TIMEOUT);
+            assert_no_secret_leak(&probe, &key);
+            assert!(
+                !probe.contains("nM7_DENY") && !probe.contains("ndM7_DENY"),
+                "post-deny probe residue:\n{probe}"
+            );
+        }
+        session.kill();
+        eprintln!("m7 live pack stage2 deny ok denied_ui={denied} denies={deny_count}");
+    }
+
+    // ----- Session 3: interrupt cleanliness (UX-004) -----
+    {
+        let scratch = Scratch::new("m7-live-int");
+        let session = spawn_cortex_tui("m7-int", &scratch, Some(&key));
+        let boot = wait_capture_any(
+            &session,
+            &["always-approve", "Shift+Tab", "what should we build"],
+            WAIT_TIMEOUT,
+        );
+        assert_no_secret_leak(&boot, &key);
+
+        // Prefer a long streaming essay over "count to N" — models often refuse counting and
+        // finish before Esc, which leaves idle draft (not interrupt residual). Wait for busy chrome.
+        let long_prompt = "Write a very long detailed essay about the history of mathematics with many paragraphs. Keep writing continuously and do not stop early.";
+        session.send_keys(&[long_prompt, "Enter"]);
+
+        let busy_deadline = Instant::now() + Duration::from_secs(25);
+        let mut saw_busy = false;
+        let mut last = String::new();
+        while Instant::now() < busy_deadline {
+            last = session.capture_pane();
+            assert_no_secret_leak(&last, &key);
+            // Busy affordances from product chrome / turn-status.
+            if last.contains("[stop]")
+                || last.contains("thinking")
+                || last.contains("streaming")
+                || last.contains("working")
+            {
+                saw_busy = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+        // If the first turn finished too fast, kick a second long turn.
+        if !saw_busy {
+            session.send_keys(&[
+                "Continue writing the essay now with even more detail, at least fifty paragraphs, keep going without stopping.",
+                "Enter",
+            ]);
+            let retry_deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < retry_deadline {
+                last = session.capture_pane();
+                assert_no_secret_leak(&last, &key);
+                if last.contains("[stop]") || last.contains("thinking") {
+                    saw_busy = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        }
+        assert!(
+            saw_busy,
+            "m7 interrupt stage never observed a busy turn to interrupt:\n{last}"
+        );
+
+        // Mid-turn draft pollution (leading non-chord letter so letters type as draft while busy).
+        session.send_keys(&["xndWrite leftover"]);
+        thread::sleep(Duration::from_millis(120));
+        // Esc interrupts the busy turn (app: interrupt_turn) and clears the composer.
+        session.send_keys(&["Escape"]);
+        thread::sleep(Duration::from_millis(500));
+
+        // If Esc landed between turns, one more Esc is harmless; then require clean probe only.
+        let mid = session.capture_pane();
+        assert_no_secret_leak(&mid, &key);
+        // Composer should be empty now — type unique probe (must not append to leftover).
+        session.send_keys(&["M7_INT_PROBE_OK"]);
+        let probe = wait_capture_any(&session, &["M7_INT_PROBE_OK"], WAIT_TIMEOUT);
+        assert_no_secret_leak(&probe, &key);
+        assert!(
+            probe.contains("M7_INT_PROBE_OK"),
+            "interrupt must restore editable shell:\n{probe}"
+        );
+        assert!(
+            !probe.contains("xndWrite leftoverM7_INT")
+                && !probe.contains("ndWrite leftoverM7_INT")
+                && !probe.contains("leftoverM7_INT")
+                && !probe.lines().any(|l| {
+                    let t = l.trim();
+                    t.contains("xndWrite leftover") && t.contains("M7_INT_PROBE_OK")
+                }),
+            "post-interrupt probe must not carry mid-turn residue:\n{probe}"
+        );
+        // Soft: interrupted notice is ideal when Esc hit a busy turn.
+        if !(mid.contains("interrupted") || probe.contains("interrupted")) {
+            eprintln!("m7 interrupt stage: busy was seen; interrupted notice optional if model race");
+        }
+        session.kill();
+        eprintln!("m7 live pack stage3 interrupt ok saw_busy={saw_busy}");
+    }
+
+    eprintln!(
+        "m7 live ux polish serial pack ok elapsed_ms={} (no secrets)",
+        pack_start.elapsed().as_millis()
+    );
+}
