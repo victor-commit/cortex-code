@@ -59,6 +59,11 @@ const MAX_TOASTS: usize = 4;
 const NAV_ESCAPE_PROBE_WINDOW: Duration = Duration::from_millis(120);
 /// Maximum buffered chars after Esc while deciding whether they are a noisy arrow sequence.
 const NAV_ESCAPE_PROBE_MAX_CHARS: usize = 6;
+/// After a tool settle, dock answer, or interrupt, bare approve/deny letters on an empty composer are
+/// swallowed for this residual window so always-approve spam (`ay`/`ndWrite`) cannot leak into drafts
+/// (VAL-CORTEX-UX-001). Outside the window, those letters type normally so words like `add`/`draft`
+/// remain editable on an idle empty composer.
+const PERMISSION_CHORD_GUARD_WINDOW: Duration = Duration::from_millis(1500);
 
 /// Active poll cadence (and per-frame duration) while something is animating. Every animation
 /// derives its phase from [`Instant::elapsed`] divided by this value, so the cadence and the frame
@@ -1314,6 +1319,9 @@ pub struct App {
     /// The active interactive permission prompt, or `None` when no ask is pending. While set it is
     /// modal: keys drive the approve/deny choice (the worker thread is blocked awaiting the reply).
     pending_permission: Option<PendingPermission>,
+    /// Residual guard deadline: while `Some(until)` and `Instant::now() < until`, bare approve/deny
+    /// letters on an empty composer (no armed dock) are swallowed (VAL-CORTEX-UX-001 live residual).
+    permission_chord_guard_until: Option<Instant>,
     /// The resolved database path durable session persistence writes to, bound at launch via
     /// [`set_session_store`](App::set_session_store). `None` disables persistence (the default in
     /// unit tests, so they never touch a real database); the real launch sets it so interactive
@@ -1452,6 +1460,7 @@ impl App {
             attention_badge: None,
             cancel_flag: None,
             pending_permission: None,
+            permission_chord_guard_until: None,
             db_path: None,
             share_data_dir: None,
             session_id: None,
@@ -2614,6 +2623,9 @@ impl App {
     /// entry (opened when the turn began but not yet written to) is dropped first, so the card is not
     /// preceded by an empty assistant block; answer text arriving after the call opens a fresh entry.
     fn push_tool_call(&mut self, id: String, name: String, arguments: &str) {
+        // Live residual path: dock chords typed against an empty composer during/around tool cards
+        // must not later flush into a user turn once a tool settles (VAL-CORTEX-UX-001).
+        self.arm_permission_chord_guard();
         if let Some(Entry::Assistant(turn)) = self.transcript.last() {
             if turn.answer.is_empty() && turn.reasoning.is_empty() {
                 self.transcript.pop();
@@ -2637,6 +2649,8 @@ impl App {
     /// `pid:`/`output:` pair (unexpected shape) falls back to completing normally, so the card never
     /// hangs running with nothing to poll.
     fn complete_tool_call(&mut self, id: &str, parts: &[protocol::ToolResultPart], is_error: bool) {
+        // Drop residual chord spam that arrived while a tool card was visible (always-approve path).
+        self.arm_permission_chord_guard();
         let mut lsp_candidate: Option<(String, String, String)> = None;
         if let Some(card) = self
             .transcript
@@ -2879,6 +2893,8 @@ impl App {
         self.turn_rx = None;
         self.cancel_flag = None;
         self.spinner_start = None;
+        // Post-turn residual: empty-composer dock chords from always-approve spam stay swallowed.
+        self.arm_permission_chord_guard();
         let prompt = self.turn_prompt.take();
         let turn_attachments = std::mem::take(&mut self.turn_attachments);
         let errored = std::mem::take(&mut self.turn_errored)
@@ -3028,6 +3044,7 @@ impl App {
         self.input.set_value("");
         self.composer_attachments.clear();
         self.nav_escape_probe = None;
+        self.arm_permission_chord_guard();
         self.mention = None;
         if self.slash_menu_open() {
             self.close_slash_menu();
@@ -3198,8 +3215,28 @@ impl App {
         self.input.set_value("");
         self.composer_attachments.clear();
         self.nav_escape_probe = None;
+        self.arm_permission_chord_guard();
         self.pin_to_bottom();
     }
+
+    /// Arm the empty-composer residual chord guard (VAL-CORTEX-UX-001).
+    fn arm_permission_chord_guard(&mut self) {
+        self.permission_chord_guard_until =
+            Some(Instant::now() + PERMISSION_CHORD_GUARD_WINDOW);
+    }
+
+    /// Clear residual chord-guard deadline (test helper to simulate outside the residual window).
+    #[cfg(test)]
+    fn clear_permission_chord_guard(&mut self) {
+        self.permission_chord_guard_until = None;
+    }
+
+    /// Whether bare dock chords should be swallowed on an empty composer right now.
+    fn permission_chord_guard_active(&self) -> bool {
+        self.permission_chord_guard_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
 
     /// The current prompt text (all lines joined with `\n`).
     pub fn input_value(&self) -> String {
@@ -9196,15 +9233,18 @@ impl App {
             // Ordinary text entry (ignore other ctrl/alt chords). Editing the prompt re-filters the
             // slash menu and the `@`-file picker, so refresh both after the edit.
             //
-            // VAL-CORTEX-UX-001: bare approve/deny chords (`a`/`y`/`n`/`d`) are dock-only. When the
-            // permission dock is not armed and the composer is empty (or only whitespace), swallow
-            // them as no-ops so always-approve spam cannot insert `ay` / `nd` or submit junk turns.
-            // Once the user has real draft text, the same letters type normally.
+            // VAL-CORTEX-UX-001: after a tool settle / dock answer / interrupt residual window, bare
+            // approve/deny chords on an empty composer are swallowed so always-approve spam cannot
+            // insert `ay`/`nd` or submit junk turns. Outside that window (and once the user has any
+            // real draft), the same letters type normally so words like `add`/`draft` stay editable.
             KeyCode::Char(c) if !ctrl && !alt => {
                 if self.consume_nav_escape_probe_char(c) {
                     return;
                 }
-                if permission::is_permission_chord(c) && self.input.value().trim().is_empty() {
+                if permission::is_permission_chord(c)
+                    && self.input.value().trim().is_empty()
+                    && self.permission_chord_guard_active()
+                {
                     return;
                 }
                 self.input.insert_char(c);
@@ -11602,25 +11642,33 @@ mod tests {
         assert!(!a.permission_open(), "fixture starts with no dock");
         assert!(a.input_value().is_empty());
 
+        // Idle empty composer (no recent tool/dock residual): letters type normally so words work.
+        for c in "add".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.input_value(), "add", "idle empty composer must accept real words");
+        a.input.set_value("");
+
+        // Arm residual window (post-tool / post-dock / post-interrupt live residual).
+        a.arm_permission_chord_guard();
         let before_user_turns = a
             .transcript
             .iter()
             .filter(|e| matches!(e, Entry::User(_)))
             .count();
-
         for ch in ['a', 'y', 'n', 'd', 'A', 'Y', 'N', 'D'] {
             a.on_key(key(KeyCode::Char(ch)));
         }
         assert_eq!(
             a.input_value(),
             "",
-            "a/y/n/d with no dock must not appear in the composer"
+            "residual a/y/n/d with no dock must not appear in the composer"
         );
-        assert!(a.take_pending_prompt().is_none(), "no pending turn from chords");
+        assert!(a.take_pending_prompt().is_none(), "no pending turn from residual chords");
         a.on_key(key(KeyCode::Enter));
         assert!(
             a.take_pending_prompt().is_none(),
-            "Enter after swallowed chords must not submit a user turn"
+            "Enter after residual chords must not submit a user turn"
         );
         let after_user_turns = a
             .transcript
@@ -11629,11 +11677,29 @@ mod tests {
             .count();
         assert_eq!(
             after_user_turns, before_user_turns,
-            "no user transcript turns from dock chords without a dock"
+            "no user transcript turns from residual dock chords without a dock"
         );
 
-        // Once real draft text is present, the same letters type normally (only bare empty composer
-        // gates the chords).
+        // Tool settle itself arms the residual guard.
+        a.clear_permission_chord_guard();
+        a.push_tool_call("t1".into(), "bash".into(), r#"{"command":"true"}"#);
+        for ch in ['a', 'y', 'n', 'd'] {
+            a.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            a.input_value(),
+            "",
+            "post-tool residual chords must not leak into the empty composer"
+        );
+
+        // Outside residual, draft words including leading dock letters remain editable.
+        a.clear_permission_chord_guard();
+        a.input.set_value("");
+        for c in "draft".chars() {
+            a.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(a.input_value(), "draft");
+        a.input.set_value("");
         a.on_key(key(KeyCode::Char('h')));
         a.on_key(key(KeyCode::Char('i')));
         a.on_key(key(KeyCode::Char('a')));

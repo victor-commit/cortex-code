@@ -1588,10 +1588,16 @@ fn m3_tmux_mission_control_home_fingerprint() {
         WAIT_TIMEOUT,
     );
 
-    session.send_keys(&["/mc", "Enter"]);
+    // Type the full slash command as literal characters so the filter settles on `/mc`
+    // before Enter (a partial `/m` would highlight `/models` instead).
+    session.send_keys(&["/", "m", "c"]);
+    thread::sleep(Duration::from_millis(200));
+    session.send_keys(&["Enter"]);
+    // Require chrome unique to the opened MC home — slash-menu descriptions also contain
+    // "Mission Control", so matching that alone can false-pass before the view opens.
     let mc = wait_capture_any(
         &session,
-        &[".: Mission Control", "Mission Control", "RUNNING", "Workers"],
+        &[".: Mission Control", "RUNNING", "Workers", "Parallel"],
         WAIT_TIMEOUT,
     );
     assert!(
@@ -1650,8 +1656,8 @@ fn m3_tmux_mission_control_home_fingerprint() {
 // always-approve tool → no chord leak, MOTD plate, deny cleanliness, interrupt.
 // ---------------------------------------------------------------------------
 
-/// Offline UX-001 + UX-002 pack: boot MOTD is debranded; bare a/y/n/d never become
-/// user turns or composer residue when no permission dock is armed.
+/// Offline UX-001 + UX-002 pack: boot MOTD is debranded; post-turn residual bare a/y/n/d
+/// never become user turns or composer residue when no permission dock is armed.
 #[test]
 fn m7_tmux_offline_ux_pack_motd_and_chord_swallow() {
     require_tmux();
@@ -1678,12 +1684,30 @@ fn m7_tmux_offline_ux_pack_motd_and_chord_swallow() {
         "banned nameplates on M7 offline boot:\n{boot}"
     );
 
-    // VAL-CORTEX-UX-001: spam approve/deny chords with empty composer / no dock.
+    // Idle empty composer still accepts real words (residual guard not armed at cold boot).
+    session.send_keys(&["a", "d", "d"]);
+    thread::sleep(Duration::from_millis(150));
+    let idle = session.capture_pane();
+    assert!(
+        idle.contains("add"),
+        "idle empty composer must type real words:\n{idle}"
+    );
+    // Clear draft without submitting (three Backspaces).
+    session.send_keys(&["BSpace", "BSpace", "BSpace"]);
+    thread::sleep(Duration::from_millis(100));
+
+    // Arm residual guard via a short failed offline turn (finish_turn arms the post-turn window).
+    session.send_keys(&["m7_arm_residual", "Enter"]);
+    let _ = wait_capture_any(
+        &session,
+        &["missing credential", "error", "did not complete", "Turn"],
+        WAIT_TIMEOUT,
+    );
+    // VAL-CORTEX-UX-001 residual: immediately spam approve/deny chords on the empty composer.
     session.send_keys(&["a", "y", "n", "d", "A", "Y", "N", "D"]);
-    thread::sleep(Duration::from_millis(250));
-    // Enter must not submit a junk turn from swallowed chords.
-    session.send_keys(&["Enter"]);
     thread::sleep(Duration::from_millis(200));
+    session.send_keys(&["Enter"]);
+    thread::sleep(Duration::from_millis(150));
     let after_chords = session.capture_pane();
     assert!(
         !after_chords.lines().any(|line| {
@@ -1696,12 +1720,13 @@ fn m7_tmux_offline_ux_pack_motd_and_chord_swallow() {
                 || t == "❯ nd"
                 || t == "❯ ayd"
                 || t == "❯ aynd"
+                || t == "❯ ayndAYND"
                 || t.ends_with("❯ ay")
                 || t.ends_with("❯ nd")
                 || t.contains("❯ ay")
                 || t.contains("❯ nd")
         }),
-        "empty-composer a/y/n/d must not become orphan user turns:\n{after_chords}"
+        "post-turn residual a/y/n/d must not become orphan user turns:\n{after_chords}"
     );
 
     // Fresh probe (not starting with a/y/n/d) proves composer is empty and editable.
@@ -1715,7 +1740,8 @@ fn m7_tmux_offline_ux_pack_motd_and_chord_swallow() {
         !probe.contains("ayM7_OFF")
             && !probe.contains("ndM7_OFF")
             && !probe.contains("aM7_OFF")
-            && !probe.contains("yM7_OFF"),
+            && !probe.contains("yM7_OFF")
+            && !probe.contains("ayndM7_OFF"),
         "probe must not carry swallowed-chord residue:\n{probe}"
     );
 
@@ -1761,20 +1787,8 @@ fn m7_live_ux_polish_serial_regression_pack() {
             "live MOTD must not show Cortex Code plate:\n{boot}"
         );
 
-        // Empty-composer chord spam before any tool (always-approve jewel visible).
-        session.send_keys(&["a", "y", "n", "d"]);
-        thread::sleep(Duration::from_millis(200));
-        session.send_keys(&["Enter"]);
-        thread::sleep(Duration::from_millis(200));
-        let pre = session.capture_pane();
-        assert_no_secret_leak(&pre, &key);
-        assert!(
-            !pre.lines().any(|line| {
-                let t = line.trim();
-                t == "❯ ay" || t == "❯ nd" || t == "❯ a" || t == "❯ y" || t.contains("❯ ay")
-            }),
-            "pre-tool always-approve chords must not become user turns:\n{pre}"
-        );
+        // Cold-boot idle composer may type dock letters as normal words; residual swallow is
+        // post-tool / post-dock / post-interrupt. Skip cold pre-tool spam here.
 
         // Real tool under always-approve / auto path; may still surface a dock briefly.
         session.send_keys(&[
