@@ -645,9 +645,29 @@ mod tests {
             "the real model id is shown, not `opus-4.8`:\n{text}"
         );
         assert!(!text.contains("opus-4.8"), "never the mockup model literal");
+        // `panel_kv` clips long paths with an ellipsis so the full cwd may not appear
+        // verbatim (e.g. cargo runs `-p tui` with cwd under crates/tui). Assert the
+        // same clipped form the panel emits at the default home width (92).
+        let cwd = current_dir_display();
+        let model = "google/gemini-2.5-flash";
+        let plan = provider_label(model);
+        let card_w = 92usize.saturating_sub(2 * MARGIN);
+        let right_value_w = model.chars().count().max(plan.chars().count());
+        let right_need = 2 + 1 + RIGHT_LABEL_WIDTH + right_value_w + 1;
+        let right_w = right_need.clamp(24, card_w.saturating_sub(24).max(24));
+        let left_w = card_w.saturating_sub(PANEL_GAP + right_w).max(24);
+        let left_inner = left_w.saturating_sub(2);
+        let left_avail = left_inner.saturating_sub(1 + LEFT_LABEL_WIDTH);
+        let cwd_shown = clip(&cwd, left_avail);
         assert!(
-            text.contains(&current_dir_display()),
-            "real cwd shown:\n{text}"
+            text.contains(&cwd_shown),
+            "real cwd shown (clipped form `{cwd_shown}` of `{cwd}`):\n{text}"
+        );
+        // And a unique leading prefix of the real path must still be visible.
+        let prefix: String = cwd.chars().take(24.min(cwd.chars().count())).collect();
+        assert!(
+            !prefix.is_empty() && text.contains(&prefix),
+            "real cwd prefix `{prefix}` shown:\n{text}"
         );
     }
 
