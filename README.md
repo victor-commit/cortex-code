@@ -1,241 +1,171 @@
-# Cortex Code
+# Cortex
 
-Cortex Code is an agentic coding tool for the terminal, shipped as a single Rust
-binary named `cortex`. It runs real model turns, edits and runs code through a
-gated tool layer, and persists every session so runs can be resumed, replayed,
-exported, and inspected.
+**Cortex** is an open-source terminal coding agent (`cortex`, Apache-2.0). It
+runs real model turns, edits and executes code through a gated tool layer,
+persists every session, and ships a **Cortex**-look interactive TUI plus a
+**parallel missions** engine with Mission Control.
 
-Live model turns go through [OpenRouter](https://openrouter.ai); the default
-model is `google/gemini-2.5-flash` and the provider layer is multi-protocol
-(OpenAI Chat, Anthropic Messages, Gemini, and OpenAI-compatible endpoints).
-Sessions, messages, usage, and saved decisions are stored locally in SQLite.
+Live model turns go through [OpenRouter](https://openrouter.ai) by default
+(multi-protocol provider layer: OpenAI Chat, Anthropic Messages, Gemini, and
+OpenAI-compatible endpoints). Sessions, messages, usage, and saved decisions
+are stored locally in SQLite. Offline/cassette paths are **test-only** — the
+product default is live when credentials are present.
 
 ## Surfaces
 
 One binary exposes several surfaces over the same session engine:
 
-- **TUI** (`cortex`) — interactive terminal UI with streamed markdown +
-  tree-sitter syntax highlighting, readable diffs, expand/collapse tool cards,
-  slash commands, `@file` mentions, a `!` shell mode, a command palette, themes,
-  keybindings, session pickers, in-chat search, toasts, and undo/redo.
-- **Headless CLI** (`cortex run`) — scriptable one-shot/continue turns that read
-  the prompt from an argument, stdin, or both, with strict `--format json` and
-  `--jsonl` output for scripts and CI.
-- **Local server** (`cortex serve`) — an axum loopback HTTP server with an SSE
-  `/event` stream, session CRUD, an OpenAPI document, and remote TUI control.
-- **ACP** (`cortex acp`) — an Agent Client Protocol stdio server (a working
-  subset) for editor integrations.
-- **TypeScript SDK** (`sdk/`) — a typed Node/TypeScript client, event stream,
-  and process launcher for the local server, generated from its OpenAPI schema.
+- **TUI** (`cortex`) — interactive Cortex shell: streamed markdown +
+  tree-sitter highlighting, tool cards, permission docks, slash commands,
+  `@file` mentions, model/session pickers, help/status, and **Mission Control**
+  (MC V2 premium home for parallel workers).
+- **Headless CLI** (`cortex run`) — scriptable one-shot/continue turns
+  (`--format json`, `--jsonl`).
+- **Local server** (`cortex serve`) — axum loopback HTTP + SSE `/event`,
+  session CRUD, OpenAPI, remote TUI control. Binds **127.0.0.1:18765** by
+  default (reserved range **18765–18864**).
+- **Missions** (`cortex mission`) — clean-room Factory-similar missionDir
+  orchestration with a **parallel** implementer pool (default 3 / max 4).
+- **ACP** (`cortex acp`) — Agent Client Protocol stdio subset for editors.
+- **TypeScript SDK** (`sdk/`) — typed client for the local server.
+
+## Product identity (Cortex TUI)
+
+The interactive session shell follows **Cortex** chrome, not a copper
+Cortex brand plate:
+
+| Element | Behavior |
+| --- | --- |
+| Top bar | Muted cwd left · context budget `N / M` right |
+| User turn | Bare `❯` wash (no `You` nameplate) |
+| Assistant | Thought / markdown hierarchy (no `◆ Cortex` speaker plate) |
+| Jewel | Right-aligned model chip, e.g. `Cortex (high) · always-approve` |
+| Footer | Putty packing with `|` separators; busy turns show `[stop]` |
+| Palette | **CortexNight** primary theme |
+| Missions home | **MC V2** single page: multi-worker streams, feature rail, progress |
+
+Themes remain switchable (`/themes`); the product default conversation DNA is
+Cortex. Mission Control is copper-free.
 
 ## Features
 
-- **Providers & models** — OpenRouter by default, a multi-protocol provider
-  layer, and a dynamic multi-provider model catalogue in the `/models`
-  picker. The picker auto-refreshes the live models.dev catalogue in the
-  background on startup and each time it opens (no manual `cortex models
-  --refresh` needed): the offline list shows instantly with a subtle
-  refreshing indicator, then the fetched catalogue swaps in place and a
-  successful fetch warms the on-disk cache next to `auth.json`. The catalogue
-  is curated from every supported models.dev provider (endpoint overridable
-  via `CORTEX_MODELS_DEV_URL`) and grouped by provider with the latest models
-  first; the primary provider is curated dynamically, newest-first and capped
-  per vendor, so current models beyond the embedded snapshot appear. Entries
-  carry honest metadata (context length, price, capability descriptors), and
-  providers you hold a credential for are marked as connected. Offline
-  (`CORTEX_NO_NET` or the outbound guards) it resolves from the cache, then
-  the embedded snapshot, with no network attempt, hang, or error. `cortex
-  models --refresh` still updates it from the CLI.
-- **Mid-session connect** — the `/connect` slash command opens a
-  provider-connect flow in the mono-orange auth style: pick a provider, choose
-  an auth method (API key always, OAuth only where the provider supports it),
-  and enter a masked API key (never echoed) that is stored `0600` in
-  `auth.json`. The provider is usable immediately and shows as connected in
-  `/models` with no restart. OAuth-capable providers use a real loopback OAuth
-  flow (callback on the reserved 3200-3299 port range, CSRF-protected), and a
-  connected provider can be disconnected from the same flow (confirm before
-  remove), which removes the stored credential. Secrets live only in the `0600`
-  `auth.json` and are never printed, logged, or echoed.
-- **Tools** — read, write, edit, apply_patch, glob, grep (ripgrep), bash (with
-  background jobs), todo, webfetch, websearch, the `task` subagent tool, an `lsp`
-  tool, `skill`, and `question`, with large-output truncation.
-- **Permissions, policy & trust** — allow/ask/deny rules over glob and bash
-  patterns, last-match-wins, per-agent scoping, and saved decisions.
-- **Checkpoints** — shadow-git snapshots before mutations, with `undo`/`redo`.
-- **MCP** — client support for stdio servers and remote HTTP/SSE servers,
-  including OAuth-protected remotes, with live tool-list updates.
-- **LSP** — diagnostics fed back into the agent after edits, plus navigation.
-- **Formatters** — run after writes/edits for supported languages.
-- **Agents** — built-in personas plus custom markdown agents (frontmatter),
-  agent generation, and real `task` subagents.
-- **Skills & memory** — guidance injection from skills, plus layered project
-  memory (`AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`, global and dynamic sources).
+- **Providers & models** — OpenRouter-first multi-protocol layer; dynamic
+  models.dev catalogue in `/models` (auto-refresh; offline cache + embedded
+  snapshot). `cortex models --refresh` from the CLI.
+- **Auth / connect** — `cortex auth login`, TUI `/connect`: API key (masked,
+  never echoed) or OAuth where supported; credentials in `0600` `auth.json`.
+- **Tools** — read, write, edit, apply_patch, glob, grep, bash (background),
+  todo, webfetch, websearch, `task` subagent, `lsp`, `skill`, `question`.
+- **Permissions** — allow/ask/deny over glob and bash patterns; saved decisions.
+- **Checkpoints** — shadow-git snapshots; undo/redo.
+- **MCP / LSP** — stdio + remote HTTP/SSE MCP (incl. OAuth remotes); LSP
+  diagnostics and navigation after edits.
+- **Agents, skills, memory** — personas, markdown agents, skill injection,
+  layered project memory (`AGENTS.md`, …).
 - **Context compaction** — automatic compaction and overflow recovery.
-- **Audit & redaction** — wired audit logging and secret redaction across
-  surfaces, with a `CORTEX_NO_NET` offline kill switch.
-- **Plugins** — project plugins and lifecycle hooks (see [Plugins](#plugins)).
-- **Persistence & inspection** — SQLite-backed sessions plus `stats`, `search`,
-  `export`/`import`, and `replay`.
+- **Audit & redaction** — secret redaction across logs/config; `CORTEX_NO_NET`
+  offline kill switch.
+- **Plugins** — local JS modules with ordered request-shaping hooks (see
+  [Plugins](#plugins)).
+- **Parallel missions** — missionDir store, dep-aware scheduler, handoffs,
+  milestone validation gates, MC home binding.
 
-## Plugins
+## Quick start
 
-Project plugins are local JavaScript modules listed in config (for example
-`plugin = ["./my-plugin.mjs"]` or `[spec, options]` pairs). They execute in an
-external runtime with fixed discovery order: **Bun**, then **Node**, then
-**Deno**. A configured plugin is never silently skipped; missing runtime,
-missing file, or a load error fail closed with a clear diagnostic.
+### Prerequisites
 
-### Request-shaping hook composition
+- Rust **1.85+** (edition 2024)
+- Optional: [tmux](https://github.com/tmux/tmux) **3.4+** for e2e harness
+- OpenRouter API key for live turns
 
-Request-shaping hooks rewrite the outbound LLM request and advertised tool
-schemas before a turn leaves the surface. Composition is **configuration order**:
-plugins are visited in the order they appear in the effective `plugin = [...]`
-list. Each hook's return value becomes the next plugin's input for that phase,
-so the order is deterministic and stable across runs.
-
-Phases applied to each shaped LLM request:
-
-1. `chat.message` — per message, plugins in config order
-2. `experimental.chat.messages.transform` (alias `chat.messages`) — whole array
-3. `experimental.chat.system.transform` (alias `chat.system`) — system text
-4. `chat.params` — provider parameter map
-5. `chat.headers` — extra HTTP headers
-
-Tool schemas are shaped separately when definitions are advertised:
-
-6. `tool.definition` — per tool definition, plugins in config order
-
-If plugins `a` and `b` are listed as `plugin = ["./a.mjs", "./b.mjs"]` and both
-register the same hook, every run observes `a` then `b`. Pure mode
-(`--pure` / `CORTEX_PURE`) and pure management probes disable plugin loading
-entirely. The crate docs in `plugins` (`crates/plugins/src/lib.rs`) are the
-authoritative API-facing statement of this contract; black-box tests in
-`crates/cli/tests/plugin_request_shaping_hooks.rs` pin the reordering behavior.
-
-## Design & UX
-
-The interactive TUI and the headless CLI share a mono-orange design system: an
-`ORANGE`/`ORANGE_D`/`AMBER` palette on a near-black `#0d0d0d` base, with an
-explicit background painted on every cell so nothing falls through to the
-terminal default. The visual language is safe-glyph only (no braille), using the
-`✦` author mark, `▶`/`▼` disclosure toggles, and rounded card, panel, and modal
-corners (`╭ ╮ ╰ ╯`); selection uses an inverse selection-bar highlight.
-
-- **Themes** — five chrome themes are reachable from the `/themes` gallery:
-  `dark` (default), `light`, `monokai`, `ocean`, and `vscode`. In-chat and diff
-  code use a VS Code Dark+ syntax palette, while the gallery previews render each
-  theme in its own palette.
-- **Animations** — a safe spinner, a token-streaming reveal with a blinking
-  cursor, toast slide/fade, selection highlight, and eighths-based progress. All
-  animations honor `--no-anim` (or `CORTEX_NO_ANIM=1`) and reduced motion, which
-  disable the animated reveal without changing the underlying streaming or
-  network delivery.
-- **First-run onboarding** — a welcome screen appears on first run, and
-  `cortex auth login` (with no provider argument, on a terminal) opens an
-  interactive provider picker with masked API-key input (the key is never echoed
-  or logged) written to the `0600` auth store.
-- **Styled CLI** — the headless CLI uses truecolor ANSI styling that is
-  TTY-gated: it auto-disables when output is piped or redirected and honors
-  `NO_COLOR`. Machine output stays byte-stable, so `--format json` and `--jsonl`
-  are byte-identical whether piped or on a TTY and carry zero ANSI when piped.
-  Styled surfaces include `--help`, the `serve` banner and `-v` access log, and
-  `run`, `stats`, `search`, `models`, and `replay`.
-
-## Workspace layout
-
-The repository is a Cargo workspace (`crates/`) whose `cli` crate builds the
-`cortex` binary. The crates group into a few layers:
-
-- **Foundation** — `protocol`, `errors`, `events`, `redaction`, `settings`,
-  `db`.
-- **Model & engine** — `llm`, `providers`, `engine` (the durable session
-  runner), plus `format` and `memory`.
-- **Tools & policy** — `tools`, `permissions`, `policy`, `checkpoints`, `mcp`,
-  `lsp`, `plugins`, `skills`, `audit`.
-- **TUI framework** — `tui-core`, `tui-buffer`, `tui-text`, `tui-widgets`,
-  `tui-syntax`, `frame`, `tui-components`, and the `tui` application crate.
-- **Surfaces** — `server` (HTTP/SSE/OpenAPI), `acp`, and `cli` (the binary).
-
-The `sdk/` directory holds the TypeScript SDK for the local server.
-
-## Prerequisites
-
-- A Rust toolchain on **edition 2024** (Rust 1.85+).
-- An OpenRouter API key for live LLM runs.
-
-## Setup
-
-Build the binary:
+### Build
 
 ```bash
-cargo build -p cli
+cargo build -p cli --bins
 ./target/debug/cortex --version
 ```
 
-### API key
+### Live API keys
 
-Place your key in a local, gitignored `.env.local` at the repo root and source
-it into the shell:
+**Never commit keys.** Prefer environment or the local auth store.
 
 ```bash
+# Option A — env (gitignored .env.local)
 # .env.local
 OPENROUTER_API_KEY=your-key
-```
 
-```bash
 set -a; . ./.env.local; set +a
-```
 
-Alternatively, export it directly:
-
-```bash
+# Option B — export for the shell
 export OPENROUTER_API_KEY="your-key"
-```
 
-or store it in the local `0600` auth store:
-
-```bash
+# Option C — 0600 auth store
 ./target/debug/cortex auth login openrouter --api-key "$OPENROUTER_API_KEY"
 ./target/debug/cortex auth list
 ```
 
-You can also connect providers from inside the TUI with the `/connect` slash
-command, which stores the key in the same `0600` `auth.json` and marks the
-provider as connected in `/models` without a restart.
+Inside the TUI, `/connect` stores the same `auth.json` credential and marks the
+provider connected in `/models` without a restart.
 
-`.env.local` is gitignored; never commit your key.
+For gated live integration tests and probes:
 
-## Run
+```bash
+export CORTEX_LIVE=1
+# OPENROUTER_API_KEY must already be set (or loaded from auth store)
+```
 
-Launch the interactive TUI:
+Workers and tests never print key material; redaction is enforced on log sinks.
+
+### Interactive TUI
 
 ```bash
 ./target/debug/cortex
-```
-
-Disable animations (reduced motion) by launching the TUI subcommand with
-`--no-anim`, or set `CORTEX_NO_ANIM=1` for the bare invocation:
-
-```bash
-./target/debug/cortex tui --no-anim
+# reduced motion:
 CORTEX_NO_ANIM=1 ./target/debug/cortex
+./target/debug/cortex tui --no-anim
 ```
 
-Run a headless live turn:
+### Headless live turn
 
 ```bash
-./target/debug/cortex run "Say hello from Cortex Code in one short sentence."
+./target/debug/cortex run "Say hello from Cortex in one short sentence."
 ./target/debug/cortex run --format json "Reply with a short greeting." | jq .
 ./target/debug/cortex run --jsonl "Stream a short greeting."
 ```
 
-Start the local server:
+### Local server (loopback only)
 
 ```bash
-./target/debug/cortex serve --hostname 127.0.0.1 --port 3200
+./target/debug/cortex serve --hostname 127.0.0.1 --port 18765
+curl -sf http://127.0.0.1:18765/health
 ```
 
-Run the ACP stdio server (for editor integrations):
+Defaults are **127.0.0.1** and **18765**. Ports outside **18765–18864** are
+rejected. Do not bind non-loopback hosts for product serve.
+
+### Parallel missions
+
+Missions live under `~/.cortex/missions/<id>/` (override with `--root` or
+`CORTEX_MISSIONS_ROOT`). They never write under Factory `~/.factory/missions`.
+
+```bash
+ROOT=/tmp/cortex-missions-demo
+rm -rf "$ROOT" && mkdir -p "$ROOT"
+
+./target/debug/cortex mission create --fixture --id demo --root "$ROOT"
+./target/debug/cortex mission run demo --root "$ROOT" --parallel 3
+./target/debug/cortex mission status demo --root "$ROOT" --format json
+./target/debug/cortex mission list --root "$ROOT"
+```
+
+- **Pool:** default parallel **3**, hard max **4**; dependency-aware.
+- **Artifacts:** `features.json`, handoffs, `progress_log.jsonl`, validation
+  seals under the missionDir.
+- **Isolation fixture:** `cortex mission create --isolation` seeds a pack with
+  one intentional failure so siblings still complete.
+- **TUI:** Mission Control home shows multi-worker slots and the feature rail.
+
+### ACP
 
 ```bash
 ./target/debug/cortex acp
@@ -259,17 +189,145 @@ Most inspection commands support `--format json`.
 
 ./target/debug/cortex mcp list
 ./target/debug/cortex lsp status
+./target/debug/cortex mission --help
 ```
 
-Headless runs can gate built-in, plugin, and MCP tools with permission rules:
+Headless permission gates:
 
 ```bash
 ./target/debug/cortex run --permission-deny 'bash:rm *' "Inspect the project safely."
 ```
 
+## Plugins
+
+Project plugins are local JavaScript modules listed in config (for example
+`plugin = ["./my-plugin.mjs"]` or `[spec, options]` pairs). They execute in an
+external runtime with fixed discovery order: **Bun**, then **Node**, then
+**Deno**. A configured plugin is never silently skipped; missing runtime,
+missing file, or a load error fail closed with a clear diagnostic.
+
+### Request-shaping hook composition
+
+Request-shaping hooks rewrite the outbound LLM request and advertised tool
+schemas before a turn leaves the surface. Composition is **configuration order**:
+plugins are visited in the order they appear in the effective `plugin = [...]`
+list. Each hook's return value becomes the next plugin's input for that phase.
+
+Phases applied to each shaped LLM request:
+
+1. `chat.message` — per message, plugins in config order
+2. `experimental.chat.messages.transform` (alias `chat.messages`) — whole array
+3. `experimental.chat.system.transform` (alias `chat.system`) — system text
+4. `chat.params` — provider parameter map
+5. `chat.headers` — extra HTTP headers
+
+Tool schemas are shaped separately:
+
+6. `tool.definition` — per tool definition, plugins in config order
+
+Pure mode (`--pure` / `CORTEX_PURE`) disables plugin loading entirely. See
+`crates/plugins/src/lib.rs` and `crates/cli/tests/plugin_request_shaping_hooks.rs`.
+
+## Workspace layout
+
+Cargo workspace under `crates/`; `cli` builds the `cortex` binary:
+
+- **Foundation** — `protocol`, `errors`, `events`, `redaction`, `settings`, `db`
+- **Model & engine** — `llm`, `providers`, `engine`, `format`, `memory`
+- **Tools & policy** — `tools`, `permissions`, `policy`, `checkpoints`, `mcp`,
+  `lsp`, `plugins`, `skills`, `audit`, `subagent_runner`
+- **Missions** — `missions` (store, parallel scheduler, validators, handoffs)
+- **TUI** — `tui-core`, `tui-buffer`, `tui-text`, `tui-widgets`, `tui-syntax`,
+  `frame`, `tui-components`, `tui`
+- **Surfaces** — `server`, `acp`, `cli`
+
+The `sdk/` directory holds the TypeScript SDK for the local server.
+
+## Persistence
+
+Default database:
+
+```text
+${XDG_DATA_HOME:-$HOME/.local/share}/cortex/cortex.db
+```
+
+Override with `CORTEX_DB_PATH` or `CORTEX_DATA_DIR`. Auth lives next to the
+config/data trees in a mode-`0600` `auth.json`.
+
+## Network controls
+
+```bash
+CORTEX_NO_NET=1 ./target/debug/cortex run "Say hello"
+CORTEX_NO_NET=1 ./target/debug/cortex net check
+```
+
+Minimal offline-only binary:
+
+```bash
+cargo build -p cli --no-default-features
+./target/debug/cortex --version
+```
+
+## Test and validate
+
+Gate commands used by product scrutiny (see mission `services.yaml`):
+
+```bash
+# Build binary
+CARGO_INCREMENTAL=1 cargo build -p cli --bins
+
+# Full workspace typecheck/build
+CARGO_INCREMENTAL=1 cargo build --workspace
+
+# Clippy (warnings denied)
+CARGO_INCREMENTAL=1 cargo clippy --workspace --all-targets -- -D warnings
+
+# Workspace tests (isolated XDG so host caches do not leak into model tests)
+export XDG_CONFIG_HOME=/tmp/cortex-mission-xdg/config
+export XDG_DATA_HOME=/tmp/cortex-mission-xdg/data
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+CARGO_INCREMENTAL=1 cargo test --workspace -- --test-threads=8
+```
+
+### Tmux e2e
+
+The harness spawns a dedicated tmux session (120×40), runs the real `cortex`
+binary, captures the pane, and tears down without orphan sessions:
+
+```bash
+CARGO_INCREMENTAL=1 cargo test -p cli --test tmux_e2e -- --nocapture
+```
+
+Live OpenRouter half of the harness (and other `#[ignore]`/gated live tests)
+requires credentials plus:
+
+```bash
+export CORTEX_LIVE=1
+export OPENROUTER_API_KEY=…   # never commit
+```
+
+Absent keys skip the live path rather than failing offline CI.
+
+### Missions package tests
+
+```bash
+cargo test -p missions -- --test-threads=8
+```
+
+### Secrets hygiene
+
+- `.env` / `.env.local` are gitignored.
+- Fixtures use placeholders only — no real `sk-or-v1-…` keys in tree.
+- Redaction crate scrubs secret-shaped strings from logs and audit sinks.
+
+```bash
+# Sanity scan (should be empty of real keys)
+rg -n 'sk-or-v1-[A-Za-z0-9]{20,}' --glob '!target/**' --glob '!.git/**' .
+```
+
 ## TypeScript SDK
 
-The SDK under `sdk/` targets the local server. From `sdk/`:
+From `sdk/`:
 
 ```bash
 npm install
@@ -277,77 +335,13 @@ npm run typecheck
 npm test
 ```
 
-Regenerate the typed client from the server's OpenAPI document with
-`npm run generate`.
-
-## Persistence
-
-Sessions, messages, usage data, and saved local decisions are stored in SQLite.
-The default database is:
-
-```text
-${XDG_DATA_HOME:-$HOME/.local/share}/cortex/cortex.db
-```
-
-Set `CORTEX_DB_PATH` to use a specific database file, or `CORTEX_DATA_DIR` to
-move the Cortex data directory.
-
-## Network controls
-
-Set `CORTEX_NO_NET=1` to fail closed before any outbound network call:
-
-```bash
-CORTEX_NO_NET=1 ./target/debug/cortex run "Say hello"
-CORTEX_NO_NET=1 ./target/debug/cortex net check
-```
-
-Default features include network and the local server surface; network is
-**additive**. A minimal offline-only binary compiles without those defaults:
-
-```bash
-cargo build -p cli --no-default-features
-./target/debug/cortex --version
-```
-
-That build still runs local commands (`--help`, `config`, `search`, `session`,
-`stats`, `replay`, `export`/`import`, completions). Network-backed paths fail
-closed until you rebuild with the default features (or `--features network`).
-
-## Test and validate
-
-Build, typecheck, and lint:
-
-```bash
-cargo build -p cli
-cargo check --workspace
-cargo clippy --workspace --no-deps
-```
-
-Run the offline workspace suite. Several integration tests read the Cortex data
-directory, model cache, and temp state, and a few share ports or process groups, so
-isolate `HOME`/`TMPDIR` and run the suite single-threaded. Live OpenRouter tests skip
-automatically when `OPENROUTER_API_KEY` is not set rather than failing:
-
-```bash
-old_home="$HOME"
-test_home="$(mktemp -d)"
-test_tmp="$test_home/tmp"
-mkdir -p "$test_tmp"
-HOME="$test_home" TMPDIR="$test_tmp" \
-  CARGO_HOME="${CARGO_HOME:-$old_home/.cargo}" \
-  RUSTUP_HOME="${RUSTUP_HOME:-$old_home/.rustup}" \
-  env -u OPENROUTER_API_KEY -u CORTEX_DATA_DIR -u CORTEX_DB_PATH -u CORTEX_AUTH_FILE \
-    -u XDG_DATA_HOME -u XDG_CONFIG_HOME \
-  cargo test --workspace -- --test-threads=1
-```
-
-Leaving `OPENROUTER_API_KEY` exported runs the live-gated tests against OpenRouter
-as well; the offline path above is what you want for a clean local CI-style pass.
+Regenerate the client with `npm run generate`.
 
 ## License & attribution
 
-Cortex Code is distributed under Apache-2.0 (see `LICENSE`). The project is
+Cortex is distributed under **Apache-2.0** (see `LICENSE`). The project is
 clean-room original except for one owner-authorized source port of the TUI
 framework crates, which retains its upstream MIT license. Each ported file
-carries a per-file provenance header, and the full provenance ledger is recorded
-in `NOTICE`.
+carries a per-file provenance header; the full ledger is in `NOTICE`.
+
+Do not commit API keys, cloud credentials, or private mission secrets.
