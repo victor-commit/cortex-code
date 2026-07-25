@@ -2986,6 +2986,13 @@ impl App {
         self.turn_rx = None;
         self.spinner_start = None;
         self.flush_stream_redactors();
+        // Fail-closed: if a dock is still open (e.g. remote abort), deny so the worker never hangs
+        // waiting on a UI reply that will not arrive after the turn is torn down.
+        if let Some(pending) = self.pending_permission.take() {
+            pending
+                .ask
+                .answer(ScopedDecision::once(Decision::Deny));
+        }
         let prompt = self.turn_prompt.take();
         let turn_attachments = std::mem::take(&mut self.turn_attachments);
         let errored = std::mem::take(&mut self.turn_errored);
@@ -3016,6 +3023,15 @@ impl App {
         }
         self.clear_rich_turn_state();
         self.queued_prompts.clear();
+        // VAL-CORTEX-UX-004: stop restores a clean editable composer — drop any mid-turn draft,
+        // attachment staging, and Esc-probe residue so a fresh probe cannot pick up `ay`/`nd`.
+        self.input.set_value("");
+        self.composer_attachments.clear();
+        self.nav_escape_probe = None;
+        self.mention = None;
+        if self.slash_menu_open() {
+            self.close_slash_menu();
+        }
         self.transcript
             .push(Entry::Notice("Turn interrupted.".to_owned()));
         self.push_toast(ToastLevel::Info, "Turn interrupted");
@@ -3177,6 +3193,11 @@ impl App {
         };
         self.push_toast(level, label.clone());
         self.transcript.push(Entry::Notice(label));
+        // VAL-CORTEX-UX-003: dock answers never leave chord fragments in the composer or history.
+        // The prompt is modal while open; still force a clean editable composer after dismiss.
+        self.input.set_value("");
+        self.composer_attachments.clear();
+        self.nav_escape_probe = None;
         self.pin_to_bottom();
     }
 
@@ -11661,6 +11682,130 @@ mod tests {
         assert_eq!(deny_d.input_value(), "");
     }
 
+    // VAL-CORTEX-UX-003: prompt-mode deny leaves no dock-key junk in the transcript and returns a
+    // clean composer that accepts a fresh probe string.
+    #[test]
+    fn deny_path_leaves_clean_composer_and_no_orphan_dock_key_turns() {
+        let mut a = app();
+        let before_users: Vec<String> = a
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+
+        let wait = deliver_permission(&mut a, "bash", "touch deny-marker.txt");
+        assert!(a.permission_open(), "prompt/ask mode must arm a dock");
+        // Spam common dock chords while the dock is open — they must answer the dock, not insert.
+        a.on_key(key(KeyCode::Char('n')));
+        assert_eq!(
+            wait.recv().unwrap(),
+            ScopedDecision::once(Decision::Deny),
+            "deny blocks the gated tool"
+        );
+        assert!(!a.permission_open());
+        assert_eq!(
+            a.input_value(),
+            "",
+            "composer must be empty after deny (no n/d residue)"
+        );
+
+        // No orphan single-letter (or short dock-chord) user turns from the deny interaction.
+        let after_users: Vec<String> = a
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            after_users, before_users,
+            "deny must not create user transcript turns from dock keys: {after_users:?}"
+        );
+        assert!(
+            a.transcript.iter().any(
+                |e| matches!(e, Entry::Notice(text) if text.contains("Denied") && text.contains("bash"))
+            ),
+            "deny notice should be recorded"
+        );
+
+        // Fresh probe types cleanly (avoid leading a/y/n/d — those remain dock-only on empty).
+        for ch in "CLEAN_PROBE_OK".chars() {
+            a.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            a.input_value(),
+            "CLEAN_PROBE_OK",
+            "post-deny composer must accept a clean probe with no leftover dock chords"
+        );
+        // After intentional text is present, dock letters type as normal content (no residual gate).
+        a.on_key(key(KeyCode::Char('n')));
+        a.on_key(key(KeyCode::Char('d')));
+        assert_eq!(a.input_value(), "CLEAN_PROBE_OKnd");
+    }
+
+    // VAL-CORTEX-UX-004: Esc interrupt drops mid-turn draft residue and restores a clean editable
+    // composer so a fresh probe is not prefixed with leaked chord / draft fragments.
+    #[test]
+    fn interrupt_restores_clean_editable_composer_without_chord_residue() {
+        let mut a = app();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let cancel = flag();
+        a.begin_turn("stream forever".to_owned(), rx, cancel.clone());
+        a.apply(TurnMessage::Event(RunnerEvent::TextDelta {
+            text: "partial…".to_owned(),
+        }));
+        assert!(a.is_busy());
+
+        // Mid-turn draft that would otherwise stick after stop (live residual: `ndWrite…` pollution).
+        // Start with a non-chord letter so a/y/n/d are ordinary text once the draft is non-empty.
+        for ch in "xndWrite leftover".chars() {
+            a.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            a.input_value(),
+            "xndWrite leftover",
+            "precondition: mid-turn draft exists during the busy turn"
+        );
+
+        a.on_key(key(KeyCode::Esc));
+
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "worker cancel flag must be set"
+        );
+        assert!(!a.is_busy(), "turn must be idle after interrupt");
+        assert_eq!(
+            a.input_value(),
+            "",
+            "composer must be empty after interrupt (no leftover ay/ndWrite residue)"
+        );
+        assert!(
+            a.transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(m) if m.contains("interrupted"))),
+            "interrupted notice required"
+        );
+
+        // Fresh probe types with no leftover prefix.
+        for ch in "INTERRUPT_PROBE_OK".chars() {
+            a.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            a.input_value(),
+            "INTERRUPT_PROBE_OK",
+            "post-interrupt composer must accept a clean probe"
+        );
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a.take_pending_prompt().as_deref(),
+            Some("INTERRUPT_PROBE_OK")
+        );
+    }
+
     // The permission prompt renders as a titled modal naming the tool, its target, and the
     // Allow/Deny options over the frame (VAL-TUI-091).
     #[test]
@@ -12314,11 +12459,12 @@ mod tests {
             "an interruption notice is recorded"
         );
         // A fresh message can be submitted right away.
-        for c in "again".chars() {
+        // Avoid a leading dock chord letter (`a`/`y`/`n`/`d`) on the empty composer (UX-001).
+        for c in "retry now".chars() {
             a.on_key(key(KeyCode::Char(c)));
         }
         a.on_key(key(KeyCode::Enter));
-        assert_eq!(a.take_pending_prompt().as_deref(), Some("again"));
+        assert_eq!(a.take_pending_prompt().as_deref(), Some("retry now"));
     }
 
     #[test]

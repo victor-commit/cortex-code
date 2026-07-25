@@ -978,11 +978,12 @@ fn m2_tmux_tui_boots_product_chrome() {
     eprintln!("m2 tmux tui boot ok");
 }
 
-/// Tmux interactive TUI interrupt during a busy turn (VAL-CORTEX-CHAT-004).
+/// Tmux interactive TUI interrupt during a busy turn (VAL-CORTEX-CHAT-004 + UX-004).
 ///
-/// Live path: submit a long-running prompt, Esc to stop, assert editable composer returns.
+/// Live path: submit a long-running prompt, type mid-turn draft residue, Esc to stop, assert
+/// clean editable composer accepts a fresh probe with no leftover fragments.
 /// Offline fallback: Esc is still accepted on idle TUI (composer stays editable) — the app unit
-/// `esc_interrupts_a_streaming_turn_and_returns_to_idle` covers the busy branch deterministically.
+/// `interrupt_restores_clean_editable_composer_without_chord_residue` covers the busy branch.
 #[test]
 fn m2_tmux_interrupt_returns_to_editable_shell() {
     require_tmux();
@@ -1012,32 +1013,40 @@ fn m2_tmux_interrupt_returns_to_editable_shell() {
         let mid = session.capture_pane();
         assert_no_secret_leak(&mid, key);
 
-        // Esc interrupts the busy turn (app: interrupt_turn).
+        // Inject mid-turn draft pollution that must be cleared by interrupt (UX-004).
+        // Leading non-chord letter so a/y/n/d type as ordinary draft text once non-empty.
+        session.send_keys(&["xndWrite leftover"]);
+        thread::sleep(Duration::from_millis(150));
+
+        // Esc interrupts the busy turn (app: interrupt_turn) and clears the composer.
         session.send_keys(&["Escape"]);
         thread::sleep(Duration::from_millis(400));
 
-        // Composer must accept a new prompt (editable again).
-        session.send_keys(&["INTERRUPT_OK", "Enter"]);
-        // Either the user wash shows INTERRUPT_OK or a notice about interrupt appears.
+        // Composer must accept a new prompt with no leftover residue.
+        session.send_keys(&["INTERRUPT_PROBE_OK", "Enter"]);
         let after = wait_capture_any(
             &session,
-            &["INTERRUPT_OK", "interrupted", "always-approve"],
+            &["INTERRUPT_PROBE_OK", "interrupted", "Turn interrupted"],
             WAIT_TIMEOUT,
         );
         assert_no_secret_leak(&after, key);
         assert!(
-            after.contains("INTERRUPT_OK")
-                || after.contains("interrupted")
-                || after.contains("always-approve"),
+            after.contains("INTERRUPT_PROBE_OK") || after.contains("interrupted"),
             "TUI did not return to editable state after Esc interrupt:\n{after}"
+        );
+        assert!(
+            !after.contains("xndWrite leftoverINTERRUPT")
+                && !after.contains("ndWrite leftoverINTERRUPT")
+                && !after.contains("leftoverINTERRUPT"),
+            "post-interrupt probe must not carry mid-turn draft residue:\n{after}"
         );
         session.kill();
         eprintln!("m2 tmux tui interrupt live ok");
         return;
     }
 
-    // Offline structural: shell Ctrl-C path still exercises the putty-advertised cancel chord
-    // surface outside the TUI, plus TUI boot accepts Esc without hanging.
+    // Offline structural: idle Esc is a no-op on composer content (busy clear is unit-tested);
+    // boot still accepts Esc without hanging and remains editable.
     let session = spawn_cortex_tui("m2-int-off", &scratch, None);
     let _ = wait_capture_any(
         &session,
@@ -1046,10 +1055,10 @@ fn m2_tmux_interrupt_returns_to_editable_shell() {
     );
     session.send_keys(&["Escape"]);
     thread::sleep(Duration::from_millis(200));
-    session.send_keys(&["offline_int", "Enter"]);
+    session.send_keys(&["offline_int_probe", "Enter"]);
     let pane = session.capture_pane();
     assert!(
-        pane.contains("offline_int")
+        pane.contains("offline_int_probe")
             || pane.contains("always-approve")
             || pane.contains('❯')
             || pane.contains('›'),
@@ -1246,10 +1255,10 @@ fn m2_tmux_live_tool_card_and_effect() {
     );
 }
 
-/// Live interactive TUI permission deny blocks FS side-effect (VAL-CORTEX-CHAT-003).
+/// Live interactive TUI permission deny blocks FS side-effect (VAL-CORTEX-CHAT-003 + UX-003).
 ///
-/// Model is instructed to write a file via bash; we deny the dock with `n`/`Esc` and assert the
-/// target never appears.
+/// Model is instructed to write a file via bash; we deny the dock with `n` and assert the target
+/// never appears, the composer stays clean, and no orphan single-letter user turns appear.
 #[test]
 fn m2_tmux_live_permission_deny_blocks_effect() {
     if !live_enabled() {
@@ -1264,6 +1273,23 @@ fn m2_tmux_live_permission_deny_blocks_effect() {
     let scratch = Scratch::new("m2-tui-deny");
     let target = scratch.work().join("must_not_exist_tui.txt");
     assert!(!target.exists());
+
+    // Force ask-mode via project cortex.toml so the interactive dock is reachable even if a
+    // saved always-allow would otherwise short-circuit. Product TUI default ruleset already
+    // asks on bash/write; this is the documented way to pin prompt mode for deny UX.
+    std::fs::write(
+        scratch.work().join("cortex.toml"),
+        "# e2e: force prompt/ask mode for deny path (VAL-CORTEX-UX-003)\n\
+         [[permission]]\n\
+         tool = \"bash\"\n\
+         pattern = \"*\"\n\
+         action = \"ask\"\n\
+         [[permission]]\n\
+         tool = \"write\"\n\
+         pattern = \"*\"\n\
+         action = \"ask\"\n",
+    )
+    .expect("write project ask-mode cortex.toml");
 
     let session = spawn_cortex_tui("m2-deny", &scratch, Some(&key));
     let boot = wait_capture_any(
@@ -1314,6 +1340,43 @@ fn m2_tmux_live_permission_deny_blocks_effect() {
         !target.exists(),
         "permission deny must leave must_not_exist_tui.txt absent; denied={denied}; pane:\n{last}"
     );
+
+    // VAL-CORTEX-UX-003: no orphan single-letter user turns from dock keys; clean composer probe.
+    if denied {
+        let after_deny = session.capture_pane();
+        assert_no_secret_leak(&after_deny, &key);
+        assert!(
+            !after_deny.lines().any(|line| {
+                let t = line.trim();
+                t == "❯ n"
+                    || t == "❯ d"
+                    || t == "❯ a"
+                    || t == "❯ y"
+                    || t == "❯ nd"
+                    || t == "❯ ay"
+                    || t.ends_with("❯ n")
+                    || t.ends_with("❯ d")
+            }),
+            "deny must not leak dock keys as orphan user turns:\n{after_deny}"
+        );
+        // Composer must accept a fresh probe without ay/nd residue.
+        // Wait only for the unique probe token (not "Denied"/"always-approve", which are already
+        // on screen and would short-circuit wait_capture_any).
+        session.send_keys(&["CLEAN_DENY_PROBE"]);
+        let probe = wait_capture_any(&session, &["CLEAN_DENY_PROBE"], WAIT_TIMEOUT);
+        assert_no_secret_leak(&probe, &key);
+        assert!(
+            probe.contains("CLEAN_DENY_PROBE"),
+            "post-deny composer must accept a clean probe:\n{probe}"
+        );
+        assert!(
+            !probe.contains("ndCLEAN") && !probe.contains("ayCLEAN"),
+            "post-deny probe must not carry dock-chord residue:\n{probe}"
+        );
+        session.send_keys(&["Enter"]);
+        thread::sleep(Duration::from_millis(300));
+    }
+
     session.kill();
     eprintln!(
         "m2 tmux live deny ok file_absent=true denied_ui={denied} elapsed_ms={}",
