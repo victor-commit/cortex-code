@@ -1715,11 +1715,18 @@ fn m7_tmux_offline_ux_pack_motd_and_chord_swallow() {
     thread::sleep(Duration::from_millis(100));
 
     // Arm residual guard via a short failed offline turn (finish_turn arms the post-turn window).
+    // Hermetic spawn (key=None) is required: under ambient CORTEX_LIVE=1+key without stripping,
+    // this prompt becomes a live tool turn and opens "Permission required" (~19-28s hang).
     session.send_keys(&["m7_arm_residual", "Enter"]);
-    let _ = wait_capture_any(
+    let residual = wait_capture_any(
         &session,
         &["missing credential", "error", "did not complete", "Turn"],
         WAIT_TIMEOUT,
+    );
+    // VAL-CORTEX-UX-005: offline residual path must never arm a live permission dock.
+    assert!(
+        !residual.contains("Permission required") && !residual.contains("Allow once"),
+        "offline residual-arm must not open live permission dock under ambient live env:\n{residual}"
     );
     // VAL-CORTEX-UX-001 residual: immediately spam approve/deny chords on the empty composer.
     session.send_keys(&["a", "y", "n", "d", "A", "Y", "N", "D"]);
