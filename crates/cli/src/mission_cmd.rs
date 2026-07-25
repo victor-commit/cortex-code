@@ -70,7 +70,12 @@ fn create(args: MissionCreateArgs) -> Exit {
         features: Vec::new(),
     };
 
-    let result = if args.fixture {
+    // `--isolation` is a fixture variant (failure isolation). Bare
+    // `cortex mission create --isolation` must not silently seed an empty
+    // features queue — it implies `--fixture` (VAL / m5 run-serve-live).
+    let use_fixture = args.fixture || args.isolation;
+
+    let result = if use_fixture {
         if args.isolation {
             let id = opts
                 .id

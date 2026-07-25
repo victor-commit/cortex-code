@@ -286,6 +286,9 @@ pub struct MissionCreateArgs {
     pub fixture: bool,
 
     /// Fixture variant where one feature fails (failure isolation).
+    ///
+    /// Implies `--fixture`: bare `cortex mission create --isolation` never
+    /// seeds an empty features queue (it creates the isolation fixture pack).
     #[arg(long, default_value_t = false)]
     pub isolation: bool,
 
