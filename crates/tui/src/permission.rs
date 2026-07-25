@@ -25,6 +25,15 @@ use permissions::{Decision, PermissionRequest, Responder, ScopedDecision};
 
 use crate::turn::TurnMessage;
 
+/// Approve/deny hotkeys for the permission dock (`a`/`y` allow, `n`/`d` deny).
+///
+/// When no dock is armed these keys must not fall through into the empty composer or submit as
+/// orphan user turns (VAL-CORTEX-UX-001; live residual `❯ ay` / `ndWrite` leak under always-approve).
+#[must_use]
+pub fn is_permission_chord(ch: char) -> bool {
+    matches!(ch, 'a' | 'y' | 'n' | 'd' | 'A' | 'Y' | 'N' | 'D')
+}
+
 /// An interactive permission ask surfaced to the UI thread.
 ///
 /// Carries the gated tool and its subject (a file path or a parsed command) for display, plus the
@@ -186,6 +195,17 @@ mod tests {
 
     fn request(tool: &str, subject: &str) -> PermissionRequest {
         PermissionRequest::new(tool, subject)
+    }
+
+    // VAL-CORTEX-UX-001: dock chords are exactly the approve/deny letters (case-insensitive).
+    #[test]
+    fn permission_chords_are_approve_deny_letters() {
+        for ch in ['a', 'y', 'n', 'd', 'A', 'Y', 'N', 'D'] {
+            assert!(is_permission_chord(ch), "expected chord letter {ch}");
+        }
+        for ch in ['b', 'w', 'x', ' ', '1', 'e'] {
+            assert!(!is_permission_chord(ch), "non-chord letter {ch}");
+        }
     }
 
     // An ask is forwarded to the UI as a `Permission` message; once the UI answers, the responder

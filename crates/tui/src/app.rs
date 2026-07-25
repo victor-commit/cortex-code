@@ -32,7 +32,7 @@ use crate::attachments::InputAttachment;
 use crate::glyphs;
 use crate::keybind::{KeyChord, KeybindAction, Keybinds};
 use crate::mention;
-use crate::permission::PermissionAsk;
+use crate::permission::{self, PermissionAsk};
 use crate::remote::RemoteServer;
 use crate::shell;
 use crate::slash;
@@ -9174,8 +9174,16 @@ impl App {
             }
             // Ordinary text entry (ignore other ctrl/alt chords). Editing the prompt re-filters the
             // slash menu and the `@`-file picker, so refresh both after the edit.
+            //
+            // VAL-CORTEX-UX-001: bare approve/deny chords (`a`/`y`/`n`/`d`) are dock-only. When the
+            // permission dock is not armed and the composer is empty (or only whitespace), swallow
+            // them as no-ops so always-approve spam cannot insert `ay` / `nd` or submit junk turns.
+            // Once the user has real draft text, the same letters type normally.
             KeyCode::Char(c) if !ctrl && !alt => {
                 if self.consume_nav_escape_probe_char(c) {
+                    return;
+                }
+                if permission::is_permission_chord(c) && self.input.value().trim().is_empty() {
                     return;
                 }
                 self.input.insert_char(c);
@@ -11563,6 +11571,94 @@ mod tests {
             "",
             "the keypress answered the prompt, not the input"
         );
+    }
+
+    // VAL-CORTEX-UX-001: with no permission dock armed, approve/deny chords must not insert into an
+    // empty composer and must not become user turns (always-approve / allow-all spam path).
+    #[test]
+    fn permission_chords_without_dock_do_not_enter_composer_or_submit() {
+        let mut a = app();
+        assert!(!a.permission_open(), "fixture starts with no dock");
+        assert!(a.input_value().is_empty());
+
+        let before_user_turns = a
+            .transcript
+            .iter()
+            .filter(|e| matches!(e, Entry::User(_)))
+            .count();
+
+        for ch in ['a', 'y', 'n', 'd', 'A', 'Y', 'N', 'D'] {
+            a.on_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            a.input_value(),
+            "",
+            "a/y/n/d with no dock must not appear in the composer"
+        );
+        assert!(a.take_pending_prompt().is_none(), "no pending turn from chords");
+        a.on_key(key(KeyCode::Enter));
+        assert!(
+            a.take_pending_prompt().is_none(),
+            "Enter after swallowed chords must not submit a user turn"
+        );
+        let after_user_turns = a
+            .transcript
+            .iter()
+            .filter(|e| matches!(e, Entry::User(_)))
+            .count();
+        assert_eq!(
+            after_user_turns, before_user_turns,
+            "no user transcript turns from dock chords without a dock"
+        );
+
+        // Once real draft text is present, the same letters type normally (only bare empty composer
+        // gates the chords).
+        a.on_key(key(KeyCode::Char('h')));
+        a.on_key(key(KeyCode::Char('i')));
+        a.on_key(key(KeyCode::Char('a')));
+        a.on_key(key(KeyCode::Char('y')));
+        assert_eq!(a.input_value(), "hiay");
+    }
+
+    // VAL-CORTEX-UX-001 regression: dock-armed chords still approve/deny (not swallowed as no-ops).
+    #[test]
+    fn permission_chords_with_dock_armed_still_approve_and_deny() {
+        let mut allow = app();
+        let wait_y = deliver_permission(&mut allow, "write", "once.txt");
+        assert!(allow.permission_open());
+        allow.on_key(key(KeyCode::Char('y')));
+        assert_eq!(
+            wait_y.recv().unwrap(),
+            ScopedDecision::once(Decision::Allow)
+        );
+        assert!(!allow.permission_open());
+        assert_eq!(allow.input_value(), "");
+
+        let mut always = app();
+        let wait_a = deliver_permission(&mut always, "bash", "echo hi");
+        always.on_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            wait_a.recv().unwrap(),
+            ScopedDecision::always(Decision::Allow)
+        );
+        assert!(!always.permission_open());
+
+        let mut deny_n = app();
+        let wait_n = deliver_permission(&mut deny_n, "bash", "rm -rf .");
+        deny_n.on_key(key(KeyCode::Char('n')));
+        assert_eq!(
+            wait_n.recv().unwrap(),
+            ScopedDecision::once(Decision::Deny)
+        );
+
+        let mut deny_d = app();
+        let wait_d = deliver_permission(&mut deny_d, "edit", "x.rs");
+        deny_d.on_key(key(KeyCode::Char('d')));
+        assert_eq!(
+            wait_d.recv().unwrap(),
+            ScopedDecision::once(Decision::Deny)
+        );
+        assert_eq!(deny_d.input_value(), "");
     }
 
     // The permission prompt renders as a titled modal naming the tool, its target, and the
