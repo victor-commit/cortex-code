@@ -364,22 +364,36 @@ fn write_live_env_file(scratch: &Scratch, key: &str) -> PathBuf {
 
 /// Launch the interactive `cortex tui` inside a dedicated 120×40 tmux session with isolated XDG.
 ///
-/// When `key` is `Some`, the live OpenRouter credential is sourced from a 0600 file (never echoed).
-/// When `key` is `None`, the TUI still boots (composer/chrome assertions work offline).
+/// When `key` is `Some`, the live OpenRouter credential is sourced from a 0600 file (never echoed)
+/// and network kill-switch is cleared so the live path can run.
+/// When `key` is `None`, the spawn is **hermetic offline** (VAL-CORTEX-UX-005): host
+/// `CORTEX_LIVE` / provider API keys are stripped and `CORTEX_NO_NET=1` is forced so offline packs
+/// never inherit ambient live transport. Residual-arm prompts must take the credential/error path
+/// instead of becoming live LLM/tool turns (which hang on permission docks).
 fn spawn_cortex_tui(tag: &str, scratch: &Scratch, key: Option<&str>) -> TmuxSession {
     seed_minimal_config(scratch);
     let bin = cortex_bin();
     let bin_str = bin.display().to_string();
     let live_env = key.map(|k| write_live_env_file(scratch, k));
-    let source_live = match live_env.as_ref() {
-        Some(path) => format!("set -a; . {path:?}; set +a; "),
-        None => String::new(),
+    let credential_env = match live_env.as_ref() {
+        Some(path) => format!(
+            // Live path: source key file privately, allow network for OpenRouter.
+            "set -a; . {path:?}; set +a; unset CORTEX_NO_NET; "
+        ),
+        None => {
+            // Hermetic offline: drop ambient live flags/creds inherited from the cargo test process.
+            // Do not print secrets; only unset names.
+            "unset OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY \
+             GEMINI_API_KEY GOOGLE_API_KEY CORTEX_LIVE CORTEX_TRANSPORT; \
+             export CORTEX_NO_NET=1; "
+                .to_string()
+        }
     };
     let shell = format!(
-        "{source_live}\
+        "{credential_env}\
          export HOME={home:?} XDG_CONFIG_HOME={cfg:?} XDG_DATA_HOME={data:?} \
          CORTEX_DATA_DIR={cdata:?} CORTEX_DB_PATH={db:?} CORTEX_NO_ANIM=1; \
-         unset CORTEX_NO_NET RUST_LOG CORTEX_VERBOSE NO_COLOR; \
+         unset RUST_LOG CORTEX_VERBOSE NO_COLOR; \
          cd {work:?}; exec {bin} tui",
         home = scratch.home(),
         cfg = scratch.config(),
@@ -1658,10 +1672,14 @@ fn m3_tmux_mission_control_home_fingerprint() {
 
 /// Offline UX-001 + UX-002 pack: boot MOTD is debranded; post-turn residual bare a/y/n/d
 /// never become user turns or composer residue when no permission dock is armed.
+///
+/// VAL-CORTEX-UX-005: must stay hermetic and finish quickly even when the host cargo process
+/// has `CORTEX_LIVE=1` + provider API keys loaded (`spawn_cortex_tui(..., None)` strips them).
 #[test]
 fn m7_tmux_offline_ux_pack_motd_and_chord_swallow() {
     require_tmux();
     let scratch = Scratch::new("m7-off-pack");
+    // key=None forces hermetic offline spawn (no ambient live creds/transport).
     let session = spawn_cortex_tui("m7-off", &scratch, None);
     let boot = wait_capture_any(
         &session,
