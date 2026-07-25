@@ -1770,6 +1770,13 @@ fn representative_events() -> Vec<Event> {
         Event::TuiSessionSelect(TuiSessionSelect {
             session_id: "s".to_owned(),
         }),
+        Event::mission_started("fx", "/tmp/missions/fx", 3),
+        Event::mission_worker_started("fx", "w1", "feat-a", 1, 3),
+        Event::mission_worker_completed("fx", "w1", "feat-a", 0),
+        Event::mission_worker_failed("fx", "w2", "feat-b", "boom", 1),
+        Event::mission_progress("fx", "w1", "feat-a", "working", 1),
+        Event::mission_validation("fx", "m4-missions", "pass"),
+        Event::mission_finished("fx", "completed", 2, 1),
     ]
 }
 
