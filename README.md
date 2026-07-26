@@ -51,9 +51,11 @@ Cortex. Mission Control is copper-free.
 
 - **Providers & models** — OpenRouter-first multi-protocol layer; dynamic
   models.dev catalogue in `/models` (auto-refresh; offline cache + embedded
-  snapshot). `cortex models --refresh` from the CLI.
+  snapshot) plus first-class profiles. `cortex models --refresh` from the CLI.
+  See [docs/providers-and-oauth.md](docs/providers-and-oauth.md).
 - **Auth / connect** — `cortex auth login`, TUI `/connect`: API key (masked,
-  never echoed) or OAuth where supported; credentials in `0600` `auth.json`.
+  never echoed) or OAuth where supported (ChatGPT subscription, xAI xAI,
+  Copilot); credentials in `0600` `auth.json`. OAuth overrides: `CORTEX_OAUTH_*`.
 - **Tools** — read, write, edit, apply_patch, glob, grep, bash (background),
   todo, webfetch, websearch, `task` subagent, `lsp`, `skill`, `question`.
 - **Permissions** — allow/ask/deny over glob and bash patterns; saved decisions.
@@ -67,6 +69,7 @@ Cortex. Mission Control is copper-free.
   offline kill switch.
 - **Plugins** — local JS modules with ordered request-shaping hooks (see
   [Plugins](#plugins)).
+- **Docs** — [docs/](docs/README.md) (providers, subscription OAuth, env matrix).
 - **Parallel missions** — missionDir store, dep-aware scheduler, handoffs,
   milestone validation gates, MC home binding.
 
