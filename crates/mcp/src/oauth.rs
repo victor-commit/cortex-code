@@ -2,7 +2,8 @@
 //!
 //! When a remote server answers the handshake with `401`/needs-auth, the user runs the auth flow:
 //! cortex discovers the server's authorization and token endpoints, generates a random CSRF
-//! `state`, starts a loopback HTTP listener on a port in the mission's reserved range (3200-3299),
+//! `state`, starts a loopback HTTP listener on a port in the mission's reserved range (3200-3299)
+//! or a product-pinned callback port (e.g. ChatGPT Codex `1455`, xAI xAI `56121`),
 //! and prints an authorization URL. The user (or an automated validator) visits that URL; the
 //! server redirects back to the loopback callback with an authorization `code` and the `state`.
 //! cortex validates the returned `state` against the one it generated (a forged/mismatched state is
@@ -12,6 +13,7 @@
 //! Token values are never logged or printed here — only the authorization URL (which carries no
 //! secret) is surfaced.
 
+use std::future::Future;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -22,6 +24,13 @@ use crate::credentials::{StoredToken, now_secs};
 
 /// The reserved loopback port range the OAuth callback binds within (mission boundary).
 const CALLBACK_PORT_RANGE: std::ops::RangeInclusive<u16> = 3200..=3299;
+
+/// Product-pinned callback ports allowed outside the mission scan range (explicit pin only).
+/// ChatGPT/Codex registers `http://localhost:1455/auth/callback`; xAI uses `56121`.
+const PINNED_CALLBACK_PORTS: &[u16] = &[1455, 56121];
+
+/// Default loopback callback path when a provider does not pin a product path.
+const DEFAULT_CALLBACK_PATH: &str = "/callback";
 
 /// A failure during the OAuth authorization flow.
 #[derive(Debug, thiserror::Error)]
@@ -48,7 +57,7 @@ pub enum OAuthError {
     #[error("invalid URL: {0}")]
     InvalidUrl(String),
     /// An explicit callback port fell outside the mission's reserved range.
-    #[error("invalid OAuth callback port {0}: expected a port in 3200-3299")]
+    #[error("invalid OAuth callback port {0}: expected a port in 3200-3299 or a product pin (1455, 56121)")]
     InvalidCallbackPort(u16),
     /// The token endpoint response could not be parsed.
     #[error("invalid token response: {0}")]
@@ -59,7 +68,7 @@ pub enum OAuthError {
 }
 
 /// The resolved OAuth endpoints and client identity for a remote server.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OAuthConfig {
     /// The authorization endpoint (`/authorize`).
     pub authorize_endpoint: String,
@@ -69,6 +78,10 @@ pub struct OAuthConfig {
     pub client_id: String,
     /// The requested scopes (may be empty).
     pub scopes: Vec<String>,
+    /// Extra `key=value` query parameters appended to the authorization URL (provider-specific).
+    pub authorize_extra_params: Vec<(String, String)>,
+    /// Loopback callback path (e.g. `/callback` or `/auth/callback`). `None` → `/callback`.
+    pub callback_path: Option<String>,
 }
 
 /// Discover the OAuth endpoints for `base_url`, via RFC 8414 metadata when available, else the
@@ -87,6 +100,8 @@ pub async fn discover(base_url: &str, client_id: &str) -> Result<OAuthConfig, OA
         token_endpoint: format!("{origin}/token"),
         client_id: client_id.to_owned(),
         scopes: Vec::new(),
+        authorize_extra_params: Vec::new(),
+        callback_path: None,
     })
 }
 
@@ -112,6 +127,8 @@ async fn discover_metadata(origin: &str, client_id: &str) -> Option<OAuthConfig>
         token_endpoint: metadata.token_endpoint,
         client_id: client_id.to_owned(),
         scopes: metadata.scopes_supported,
+        authorize_extra_params: Vec::new(),
+        callback_path: None,
     })
 }
 
@@ -122,13 +139,15 @@ pub struct AuthorizationRequest {
     /// The loopback redirect URI the server will call back.
     pub redirect_uri: String,
     state: String,
+    /// PKCE `code_verifier` retained until the token exchange (never logged).
+    code_verifier: String,
     listener: TcpListener,
     config: OAuthConfig,
 }
 
 /// Begin the authorization flow: bind a loopback callback, generate the CSRF state, and build the
-/// authorization URL. `callback_port` pins the loopback port (must be in 3200-3299); `None` scans
-/// the reserved range for a free port.
+/// authorization URL. `callback_port` pins the loopback port (must be in 3200-3299 or a product pin
+/// such as 1455 or 56121); `None` scans the reserved range for a free port.
 pub async fn begin(
     config: OAuthConfig,
     callback_port: Option<u16>,
@@ -138,8 +157,10 @@ pub async fn begin(
         .local_addr()
         .map_err(|err| OAuthError::Callback(err.to_string()))?
         .port();
-    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    let callback_path = normalize_callback_path(config.callback_path.as_deref());
+    let redirect_uri = format!("http://127.0.0.1:{port}{callback_path}");
     let state = random_token()?;
+    let pkce = generate_pkce()?;
 
     let mut authorize = url::Url::parse(&config.authorize_endpoint)
         .map_err(|_| OAuthError::InvalidUrl(config.authorize_endpoint.clone()))?;
@@ -149,8 +170,13 @@ pub async fn begin(
         query.append_pair("client_id", &config.client_id);
         query.append_pair("redirect_uri", &redirect_uri);
         query.append_pair("state", &state);
+        query.append_pair("code_challenge", &pkce.challenge);
+        query.append_pair("code_challenge_method", "S256");
         if !config.scopes.is_empty() {
             query.append_pair("scope", &config.scopes.join(" "));
+        }
+        for (key, value) in &config.authorize_extra_params {
+            query.append_pair(key, value);
         }
     }
 
@@ -158,6 +184,7 @@ pub async fn begin(
         authorize_url: authorize.to_string(),
         redirect_uri,
         state,
+        code_verifier: pkce.verifier,
         listener,
         config,
     })
@@ -175,7 +202,13 @@ impl AuthorizationRequest {
             Ok(result) => result?,
             Err(_) => return Err(OAuthError::Timeout),
         };
-        exchange_code(&self.config, &code, &self.redirect_uri).await
+        exchange_code(
+            &self.config,
+            &code,
+            &self.redirect_uri,
+            &self.code_verifier,
+        )
+        .await
     }
 }
 
@@ -183,12 +216,24 @@ impl AuthorizationRequest {
 /// reserved range.
 async fn bind_callback(port: Option<u16>) -> Result<TcpListener, OAuthError> {
     if let Some(port) = port {
-        if !CALLBACK_PORT_RANGE.contains(&port) {
+        if !is_allowed_callback_port(port) {
             return Err(OAuthError::InvalidCallbackPort(port));
         }
         return TcpListener::bind(("127.0.0.1", port))
             .await
-            .map_err(|err| OAuthError::Callback(err.to_string()));
+            .map_err(|err| {
+                let detail = err.to_string();
+                // Explicit pins (product redirects) must name the port — never opaque OS text alone,
+                // and never fall through to the 3200–3299 scan (caller only binds this port).
+                let message = if PINNED_CALLBACK_PORTS.contains(&port) {
+                    format!(
+                        "OAuth callback port {port} is already in use (pinned product redirect; free the port or stop the other process): {detail}"
+                    )
+                } else {
+                    format!("failed to bind OAuth callback port {port}: {detail}")
+                };
+                OAuthError::Callback(message)
+            });
     }
     for candidate in CALLBACK_PORT_RANGE {
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
@@ -198,7 +243,22 @@ async fn bind_callback(port: Option<u16>) -> Result<TcpListener, OAuthError> {
     Err(OAuthError::NoCallbackPort)
 }
 
-/// Accept loopback connections until a `/callback` request arrives, validate its state, and return
+/// Whether `port` may be used as an explicit OAuth loopback callback pin.
+fn is_allowed_callback_port(port: u16) -> bool {
+    CALLBACK_PORT_RANGE.contains(&port) || PINNED_CALLBACK_PORTS.contains(&port)
+}
+
+/// Normalize a provider callback path to a leading-slash absolute path.
+fn normalize_callback_path(path: Option<&str>) -> String {
+    let raw = path.map(str::trim).filter(|value| !value.is_empty()).unwrap_or(DEFAULT_CALLBACK_PATH);
+    if raw.starts_with('/') {
+        raw.to_owned()
+    } else {
+        format!("/{raw}")
+    }
+}
+
+/// Accept loopback connections until a callback request arrives, validate its state, and return
 /// the authorization code. Non-callback requests get a 404 and the loop continues.
 async fn accept_callback(
     listener: &TcpListener,
@@ -215,7 +275,7 @@ async fn accept_callback(
             continue;
         };
         let (path, query) = split_target(&target);
-        if path != "/callback" {
+        if !is_callback_path(&path) {
             respond(&mut stream, 404, "Not Found").await;
             continue;
         }
@@ -256,11 +316,17 @@ async fn accept_callback(
     }
 }
 
+/// True for the default `/callback` path and product pins such as `/auth/callback`.
+fn is_callback_path(path: &str) -> bool {
+    path == DEFAULT_CALLBACK_PATH || path == "/auth/callback"
+}
+
 /// Exchange an authorization code for tokens at the token endpoint.
 async fn exchange_code(
     config: &OAuthConfig,
     code: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<StoredToken, OAuthError> {
     let client = reqwest::Client::builder().build()?;
     let form = [
@@ -268,6 +334,7 @@ async fn exchange_code(
         ("code", code),
         ("redirect_uri", redirect_uri),
         ("client_id", config.client_id.as_str()),
+        ("code_verifier", code_verifier),
     ];
     let response = client
         .post(&config.token_endpoint)
@@ -288,6 +355,8 @@ pub async fn refresh(stored: &StoredToken) -> Result<StoredToken, OAuthError> {
         token_endpoint: stored.token_endpoint.clone(),
         client_id: stored.client_id.clone(),
         scopes: Vec::new(),
+        authorize_extra_params: Vec::new(),
+        callback_path: None,
     };
     let client = reqwest::Client::builder().build()?;
     let form = [
@@ -308,11 +377,189 @@ pub async fn refresh(stored: &StoredToken) -> Result<StoredToken, OAuthError> {
     Ok(refreshed)
 }
 
+/// Client-side view of an RFC 8628 device authorization response (§3.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCodeAuthorization {
+    /// Opaque device code presented at the token endpoint while polling.
+    pub device_code: String,
+    /// Short user-facing code shown to the end user.
+    pub user_code: String,
+    /// URL the end user visits to authorize the device.
+    pub verification_uri: String,
+    /// Lifetime of `device_code` / `user_code` in seconds.
+    pub expires_in: u64,
+    /// Minimum seconds between token-endpoint polls (RFC 8628 default is 5).
+    pub interval: u64,
+}
+
+/// Poll the token endpoint for a device-code grant until authorized (RFC 8628 §3.4 / §3.5).
+///
+/// Between polls the client waits `interval`. On `authorization_pending` it retries after the
+/// current interval. On `slow_down` it increases the interval by five seconds and continues.
+/// Other token-endpoint errors (`expired_token`, `access_denied`, …) fail closed.
+pub async fn poll_device_token(
+    config: &OAuthConfig,
+    device_code: &str,
+    interval: Duration,
+) -> Result<StoredToken, OAuthError> {
+    poll_device_token_with_sleep(config, device_code, interval, tokio::time::sleep).await
+}
+
+/// Like [`poll_device_token`], but `sleep` is injected so tests can assert interval / `slow_down`
+/// backoff without wall-clock waits (RFC 8628 §3.5).
+pub async fn poll_device_token_with_sleep<F, Fut>(
+    config: &OAuthConfig,
+    device_code: &str,
+    interval: Duration,
+    mut sleep: F,
+) -> Result<StoredToken, OAuthError>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let client = reqwest::Client::builder().build()?;
+    let mut interval = interval;
+    // RFC 8628 §3.4 grant type for the device access token request.
+    const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+
+    loop {
+        let form = [
+            ("grant_type", GRANT_TYPE),
+            ("device_code", device_code),
+            ("client_id", config.client_id.as_str()),
+        ];
+        let response = client
+            .post(&config.token_endpoint)
+            .form(&form)
+            .send()
+            .await?;
+        let status = response.status();
+        let text = response.text().await?;
+
+        if status.is_success() {
+            return parse_token_body(&text, config);
+        }
+
+        // Error responses carry an OAuth error code in the JSON body (RFC 8628 §3.5).
+        #[derive(Deserialize)]
+        struct TokenErrorBody {
+            error: String,
+            #[serde(default)]
+            error_description: Option<String>,
+        }
+
+        let err = match serde_json::from_str::<TokenErrorBody>(&text) {
+            Ok(body) => body,
+            Err(_) => {
+                return Err(OAuthError::Authorization(format!(
+                    "token endpoint returned HTTP {status}"
+                )));
+            }
+        };
+
+        match err.error.as_str() {
+            "authorization_pending" => {
+                sleep(interval).await;
+            }
+            "slow_down" => {
+                // RFC 8628 §3.5: increase the polling interval by 5 seconds for subsequent polls.
+                interval += Duration::from_secs(5);
+                sleep(interval).await;
+            }
+            other => {
+                // Terminal errors (expired_token, access_denied, …) fail closed — no further polls.
+                let detail = err
+                    .error_description
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| other.to_owned());
+                return Err(OAuthError::Authorization(detail));
+            }
+        }
+    }
+}
+
+/// POST the RFC 8628 §3.1 device authorization request and parse the §3.2 response.
+///
+/// Returns `device_code`, `user_code`, `verification_uri`, `expires_in`, and `interval` (default 5
+/// when the server omits it). Token values are never logged.
+pub async fn request_device_authorization(
+    config: &OAuthConfig,
+    device_authorization_endpoint: &str,
+) -> Result<DeviceCodeAuthorization, OAuthError> {
+    #[derive(Deserialize)]
+    struct DeviceAuthBody {
+        device_code: String,
+        user_code: String,
+        verification_uri: String,
+        expires_in: u64,
+        #[serde(default = "default_device_interval")]
+        interval: u64,
+    }
+
+    let client = reqwest::Client::builder().build()?;
+    let scope = config.scopes.join(" ");
+    let mut form: Vec<(&str, &str)> = vec![("client_id", config.client_id.as_str())];
+    if !scope.is_empty() {
+        form.push(("scope", scope.as_str()));
+    }
+    let response = client
+        .post(device_authorization_endpoint)
+        .form(&form)
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await?;
+    if !status.is_success() {
+        return Err(OAuthError::Authorization(format!(
+            "device authorization endpoint returned HTTP {status}"
+        )));
+    }
+    let body: DeviceAuthBody =
+        serde_json::from_str(&text).map_err(|err| OAuthError::TokenResponse(err.to_string()))?;
+    Ok(DeviceCodeAuthorization {
+        device_code: body.device_code,
+        user_code: body.user_code,
+        verification_uri: body.verification_uri,
+        expires_in: body.expires_in,
+        interval: body.interval,
+    })
+}
+
+fn default_device_interval() -> u64 {
+    5
+}
+
+/// Full RFC 8628 device-code flow: device authorization request then token poll.
+///
+/// Callers that need to surface `user_code` / `verification_uri` to the end user should use
+/// [`request_device_authorization`] + [`poll_device_token`] instead so they can display instructions
+/// before polling begins.
+pub async fn device_code_flow(
+    config: &OAuthConfig,
+    device_authorization_endpoint: &str,
+) -> Result<StoredToken, OAuthError> {
+    let auth = request_device_authorization(config, device_authorization_endpoint).await?;
+    let interval = Duration::from_secs(auth.interval);
+    poll_device_token(config, &auth.device_code, interval).await
+}
+
 /// Parse a token endpoint response into a [`StoredToken`].
 async fn parse_token_response(
     response: reqwest::Response,
     config: &OAuthConfig,
 ) -> Result<StoredToken, OAuthError> {
+    let status = response.status();
+    let text = response.text().await?;
+    if !status.is_success() {
+        return Err(OAuthError::Authorization(format!(
+            "token endpoint returned HTTP {status}"
+        )));
+    }
+    parse_token_body(&text, config)
+}
+
+/// Parse a successful token-endpoint JSON body into a [`StoredToken`].
+fn parse_token_body(text: &str, config: &OAuthConfig) -> Result<StoredToken, OAuthError> {
     #[derive(Deserialize)]
     struct TokenBody {
         access_token: String,
@@ -324,15 +571,8 @@ async fn parse_token_response(
         expires_in: Option<u64>,
     }
 
-    let status = response.status();
-    let text = response.text().await?;
-    if !status.is_success() {
-        return Err(OAuthError::Authorization(format!(
-            "token endpoint returned HTTP {status}"
-        )));
-    }
     let body: TokenBody =
-        serde_json::from_str(&text).map_err(|err| OAuthError::TokenResponse(err.to_string()))?;
+        serde_json::from_str(text).map_err(|err| OAuthError::TokenResponse(err.to_string()))?;
     let expires_at = body.expires_in.map(|secs| now_secs() + secs);
     Ok(StoredToken {
         access_token: body.access_token,
@@ -427,6 +667,69 @@ fn random_token() -> Result<String, OAuthError> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// RFC 7636 PKCE pair: high-entropy `code_verifier` and its S256 `code_challenge`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pkce {
+    /// `code_verifier` — 43..=128 unreserved characters (RFC 7636 §4.1).
+    verifier: String,
+    /// `code_challenge` — BASE64URL-ENCODE(SHA256(verifier)) without padding (S256).
+    challenge: String,
+}
+
+/// Generate a PKCE `code_verifier` and its S256 `code_challenge` (RFC 7636).
+///
+/// Uses 32 CSPRNG bytes encoded as base64url-nopad (43 unreserved chars). Fails closed when the
+/// OS CSPRNG is unavailable — same policy as [`random_token`].
+fn generate_pkce() -> Result<Pkce, OAuthError> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|err| OAuthError::RandomSource(err.to_string()))?;
+    let verifier = base64url_nopad(&bytes);
+    let challenge = pkce_challenge(&verifier);
+    Ok(Pkce {
+        verifier,
+        challenge,
+    })
+}
+
+/// Compute the S256 `code_challenge` for an existing `code_verifier` (RFC 7636 §4.2).
+///
+/// `BASE64URL-NOPAD(SHA256(ASCII(code_verifier)))`.
+fn pkce_challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(verifier.as_bytes());
+    base64url_nopad(digest.as_slice())
+}
+
+/// BASE64URL encode without `=` padding (RFC 4648 §5 / RFC 7636).
+fn base64url_nopad(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let n = (u32::from(bytes[i]) << 16)
+            | (u32::from(bytes[i + 1]) << 8)
+            | u32::from(bytes[i + 2]);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        out.push(TABLE[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let rem = bytes.len() - i;
+    if rem == 1 {
+        let n = u32::from(bytes[i]) << 16;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+    } else if rem == 2 {
+        let n = (u32::from(bytes[i]) << 16) | (u32::from(bytes[i + 1]) << 8);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +770,242 @@ mod tests {
         assert!(
             matches!(outcome, Err(OAuthError::InvalidCallbackPort(3199))),
             "out-of-range callback ports must be rejected, got: {outcome:?}"
+        );
+    }
+
+    /// Product pin occupied: fail closed with an actionable message naming the port (no scan).
+    #[tokio::test]
+    async fn pinned_callback_port_occupied_fails_actionably_without_scan_fallback() {
+        let holder = TcpListener::bind(("127.0.0.1", 56121))
+            .await
+            .expect("hold xAI pin 56121");
+        let outcome = bind_callback(Some(56121)).await;
+        drop(holder);
+        let err = match outcome {
+            Err(err) => err,
+            Ok(_) => panic!("bind_callback must not succeed when pin 56121 is occupied"),
+        };
+        assert!(
+            !matches!(err, OAuthError::NoCallbackPort),
+            "occupied pin must not report scan-range exhaustion: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("56121"),
+            "error must name pinned port 56121: {msg}"
+        );
+        let lower = msg.to_ascii_lowercase();
+        assert!(
+            lower.contains("already in use")
+                || lower.contains("in use")
+                || lower.contains("occupied"),
+            "error must be actionable about occupancy: {msg}"
+        );
+        assert!(
+            lower.contains("pinned") || lower.contains("product"),
+            "pinned-port collision should mention the pin contract: {msg}"
+        );
+    }
+
+    /// RFC 7636 S256: verifier length 43..=128 and challenge == base64url-nopad(SHA256(verifier)).
+    ///
+    /// Pins S256 semantics against the independent test oracle (RFC 7636 Appendix B).
+    #[test]
+    fn pkce_challenge_is_s256_of_verifier() {
+        let pkce = generate_pkce().expect("generate_pkce must succeed when CSPRNG is available");
+        assert!(
+            (43..=128).contains(&pkce.verifier.len()),
+            "RFC 7636 code_verifier length must be 43..=128, got {}",
+            pkce.verifier.len()
+        );
+
+        let challenge = pkce_challenge(&pkce.verifier);
+        assert_eq!(
+            challenge, pkce.challenge,
+            "generate_pkce challenge must match pkce_challenge(verifier)"
+        );
+        assert!(
+            !challenge.contains('='),
+            "code_challenge must be base64url without padding, got {challenge:?}"
+        );
+
+        let expected = independent_s256_challenge(&pkce.verifier);
+        assert_eq!(
+            challenge, expected,
+            "code_challenge must equal BASE64URL-NOPAD(SHA256(ASCII(code_verifier)))"
+        );
+    }
+
+    /// Independent RFC 7636 Appendix B oracle — test-only, not production PKCE.
+    fn independent_s256_challenge(verifier: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(verifier.as_bytes());
+        base64url_nopad(digest.as_slice())
+    }
+
+    /// BASE64URL encode without `=` padding (RFC 4648 §5 / RFC 7636).
+    fn base64url_nopad(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        let mut i = 0;
+        while i + 3 <= bytes.len() {
+            let n = (u32::from(bytes[i]) << 16)
+                | (u32::from(bytes[i + 1]) << 8)
+                | u32::from(bytes[i + 2]);
+            out.push(TABLE[((n >> 18) & 63) as usize] as char);
+            out.push(TABLE[((n >> 12) & 63) as usize] as char);
+            out.push(TABLE[((n >> 6) & 63) as usize] as char);
+            out.push(TABLE[(n & 63) as usize] as char);
+            i += 3;
+        }
+        let rem = bytes.len() - i;
+        if rem == 1 {
+            let n = u32::from(bytes[i]) << 16;
+            out.push(TABLE[((n >> 18) & 63) as usize] as char);
+            out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        } else if rem == 2 {
+            let n = (u32::from(bytes[i]) << 16) | (u32::from(bytes[i + 1]) << 8);
+            out.push(TABLE[((n >> 18) & 63) as usize] as char);
+            out.push(TABLE[((n >> 12) & 63) as usize] as char);
+            out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        }
+        out
+    }
+
+    #[test]
+    fn independent_s256_matches_rfc7636_appendix_b() {
+        // RFC 7636 Appendix B test vector — pins the test oracle, not production PKCE.
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let expected = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+        assert_eq!(independent_s256_challenge(verifier), expected);
+        assert!(!expected.contains('='));
+        assert!((43..=128).contains(&verifier.len()));
+    }
+
+    /// RFC 8628 §3.4 / §3.5: poll until authorized; honor `interval`; `slow_down` adds 5s backoff.
+    ///
+    /// Fixture sequence: `authorization_pending` ×2 → `slow_down` → token success.
+    /// Sleep injection records waits so the test asserts timing without wall-clock delay.
+    #[tokio::test]
+    async fn device_code_polls_until_authorized() {
+        use std::sync::{Arc, Mutex};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind device-code fixture listener");
+        let addr = listener
+            .local_addr()
+            .expect("fixture listener local_addr");
+        let token_endpoint = format!("http://{addr}/token");
+
+        // Response bodies only — never logged. Sequence is the RFC 8628 contract under test.
+        let sequence: Arc<Vec<&'static str>> = Arc::new(vec![
+            r#"{"error":"authorization_pending"}"#,
+            r#"{"error":"authorization_pending"}"#,
+            r#"{"error":"slow_down"}"#,
+            r#"{"access_token":"device-access-token","token_type":"Bearer","expires_in":3600}"#,
+        ]);
+        let hit = Arc::new(AtomicUsize::new(0));
+        let sequence_srv = Arc::clone(&sequence);
+        let hit_srv = Arc::clone(&hit);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                // Drain request headers (stop at blank line).
+                let mut buf = Vec::new();
+                let mut byte = [0u8; 1];
+                let mut consecutive_newlines = 0u8;
+                while consecutive_newlines < 2 {
+                    if stream.read(&mut byte).await.ok() != Some(1) {
+                        break;
+                    }
+                    if byte[0] == b'\n' {
+                        consecutive_newlines += 1;
+                    } else if byte[0] != b'\r' {
+                        consecutive_newlines = 0;
+                    }
+                    buf.push(byte[0]);
+                    if buf.len() > 16_384 {
+                        break;
+                    }
+                }
+                let idx = hit_srv.fetch_add(1, Ordering::SeqCst);
+                let body = sequence_srv
+                    .get(idx)
+                    .copied()
+                    .unwrap_or(r#"{"error":"expired_token"}"#);
+                let status = if body.contains("access_token") {
+                    "200 OK"
+                } else {
+                    "400 Bad Request"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let config = OAuthConfig {
+            authorize_endpoint: String::new(),
+            token_endpoint,
+            client_id: "device-test-client".to_owned(),
+            scopes: Vec::new(),
+            authorize_extra_params: Vec::new(),
+            callback_path: None,
+        };
+
+        let sleeps: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+        let sleeps_rec = Arc::clone(&sleeps);
+        let sleep = move |d: Duration| {
+            let sleeps_rec = Arc::clone(&sleeps_rec);
+            async move {
+                sleeps_rec
+                    .lock()
+                    .expect("sleep recorder lock")
+                    .push(d);
+            }
+        };
+
+        let initial_interval = Duration::from_secs(5);
+        let token = poll_device_token_with_sleep(
+            &config,
+            "device-code-under-test",
+            initial_interval,
+            sleep,
+        )
+        .await
+        .expect("device code poll must succeed after pending ×2 + slow_down");
+
+        assert_eq!(
+            token.access_token, "device-access-token",
+            "final successful poll must yield the fixture access_token"
+        );
+        assert_eq!(token.client_id, "device-test-client");
+        assert_eq!(token.token_type, "Bearer");
+
+        let recorded = sleeps.lock().expect("sleep recorder lock").clone();
+        // After each non-success poll the client waits the *current* interval, then polls again.
+        // pending → wait 5s; pending → wait 5s; slow_down → interval becomes 10s, wait 10s; token.
+        assert_eq!(
+            recorded,
+            vec![
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(10),
+            ],
+            "RFC 8628: honor interval between polls; slow_down increases interval by 5 seconds"
+        );
+        assert_eq!(
+            hit.load(Ordering::SeqCst),
+            4,
+            "fixture must be polled four times (pending ×2, slow_down, token)"
         );
     }
 }
