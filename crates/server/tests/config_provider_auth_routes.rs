@@ -433,6 +433,155 @@ async fn oauth_authorize_state_uses_the_csprng_not_a_time_fallback() {
     );
 }
 
+// Subscription OAuth methods (chatgpt + xai) must appear on GET /auth and complete the
+// authorize→callback loop with a CSPRNG CSRF `state` that round-trips. The server must not
+// hardcode only copilot: Wave 4 profiles advertise these methods, and the HTTP surface exposes
+// them the same way the CLI/TUI connect flows do.
+#[tokio::test]
+async fn subscription_oauth_methods_authorize_and_callback_preserve_csprng_state() {
+    let scratch = Scratch::new("server-auth-subscription-oauth");
+    let (token_url, fixture) = start_token_fixture().await;
+    let app = server::app_with_state(
+        server::ServerState::new(scratch.db_path())
+            .with_cwd(scratch.workspace())
+            .with_config_env(vec![(
+                "CORTEX_AUTH_FILE".to_owned(),
+                scratch.auth_path().to_string_lossy().into_owned(),
+            )]),
+    );
+
+    // S1 — method listing exposes the new OAuth-capable subscription providers.
+    let response = send(&app, "GET", "/auth", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let list_text = body_text(response).await;
+    assert!(
+        !list_text.contains("access_token") && !list_text.contains("client_secret"),
+        "auth list must not leak secrets: {list_text}"
+    );
+    let list: serde_json::Value = serde_json::from_str(&list_text).expect("json");
+    for provider_id in ["chatgpt", "xai"] {
+        let method = list["methods"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry["provider"] == provider_id)
+            .unwrap_or_else(|| panic!("{provider_id} must appear in GET /auth methods"));
+        let types = method["types"]
+            .as_array()
+            .expect("types array")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            types.contains(&"oauth"),
+            "{provider_id} must advertise oauth: {method}"
+        );
+    }
+
+    // S2/S3 — authorize + callback for each new method; CSPRNG state is non-empty hex and
+    // preserved across the round-trip (unknown state rejected; matching state authenticates).
+    for provider_id in ["chatgpt", "xai"] {
+        let authorize_body = serde_json::json!({
+            "authorize_endpoint": "https://auth.example.test/authorize",
+            "token_endpoint": token_url,
+            "client_id": format!("cortex-fixture-{provider_id}"),
+            "redirect_uri": "http://127.0.0.1:18765/auth/callback",
+            "scopes": ["openid", "profile"],
+        })
+        .to_string();
+        let response = send(
+            &app,
+            "POST",
+            &format!("/auth/{provider_id}/authorize"),
+            Some(&authorize_body),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "authorize must accept {provider_id}"
+        );
+        let body: serde_json::Value = json_body(response).await;
+        assert_eq!(body["provider"], provider_id);
+        let state = body["state"].as_str().expect("state").to_owned();
+        assert_eq!(state.len(), 32, "128-bit CSPRNG state is 32 hex chars: {state}");
+        assert!(
+            state
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+            "state is lowercase hex: {state}"
+        );
+        assert!(
+            state.chars().any(|ch| ch != '0'),
+            "state must be high-entropy, not all zeros: {state}"
+        );
+        let authorize_url = body["authorize_url"].as_str().expect("authorize_url");
+        assert!(
+            authorize_url.contains(&format!("state={state}")),
+            "authorize URL carries the issued state: {authorize_url}"
+        );
+        assert!(
+            !authorize_url.contains("fixture-access-token"),
+            "authorize URL must not leak tokens: {authorize_url}"
+        );
+
+        // CSRF guard: forged state is rejected before any token exchange.
+        let response = send(
+            &app,
+            "GET",
+            "/auth/callback?code=fixture-code&state=forged-not-issued",
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        // Genuine callback preserves the CSPRNG state and authenticates the provider.
+        let response = send(
+            &app,
+            "GET",
+            &format!("/auth/callback?code=fixture-code&state={state}"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "callback must accept the issued state for {provider_id}"
+        );
+        let text = body_text(response).await;
+        assert!(
+            !text.contains("fixture-access-token"),
+            "callback must not echo the access token: {text}"
+        );
+        let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["provider"], provider_id);
+        assert_eq!(body["authenticated"], true);
+
+        // Single-use: the consumed state cannot be replayed.
+        let response = send(
+            &app,
+            "GET",
+            &format!("/auth/callback?code=fixture-code&state={state}"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // Provider listing reflects both authenticated subscription providers without secrets.
+    let response = send(&app, "GET", "/provider", None).await;
+    let text = body_text(response).await;
+    assert!(
+        !text.contains("fixture-access-token"),
+        "provider list leaked the OAuth token: {text}"
+    );
+    let body: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(provider_authenticated(&body, "chatgpt"), Some(true));
+    assert_eq!(provider_authenticated(&body, "xai"), Some(true));
+
+    fixture.abort();
+}
+
 // ---- helpers ----
 
 fn is_qualified(model: &str) -> bool {

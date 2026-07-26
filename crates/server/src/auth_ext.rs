@@ -57,21 +57,58 @@ struct PendingAuthEntry {
 }
 
 /// `GET /auth` — list provider auth methods and which providers are currently authenticated.
+///
+/// Methods come from the offline model catalogue plus every connectable profile that is not already
+/// a catalogue row (so subscription OAuth providers like `chatgpt` still appear). Catalogue rows keep
+/// the historical `api`+`oauth` type pair for SDK compatibility; profile-only rows advertise `oauth`
+/// only when the profile declares `supports_oauth`.
 pub(super) async fn list_auth(
     State(state): State<ServerState>,
 ) -> Result<Json<AuthListResponse>, ApiError> {
     let stored = stored_provider_set(&state);
-    let methods = providers::Catalogue::embedded()
-        .providers()
-        .map(|provider| AuthMethod {
+    let mut methods: Vec<AuthMethod> = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for provider in providers::Catalogue::embedded().providers() {
+        if !seen.insert(provider.id.clone()) {
+            continue;
+        }
+        let env = provider.env.clone();
+        let authenticated = stored.contains(&provider.id)
+            || env.iter().any(|name| env_present(&state, name));
+        methods.push(AuthMethod {
             provider: provider.id.clone(),
             name: provider.name.clone(),
             types: vec!["api".to_owned(), "oauth".to_owned()],
-            env: provider.env.clone(),
-            authenticated: stored.contains(&provider.id)
-                || provider.env.iter().any(|name| env_present(&state, name)),
-        })
-        .collect();
+            env,
+            authenticated,
+        });
+    }
+
+    // Subscription / profile-only providers (chatgpt, …) are not always catalogue rows.
+    for row in providers::connectable_providers() {
+        if !seen.insert(row.id.to_owned()) {
+            continue;
+        }
+        let mut types = vec!["api".to_owned()];
+        if row.supports_oauth {
+            types.push("oauth".to_owned());
+        }
+        let env = row
+            .api_key_env
+            .map(|name| vec![name.to_owned()])
+            .unwrap_or_default();
+        let authenticated =
+            stored.contains(row.id) || env.iter().any(|name| env_present(&state, name));
+        methods.push(AuthMethod {
+            provider: row.id.to_owned(),
+            name: row.display_name.to_owned(),
+            types,
+            env,
+            authenticated,
+        });
+    }
+
     Ok(Json(AuthListResponse {
         authenticated: stored.into_iter().collect(),
         methods,
