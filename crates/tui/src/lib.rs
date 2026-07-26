@@ -60,6 +60,23 @@ pub use mission_control::{
     snapshot_to_variant, McStubKind, McVariant, MC_BRAND, MC_FOOTER, MC_PARALLEL_SLOTS,
 };
 
+/// Designer fixture types + paint entry (`feature = "designer"` only).
+/// External harness path: `tui::draw` + `App::designer_*` + these enums.
+#[cfg(feature = "designer")]
+pub use app::{DialogKind, Entry, SidebarPanel};
+#[cfg(feature = "designer")]
+pub use tui_components::toast::ToastLevel;
+#[cfg(feature = "designer")]
+pub use view::ViewKind;
+
+/// Paint one frame for `app` (designer / `TestBackend` harness).
+///
+/// Preferred external path: `tui::draw` (not `tui::ui::draw` — `ui` stays private).
+#[cfg(feature = "designer")]
+pub fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
+    ui::draw(frame, app);
+}
+
 /// Startup options for the interactive TUI.
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOptions {
@@ -709,5 +726,59 @@ mod tests {
         );
         assert_eq!(status.agent, "plan");
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+
+/// External-style compile/smoke: crate-root `draw` + fixture types under `designer`.
+#[cfg(all(test, feature = "designer"))]
+mod designer_export_tests {
+    use super::{
+        App, DialogKind, Entry, SidebarPanel, Status, ToastLevel, ViewKind, draw,
+    };
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn tui_draw_path_paints_hermetic_base_and_fixture_types_resolve() {
+        // Given: hermetic designer base + crate-root fixture types
+        let _kinds = (
+            Entry::User("fixture".to_owned()),
+            DialogKind::Models,
+            SidebarPanel::Context,
+            ViewKind::Status,
+            ToastLevel::Info,
+        );
+        let app = App::designer_prepare_base(Status {
+            model: "google/gemini-2.5-flash".to_owned(),
+            agent: "build".to_owned(),
+            mode: "default".to_owned(),
+            variant: "default".to_owned(),
+            session: "new".to_owned(),
+        });
+
+        // When: paint via public `tui::draw` (crate::draw in-unit)
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        // Then: non-empty paint (chrome present)
+        assert!(!screen.trim().is_empty(), "tui::draw must paint non-empty buffer");
+        assert!(
+            screen.contains('✦')
+                || screen.contains("Cortex")
+                || screen.contains('❯')
+                || screen.contains('›'),
+            "tui::draw missing Cortex chrome; got:\n{screen}"
+        );
     }
 }
