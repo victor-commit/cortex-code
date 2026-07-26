@@ -66,10 +66,12 @@ const DECORATIVE_GLYPHS: &[char] = &['✦', '✧', '★', '☆', '❖', '◆', '
 const PURE_DECORATIVE_GLYPH_BANS: &[char] = &['✦', '✧', '★', '☆', '❖', '✱'];
 
 /// Pure-Cortex expanded chrome glyphs (mirrors mockup-harness-v4 tokens).
+/// MC V2 premium slot cells / mini ticks / selection bar blocks.
 const PURE_ALLOWED_GLYPHS: &str = concat!(
     "● ○ ✓ ✗ › → ↑ ↓ ─ │ ╭ ╮ ╰ ╯ █ ░ · ⎿ ▸ ▾ … ",
     "❯ ◆ ◇ ◈ ◉ ◎ • ⧉ ↗ ⇣ ❙ ",
     "⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ ",
+    "▮ ▯ ▰ ▱ ▌ ▐ ",
     " "
 );
 

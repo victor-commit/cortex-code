@@ -256,9 +256,7 @@ fn pdf_descriptor(bytes: &[u8], truncated: bool) -> String {
     if let Some(n) = pdf_page_tree_count(bytes) {
         return pdf_pages_label(n);
     }
-    if !truncated
-        && let Some(n) = pdf_page_count(bytes)
-    {
+    if !truncated && let Some(n) = pdf_page_count(bytes) {
         return pdf_pages_label(n);
     }
     "document".to_owned()
@@ -814,9 +812,15 @@ mod tests {
         let meta = attachment.meta_line();
         // The 1×1 fixture yields real dimensions and a real (non-zero) byte size.
         assert!(meta.starts_with("1×1"), "meta reflects real dims: {meta}");
-        assert!(meta.ends_with(" B") || meta.ends_with("KB"), "meta has size: {meta}");
+        assert!(
+            meta.ends_with(" B") || meta.ends_with("KB"),
+            "meta has size: {meta}"
+        );
         let label = attachment.transcript_label();
-        assert!(label.starts_with("PNG"), "label leads with the badge: {label}");
+        assert!(
+            label.starts_with("PNG"),
+            "label leads with the badge: {label}"
+        );
         assert!(!meta.contains('📎') && !label.contains('📎'), "no emoji");
         let _ = std::fs::remove_file(path);
     }

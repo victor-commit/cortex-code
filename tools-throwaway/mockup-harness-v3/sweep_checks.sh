@@ -132,8 +132,9 @@ from pathlib import Path
 out_dir = Path(os.environ["OUT_DIR"])
 allowed = set("●○✓✗›→↑↓─│╭╮╰╯█░·⎿▸▾…")
 # Pure Cortex dump expands the closed set when the pure ownership sidecar is present.
+# MC V2 premium adds Factory slot cells / mini ticks / selection bar blocks.
 pure_mode = (out_dir / ".renderer-manifest-v1-pure-cortex").is_file()
-pure_extra = set("❯◆◇◈◉◎•⧉↗⇣❙⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+pure_extra = set("❯◆◇◈◉◎•⧉↗⇣❙⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏▮▯▰▱▌▐")
 
 def glyph_allowed(ch: str) -> bool:
     if ch in allowed:

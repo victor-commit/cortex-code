@@ -165,8 +165,9 @@ from pathlib import Path
 
 ALLOWED = set("●○✓✗›→↑↓─│╭╮╰╯█░·⎿▸▾…")
 # Pure Cortex dump expands the closed set (prompt arrow, diamonds, braille logo,
-# powerline branch). Active only when pure ownership sidecar is present.
-PURE_EXTRA = set("❯◆◇◈◉◎•⧉↗⇣❙⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+# powerline branch). MC V2 premium adds Factory slot cells / mini ticks /
+# selection bar blocks. Active only when pure ownership sidecar is present.
+PURE_EXTRA = set("❯◆◇◈◉◎•⧉↗⇣❙⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏▮▯▰▱▌▐")
 PURE_SIDECAR = Path("plans/assets/mockups-v3/.renderer-manifest-v1-pure-cortex")
 PURE_MODE = PURE_SIDECAR.is_file()
 EMOJI_RANGES = (

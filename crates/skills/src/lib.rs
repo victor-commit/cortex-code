@@ -834,14 +834,19 @@ fn split_frontmatter(contents: &str) -> Result<(&str, &str), String> {
 
 fn parse_frontmatter(frontmatter: &str) -> Result<BTreeMap<String, String>, String> {
     let mut fields = BTreeMap::new();
-    for (idx, raw) in frontmatter.lines().enumerate() {
-        let line_no = idx + 1;
+    let lines: Vec<&str> = frontmatter.lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        let raw = lines[index];
+        let line_no = index + 1;
         let line = raw.trim_end();
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            index += 1;
             continue;
         }
         if line.chars().next().is_some_and(char::is_whitespace) {
-            return Err(format!("line {line_no}: unexpected indentation"));
+            index += 1;
+            continue;
         }
         let (key, value) = line
             .split_once(':')
@@ -850,10 +855,53 @@ fn parse_frontmatter(frontmatter: &str) -> Result<BTreeMap<String, String>, Stri
         if key.is_empty() {
             return Err(format!("line {line_no}: empty key"));
         }
-        let scalar = parse_scalar(value.trim(), line_no)?;
+        let value = value.trim();
+        let scalar = if is_block_scalar(value) {
+            index += 1;
+            parse_block_scalar(&lines, &mut index, value, line_no)?
+        } else if value.is_empty() {
+            index += 1;
+            String::new()
+        } else {
+            index += 1;
+            parse_scalar(value, line_no)?
+        };
         fields.insert(key.to_ascii_lowercase(), scalar);
     }
     Ok(fields)
+}
+
+fn is_block_scalar(value: &str) -> bool {
+    matches!(value, ">" | ">-" | ">+" | "|" | "|-" | "|+")
+}
+
+fn parse_block_scalar(
+    lines: &[&str],
+    index: &mut usize,
+    marker: &str,
+    line_no: usize,
+) -> Result<String, String> {
+    let folded = marker.starts_with('>');
+    let mut values = Vec::new();
+    while *index < lines.len() {
+        let line = lines[*index];
+        if !line.trim().is_empty() && !line.chars().next().is_some_and(char::is_whitespace) {
+            break;
+        }
+        if line.trim().is_empty() {
+            values.push(String::new());
+        } else {
+            values.push(line.trim().to_owned());
+        }
+        *index += 1;
+    }
+
+    let separator = if folded { " " } else { "\n" };
+    let result = values.join(separator).trim().to_owned();
+    if result.is_empty() {
+        return Err(format!("line {line_no}: expected a scalar value"));
+    }
+    Ok(result)
 }
 
 fn parse_scalar(value: &str, line_no: usize) -> Result<String, String> {
@@ -1046,6 +1094,22 @@ mod tests {
         assert_eq!(skill.name, "date-helper");
         assert_eq!(skill.description, "Use for formatting dates");
         assert_eq!(skill.guidance(), "Append SKILL-DATE-OK.");
+    }
+
+    #[test]
+    fn parses_yaml_folded_description_and_ignores_metadata_sections() {
+        let skill = parse_skill_markdown(
+            "---\nname: folded-description\ndescription: >-\n  Use this skill when the user asks for a live browser interaction.\nlicense: ISC\nmetadata:\n  author: example\ninputs:\n  - name: API_KEY\n---\nAppend SKILL-FOLDED-OK.\n",
+            PathBuf::from("SKILL.md"),
+        )
+        .expect("folded YAML metadata should be accepted");
+
+        assert_eq!(skill.name, "folded-description");
+        assert_eq!(
+            skill.description,
+            "Use this skill when the user asks for a live browser interaction."
+        );
+        assert_eq!(skill.guidance(), "Append SKILL-FOLDED-OK.");
     }
 
     #[test]

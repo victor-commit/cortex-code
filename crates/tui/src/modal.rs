@@ -163,7 +163,9 @@ pub fn render_modal(
     let chrome_rows = 2 + search_rows + extra_search_rule + input_rows + 1 /*gap*/ + 1 /*footer*/;
 
     let body_wanted = spec.rows.len().max(1);
-    let max_mh = ((area.height as usize) * 9 / 10).max(8).min(area.height as usize);
+    let max_mh = ((area.height as usize) * 9 / 10)
+        .max(8)
+        .min(area.height as usize);
     let body_max = max_mh.saturating_sub(chrome_rows).max(1);
     let body_visible = body_wanted.min(body_max).clamp(1, MAX_MODAL_BODY_ROWS);
 
@@ -254,7 +256,14 @@ pub(crate) fn build_interior_lines(
         let offset = scroll_offset(selected, body_visible, total);
         let end = (offset + body_visible).min(total);
         for abs in offset..end {
-            lines.push(body_row_line(spec, abs, selected, interior_width, anim, theme));
+            lines.push(body_row_line(
+                spec,
+                abs,
+                selected,
+                interior_width,
+                anim,
+                theme,
+            ));
         }
         for _ in (end - offset)..body_visible {
             lines.push(blank_line(interior_width, theme));
@@ -386,7 +395,8 @@ fn selection_state(
 /// The search input row: `› ` + query (BRIGHT) + `▏` caret, or the faint placeholder when empty.
 fn search_line(search: &ModalSearch, interior_width: usize, theme: &ThemeColors) -> Line<'static> {
     let bg = theme.background;
-    let mut cells: Vec<(char, Style)> = vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
+    let mut cells: Vec<(char, Style)> =
+        vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
     place_segments(
         &mut cells,
         0,
@@ -440,7 +450,8 @@ fn rule_line(interior_width: usize, theme: &ThemeColors) -> Line<'static> {
 /// The in-frame text-input row: `  prefix value▏`.
 fn input_line(input: &ModalInput, interior_width: usize, theme: &ThemeColors) -> Line<'static> {
     let bg = theme.background;
-    let mut cells: Vec<(char, Style)> = vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
+    let mut cells: Vec<(char, Style)> =
+        vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
     place_segments(
         &mut cells,
         2,
@@ -468,7 +479,8 @@ fn input_line(input: &ModalInput, interior_width: usize, theme: &ThemeColors) ->
 /// The no-results / empty-state row (faint, italic).
 fn empty_line(message: &str, interior_width: usize, theme: &ThemeColors) -> Line<'static> {
     let bg = theme.background;
-    let mut cells: Vec<(char, Style)> = vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
+    let mut cells: Vec<(char, Style)> =
+        vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
     place_segments(
         &mut cells,
         2,
@@ -494,7 +506,8 @@ fn blank_line(interior_width: usize, theme: &ThemeColors) -> Line<'static> {
 /// optional right-aligned note.
 fn footer_line(spec: &ModalSpec, interior_width: usize, theme: &ThemeColors) -> Line<'static> {
     let bg = theme.background;
-    let mut cells: Vec<(char, Style)> = vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
+    let mut cells: Vec<(char, Style)> =
+        vec![(' ', Style::default().fg(theme.text).bg(bg)); interior_width];
 
     let key_style = Style::default().fg(theme.border).bg(bg);
     let label_style = Style::default().fg(theme.text_muted).bg(bg);
@@ -548,11 +561,9 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 /// Blend color `a` toward `b` at `t`; falls back to a hard pick for non-RGB colors.
 fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
-        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => Color::Rgb(
-            lerp_u8(ar, br, t),
-            lerp_u8(ag, bg, t),
-            lerp_u8(ab, bb, t),
-        ),
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            Color::Rgb(lerp_u8(ar, br, t), lerp_u8(ag, bg, t), lerp_u8(ab, bb, t))
+        }
         _ => {
             if t < 0.5 {
                 a
@@ -642,7 +653,12 @@ mod tests {
         // A non-selected row has no selection fill and no marker glyph.
         let other = &lines[0];
         assert!(!line_text(other).contains(glyphs::SELECT_MARKER));
-        assert!(other.spans.iter().all(|sp| sp.style.bg != Some(t.surface[3])));
+        assert!(
+            other
+                .spans
+                .iter()
+                .all(|sp| sp.style.bg != Some(t.surface[3]))
+        );
     }
 
     #[test]
@@ -719,9 +735,15 @@ mod tests {
         });
         let lines = build_interior_lines(&s, 60, 1, None, &t);
         let search = line_text(&lines[0]);
-        assert!(search.starts_with(glyphs::PROMPT), "search prompt: {search}");
+        assert!(
+            search.starts_with(glyphs::PROMPT),
+            "search prompt: {search}"
+        );
         assert!(search.contains("type to filter…"));
-        assert!(!search.contains(glyphs::CURSOR), "no caret when empty: {search}");
+        assert!(
+            !search.contains(glyphs::CURSOR),
+            "no caret when empty: {search}"
+        );
         // Non-empty query → query + caret.
         s.search = Some(ModalSearch {
             query: "gem".to_owned(),
@@ -747,7 +769,10 @@ mod tests {
         });
         let lines = build_interior_lines(&s, 60, 1, None, &t);
         let search = line_text(&lines[0]);
-        assert!(search.starts_with(glyphs::PROMPT), "search prompt: {search}");
+        assert!(
+            search.starts_with(glyphs::PROMPT),
+            "search prompt: {search}"
+        );
         assert!(
             search.contains(glyphs::CURSOR),
             "caret present when empty: {search}"
@@ -790,8 +815,14 @@ mod tests {
         let to_bg = lines[2].spans[0].style.bg.expect("to row bg");
         // Both are partial: distinct from the interior background AND from the full selection bg.
         for bg in [from_bg, to_bg] {
-            assert_ne!(bg, t.background, "mid-transition fill is not the interior bg");
-            assert_ne!(bg, t.surface[3], "mid-transition fill is not the full sel bg");
+            assert_ne!(
+                bg, t.background,
+                "mid-transition fill is not the interior bg"
+            );
+            assert_ne!(
+                bg, t.surface[3],
+                "mid-transition fill is not the full sel bg"
+            );
         }
     }
 
@@ -807,7 +838,12 @@ mod tests {
         });
         let lines = build_interior_lines(&s, 60, 3, anim, &t);
         assert_eq!(lines[1].spans[0].style.bg, Some(t.surface[3]));
-        assert!(lines[0].spans.iter().all(|sp| sp.style.bg != Some(t.surface[3])));
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .all(|sp| sp.style.bg != Some(t.surface[3]))
+        );
         // No animation (None) → the selection is instantly on the current row.
         let lines = build_interior_lines(&s, 60, 3, None, &t);
         assert_eq!(lines[1].spans[0].style.bg, Some(t.surface[3]));

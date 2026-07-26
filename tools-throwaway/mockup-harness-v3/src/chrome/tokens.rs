@@ -27,10 +27,12 @@ pub const ALLOWED_GLYPHS: &str = "● ○ ✓ ✗ › → ↑ ↓ ─ │ ╭ �
 
 /// Expanded pure-Cortex dump chrome glyphs (mirrors mockup-harness-v4 tokens).
 /// Active only when the pure-ownership sidecar exists on the live gallery root.
+/// MC V2 premium adds Factory slot cells / mini ticks / selection bar glyphs.
 pub const PURE_CORTEX_ALLOWED_GLYPHS: &str = concat!(
     "● ○ ✓ ✗ › → ↑ ↓ ─ │ ╭ ╮ ╰ ╯ █ ░ · ⎿ ▸ ▾ … ",
     "❯ ◆ ◇ ◈ ◉ ◎ • ⧉ ↗ ⇣ ❙ ",
-    "⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ ",
+    "⠋ ⠙ ⠹ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ ",
+    "▮ ▯ ▰ ▱ ▌ ▐ ",
     " "
 );
 

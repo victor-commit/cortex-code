@@ -494,7 +494,10 @@ mod tests {
         // An empty query always matches; order still matters and missing chars fail.
         assert!(subsequence_match("/models", ""));
         assert!(!subsequence_match("/models", "ldm"), "order matters");
-        assert!(!subsequence_match("/models", "modelz"), "a missing char fails");
+        assert!(
+            !subsequence_match("/models", "modelz"),
+            "a missing char fails"
+        );
         assert!(!subsequence_match("/new", "mdl"));
     }
 
