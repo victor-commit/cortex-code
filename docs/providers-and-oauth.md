@@ -9,7 +9,7 @@ This page covers:
 1. How catalogue fallback and first-class profiles work together
 2. Built-in first-class profiles (ids, env keys, protocols)
 3. ChatGPT Plus/Pro subscription OAuth (Codex backend)
-4. xAI xAI subscription OAuth (browser + device code)
+4. xAI subscription OAuth (browser + device code)
 5. The `CORTEX_OAUTH_*` override matrix
 6. Why Claude Pro/Max OAuth is deliberately unsupported
 
@@ -168,7 +168,7 @@ login fails with an actionable error (no silent port hop).
 
 ---
 
-## xAI xAI
+## xAI
 
 Provider id **`xai`**. API key (`XAI_API_KEY`) and xAI OAuth are both supported.
 OAuth can use the browser code flow or **device code**.
