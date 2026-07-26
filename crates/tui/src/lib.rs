@@ -63,7 +63,9 @@ pub use mission_control::{
 /// Designer fixture types + paint entry (`feature = "designer"` only).
 /// External harness path: `tui::draw` + `App::designer_*` + these enums.
 #[cfg(feature = "designer")]
-pub use app::{DialogKind, Entry, SidebarPanel};
+pub use app::{AssistantTurn, DialogKind, Entry, SidebarPanel};
+#[cfg(feature = "designer")]
+pub use tool_card::ToolCard;
 #[cfg(feature = "designer")]
 pub use tui_components::toast::ToastLevel;
 #[cfg(feature = "designer")]

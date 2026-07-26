@@ -40,6 +40,9 @@ impl App {
     }
 
     /// Open a picker dialog with injected rows — never calls `open_store` / models refresh.
+    ///
+    /// Seeds both `Dialog::items` and `picker_rows` so rich modal paint (sessions/models/…)
+    /// shows the fixture labels instead of "(nothing to show)".
     pub fn designer_open_dialog(
         &mut self,
         kind: DialogKind,
@@ -52,6 +55,19 @@ impl App {
         } else {
             selected.min(items.len() - 1)
         };
+        // Rich pickers read `picker_rows`, not `dialog.items` (see `ui::draw_dialog`).
+        self.picker_rows = items
+            .iter()
+            .map(|item| crate::modal::ModalRow::new(item.clone()))
+            .collect();
+        let key_width = self
+            .picker_rows
+            .iter()
+            .map(|row| row.key.chars().count())
+            .max()
+            .filter(|&w| w > 0);
+        self.picker_key_width = key_width;
+        self.picker_query.clear();
         self.open_dialog(Dialog {
             kind,
             title: title.into(),
@@ -483,8 +499,8 @@ mod tests {
 
         // Then
         assert!(
-            screen.contains("Models") || screen.contains("gemini") || screen.contains("claude"),
-            "dialog-models paint missing picker content; got:\n{screen}"
+            screen.contains("gemini") && (screen.contains("claude") || screen.contains("Models")),
+            "dialog-models paint missing injected picker rows; got:\n{screen}"
         );
     }
 
