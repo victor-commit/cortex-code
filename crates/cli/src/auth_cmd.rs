@@ -7,7 +7,8 @@ use std::time::Duration;
 use errors::Exit;
 use plugins::{PluginAuthMethodType, PluginAuthPrompt};
 use providers::{
-    AuthPathInputs, list_stored_providers, remove_stored_credential, store_credential,
+    AuthPathInputs, connectable_providers, list_stored_providers, oauth_endpoints,
+    remove_stored_credential, store_credential,
 };
 use redaction::PLACEHOLDER;
 use serde::Serialize;
@@ -86,6 +87,13 @@ fn login(args: AuthLoginArgs, plugin_state: &PluginState) -> Exit {
                     }
                 }
             }
+            AuthMethodType::Device => match authorize_device_method(method, inputs) {
+                Ok(credential) => credential,
+                Err(message) => {
+                    eprintln!("cortex auth login: {message}");
+                    return Exit::Failure;
+                }
+            },
         }
     } else {
         let Some(secret) = resolve_login_secret(&args, &provider) else {
@@ -112,7 +120,9 @@ fn login(args: AuthLoginArgs, plugin_state: &PluginState) -> Exit {
     );
 
     let preserve_structured = selected_method.as_ref().is_some_and(|method| {
-        method.source == "plugin" || method.method_type == AuthMethodType::Oauth
+        method.source == "plugin"
+            || method.method_type == AuthMethodType::Oauth
+            || method.method_type == AuthMethodType::Device
     });
     if let Err(error) = store_auth_payload(&path, &provider, &credential, preserve_structured) {
         eprintln!(
@@ -279,6 +289,7 @@ fn normalized_provider(raw: &str) -> Option<String> {
 enum AuthMethodType {
     Api,
     Oauth,
+    Device,
 }
 
 impl std::fmt::Display for AuthMethodType {
@@ -286,6 +297,7 @@ impl std::fmt::Display for AuthMethodType {
         match self {
             Self::Api => f.write_str("api"),
             Self::Oauth => f.write_str("oauth"),
+            Self::Device => f.write_str("device"),
         }
     }
 }
@@ -351,14 +363,62 @@ fn available_methods(plugin_state: &PluginState) -> Vec<AuthMethodDescriptor> {
 }
 
 fn builtin_auth_methods() -> Vec<AuthMethodDescriptor> {
-    vec![
-        builtin_api_method("copilot", "GitHub Copilot", &["GITHUB_COPILOT_TOKEN"]),
-        builtin_oauth_method("copilot", "GitHub Copilot"),
-        builtin_api_method("codex", "OpenAI Codex", &["OPENAI_API_KEY"]),
-        builtin_api_method("gitlab", "GitLab", &["GITLAB_TOKEN", "GITLAB_API_TOKEN"]),
-        builtin_api_method("azure", "Azure OpenAI", &["AZURE_OPENAI_API_KEY"]),
-        builtin_api_method("xai", "xAI", &["XAI_API_KEY"]),
-    ]
+    // Derived from the connectable profile catalogue so new OAuth/API-key profiles cannot
+    // drift out of `cortex auth` without also updating `provider_profiles::PROFILES`.
+    let mut methods = Vec::new();
+    for provider in connectable_providers() {
+        if let Some(env) = provider.api_key_env {
+            methods.push(builtin_api_method(
+                provider.id,
+                provider.display_name,
+                &[env],
+            ));
+        }
+        if provider.supports_oauth {
+            methods.push(builtin_oauth_method(provider.id, provider.display_name));
+            if offers_builtin_device_method(provider.id) {
+                methods.push(builtin_device_method(provider.id, provider.display_name));
+            }
+        }
+    }
+
+    // Non-profile first-class auth targets retained for CLI parity (not in PROFILES).
+    append_legacy_builtin_api_method(
+        &mut methods,
+        "codex",
+        "OpenAI Codex",
+        &["OPENAI_API_KEY"],
+    );
+    append_legacy_builtin_api_method(
+        &mut methods,
+        "gitlab",
+        "GitLab",
+        &["GITLAB_TOKEN", "GITLAB_API_TOKEN"],
+    );
+    methods
+}
+
+/// Device-code login is offered for product-known device flows (copilot + xai) and for any
+/// OAuth-capable provider whose resolved defaults pin a device authorization endpoint.
+fn offers_builtin_device_method(provider_id: &str) -> bool {
+    matches!(provider_id, "copilot" | "xai")
+        || oauth_endpoints(provider_id)
+            .is_some_and(|endpoints| endpoints.device_authorization_endpoint.is_some())
+}
+
+fn append_legacy_builtin_api_method(
+    methods: &mut Vec<AuthMethodDescriptor>,
+    provider_id: &str,
+    provider_name: &str,
+    env: &[&str],
+) {
+    if methods
+        .iter()
+        .any(|method| method.provider_id == provider_id && method.method_id == "api")
+    {
+        return;
+    }
+    methods.push(builtin_api_method(provider_id, provider_name, env));
 }
 
 fn builtin_api_method(
@@ -414,6 +474,26 @@ fn builtin_oauth_method(provider_id: &str, provider_name: &str) -> AuthMethodDes
                 placeholder: None,
             },
         ],
+        env: vec![],
+    }
+}
+
+fn builtin_device_method(provider_id: &str, provider_name: &str) -> AuthMethodDescriptor {
+    AuthMethodDescriptor {
+        source: "builtin",
+        plugin: None,
+        provider_id: provider_id.to_owned(),
+        provider_name: provider_name.to_owned(),
+        method_id: "device".to_owned(),
+        method_type: AuthMethodType::Device,
+        label: "Device code".to_owned(),
+        // Only client_id is interactively required; endpoints and fixture fields come from
+        // --auth-input / CORTEX_OAUTH_* / provider oauth_endpoints defaults.
+        prompts: vec![AuthPromptDescriptor::Text {
+            key: "client_id".to_owned(),
+            message: "OAuth client id".to_owned(),
+            placeholder: None,
+        }],
         env: vec![],
     }
 }
@@ -540,6 +620,51 @@ fn gather_method_inputs(
         inputs.entry("api_key".to_owned()).or_insert(secret);
     }
 
+    // Built-in OAuth / device: pre-fill from provider OAUTH_DEFAULTS / CORTEX_OAUTH_* so
+    // interactive prompts are not required when a profile already supplies client_id + endpoints.
+    if method.source == "builtin"
+        && matches!(
+            method.method_type,
+            AuthMethodType::Oauth | AuthMethodType::Device
+        )
+    {
+        if let Some(endpoints) = providers::oauth_endpoints(provider) {
+            inputs
+                .entry("client_id".to_owned())
+                .or_insert(endpoints.client_id);
+            if method.method_type == AuthMethodType::Oauth {
+                inputs
+                    .entry("authorize_endpoint".to_owned())
+                    .or_insert(endpoints.authorize_endpoint);
+            }
+            inputs
+                .entry("token_endpoint".to_owned())
+                .or_insert(endpoints.token_endpoint);
+            if let Some(device_endpoint) = endpoints.device_authorization_endpoint {
+                inputs
+                    .entry("device_authorization_endpoint".to_owned())
+                    .or_insert(device_endpoint);
+            }
+            if !endpoints.scopes.is_empty() {
+                inputs
+                    .entry("scopes".to_owned())
+                    .or_insert(endpoints.scopes.join(" "));
+            }
+            if method.method_type == AuthMethodType::Oauth {
+                if let Some(port) = endpoints.callback_port {
+                    inputs
+                        .entry("callback_port".to_owned())
+                        .or_insert(port.to_string());
+                }
+                if !endpoints.callback_path.is_empty() {
+                    inputs
+                        .entry("callback_path".to_owned())
+                        .or_insert(endpoints.callback_path);
+                }
+            }
+        }
+    }
+
     for prompt in &method.prompts {
         let key = match prompt {
             AuthPromptDescriptor::Text { key, .. } | AuthPromptDescriptor::Select { key, .. } => {
@@ -603,10 +728,6 @@ fn parse_auth_inputs(values: &[String]) -> Result<BTreeMap<String, String>, Stri
     Ok(map)
 }
 
-fn required_auth_input(inputs: &BTreeMap<String, String>, key: &str) -> Result<String, String> {
-    non_empty(inputs.get(key).map(String::as_str))
-        .ok_or_else(|| format!("missing required auth input `{key}` (pass --auth-input {key}=...)"))
-}
 
 fn parse_optional_callback_port(value: Option<&String>) -> Result<Option<u16>, String> {
     let Some(value) = value.and_then(|value| non_empty(Some(value.as_str()))) else {
@@ -614,7 +735,9 @@ fn parse_optional_callback_port(value: Option<&String>) -> Result<Option<u16>, S
     };
     let port = value
         .parse::<u16>()
-        .map_err(|_| format!("invalid callback_port `{value}` (expected integer 3200-3299)"))?;
+        .map_err(|_| {
+            format!("invalid callback_port `{value}` (expected integer 3200-3299 or a product pin 1455/56121)")
+        })?;
     Ok(Some(port))
 }
 
@@ -818,16 +941,57 @@ fn authorize_oauth_method(
 }
 
 fn authorize_builtin_oauth_method(
-    _method: &AuthMethodDescriptor,
+    method: &AuthMethodDescriptor,
     inputs: BTreeMap<String, String>,
     _args: &AuthLoginArgs,
 ) -> Result<JsonValue, String> {
-    let client_id = required_auth_input(&inputs, "client_id")?;
-    let authorize_endpoint = required_auth_input(&inputs, "authorize_endpoint")?;
-    let token_endpoint = required_auth_input(&inputs, "token_endpoint")?;
+    let profile = providers::oauth_endpoints(&method.provider_id);
+    let client_id = non_empty(inputs.get("client_id").map(String::as_str))
+        .or_else(|| profile.as_ref().map(|endpoints| endpoints.client_id.clone()))
+        .or_else(|| cortex_oauth_override(&method.provider_id, "CLIENT_ID"))
+        .ok_or_else(|| {
+            "missing required auth input `client_id` (pass --auth-input client_id=...)".to_owned()
+        })?;
+    let authorize_endpoint = non_empty(inputs.get("authorize_endpoint").map(String::as_str))
+        .or_else(|| {
+            profile
+                .as_ref()
+                .map(|endpoints| endpoints.authorize_endpoint.clone())
+        })
+        .or_else(|| cortex_oauth_override(&method.provider_id, "AUTHORIZE_ENDPOINT"))
+        .ok_or_else(|| {
+            "missing required auth input `authorize_endpoint` (pass --auth-input authorize_endpoint=...)".to_owned()
+        })?;
+    let token_endpoint = non_empty(inputs.get("token_endpoint").map(String::as_str))
+        .or_else(|| profile.as_ref().map(|endpoints| endpoints.token_endpoint.clone()))
+        .or_else(|| cortex_oauth_override(&method.provider_id, "TOKEN_ENDPOINT"))
+        .ok_or_else(|| {
+            "missing required auth input `token_endpoint` (pass --auth-input token_endpoint=...)"
+                .to_owned()
+        })?;
     let client_secret = non_empty(inputs.get("client_secret").map(String::as_str));
-    let callback_port = parse_optional_callback_port(inputs.get("callback_port"))?;
-    let scopes = parse_scope_inputs(&inputs);
+    let callback_port = parse_optional_callback_port(inputs.get("callback_port"))?.or_else(|| {
+        profile
+            .as_ref()
+            .and_then(|endpoints| endpoints.callback_port)
+    });
+    let scopes = {
+        let from_inputs = parse_scope_inputs(&inputs);
+        if from_inputs.is_empty() {
+            profile
+                .as_ref()
+                .map(|endpoints| endpoints.scopes.clone())
+                .unwrap_or_default()
+        } else {
+            from_inputs
+        }
+    };
+    let authorize_extra_params = profile
+        .as_ref()
+        .map(|endpoints| endpoints.authorize_extra_params.clone())
+        .unwrap_or_default();
+    let callback_path = non_empty(inputs.get("callback_path").map(String::as_str))
+        .or_else(|| profile.as_ref().map(|endpoints| endpoints.callback_path.clone()));
     let timeout = parse_optional_timeout_seconds(inputs.get("timeout_seconds"))?;
 
     let oauth_config = mcp::oauth::OAuthConfig {
@@ -835,6 +999,8 @@ fn authorize_builtin_oauth_method(
         token_endpoint,
         client_id: client_id.clone(),
         scopes,
+        authorize_extra_params,
+        callback_path,
     };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -881,6 +1047,198 @@ fn authorize_builtin_oauth_method(
         credential.insert("client_secret".to_owned(), JsonValue::String(secret));
     }
     Ok(JsonValue::Object(credential))
+}
+
+/// RFC 8628 device-code login for built-in providers.
+///
+/// Prints only user-facing fields (`verification_uri`, `user_code`). The opaque
+/// `device_code` is never written to stdout/stderr. Callers may inject a full
+/// device-authorization response via `--auth-input` (tests / controlled fixtures);
+/// otherwise the flow POSTs to the device authorization endpoint then polls the
+/// token endpoint via [`mcp::oauth`].
+fn authorize_device_method(
+    method: &AuthMethodDescriptor,
+    inputs: BTreeMap<String, String>,
+) -> Result<JsonValue, String> {
+    let profile = providers::oauth_endpoints(&method.provider_id);
+    let client_id = non_empty(inputs.get("client_id").map(String::as_str))
+        .or_else(|| profile.as_ref().map(|endpoints| endpoints.client_id.clone()))
+        .or_else(|| cortex_oauth_override(&method.provider_id, "CLIENT_ID"))
+        .ok_or_else(|| {
+            "missing required auth input `client_id` (pass --auth-input client_id=...)".to_owned()
+        })?;
+    // Explicit token endpoint only (inputs / CORTEX_OAUTH_*). Profile defaults are applied later
+    // for the live device-authorization path — never when a fixture device_code is injected.
+    let explicit_token_endpoint = non_empty(inputs.get("token_endpoint").map(String::as_str))
+        .or_else(|| cortex_oauth_override(&method.provider_id, "TOKEN_ENDPOINT"));
+    let scopes = {
+        let from_inputs = parse_scope_inputs(&inputs);
+        if from_inputs.is_empty() {
+            cortex_oauth_override(&method.provider_id, "SCOPES")
+                .map(|raw| {
+                    raw.split([',', ' '])
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| profile.as_ref().map(|endpoints| endpoints.scopes.clone()))
+                .unwrap_or_default()
+        } else {
+            from_inputs
+        }
+    };
+
+    let fixture_uri = non_empty(inputs.get("verification_uri").map(String::as_str));
+    let fixture_user_code = non_empty(inputs.get("user_code").map(String::as_str));
+    let fixture_device_code = non_empty(inputs.get("device_code").map(String::as_str));
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("failed to start OAuth runtime: {err}"))?;
+
+    let (verification_uri, user_code, device_code, interval_secs, resolved_token_endpoint) =
+        if let (Some(uri), Some(user_code), Some(device_code)) =
+            (fixture_uri, fixture_user_code, fixture_device_code)
+        {
+            // Fixture path: surface user-facing fields immediately; never echo device_code.
+            eprintln!("cortex auth login: open this URL to authorize: {uri}");
+            eprintln!("cortex auth login: enter code: {user_code}");
+            // Do not fall back to live provider token endpoints with a fixture device_code —
+            // that would poll a real AS and hang integration tests.
+            let Some(token_endpoint) = explicit_token_endpoint else {
+                // Print-only fixture (integration tests inject URI/code without a token server).
+                return Err(
+                    "device authorization started; token_endpoint required to complete polling"
+                        .to_owned(),
+                );
+            };
+            let interval = inputs
+                .get("interval")
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .unwrap_or(5);
+            (uri, user_code, device_code, interval, token_endpoint)
+        } else {
+            let device_authorization_endpoint = non_empty(
+                inputs
+                    .get("device_authorization_endpoint")
+                    .map(String::as_str),
+            )
+            .or_else(|| {
+                cortex_oauth_override(&method.provider_id, "DEVICE_AUTHORIZATION_ENDPOINT")
+            })
+            .or_else(|| {
+                profile.as_ref().and_then(|endpoints| {
+                    endpoints.device_authorization_endpoint.clone()
+                })
+            })
+            .ok_or_else(|| {
+                "missing required auth input `device_authorization_endpoint` (pass --auth-input device_authorization_endpoint=... or set CORTEX_OAUTH_DEVICE_AUTHORIZATION_ENDPOINT)".to_owned()
+            })?;
+            let token_endpoint = explicit_token_endpoint
+                .or_else(|| profile.as_ref().map(|endpoints| endpoints.token_endpoint.clone()))
+                .ok_or_else(|| {
+                    "missing required auth input `token_endpoint` (pass --auth-input token_endpoint=... or set CORTEX_OAUTH_TOKEN_ENDPOINT)".to_owned()
+                })?;
+            let oauth_config = mcp::oauth::OAuthConfig {
+                authorize_endpoint: String::new(),
+                token_endpoint: token_endpoint.clone(),
+                client_id: client_id.clone(),
+                scopes: scopes.clone(),
+                authorize_extra_params: Vec::new(),
+                callback_path: None,
+            };
+            let auth = runtime
+                .block_on(mcp::oauth::request_device_authorization(
+                    &oauth_config,
+                    &device_authorization_endpoint,
+                ))
+                .map_err(|err| err.to_string())?;
+            // User-facing only — never print auth.device_code.
+            eprintln!(
+                "cortex auth login: open this URL to authorize: {}",
+                auth.verification_uri
+            );
+            eprintln!("cortex auth login: enter code: {}", auth.user_code);
+            (
+                auth.verification_uri,
+                auth.user_code,
+                auth.device_code,
+                auth.interval,
+                token_endpoint,
+            )
+        };
+
+    // Keep verification_uri / user_code bound so the fixture path is not dead-code warned;
+    // they were already printed above.
+    let _ = (&verification_uri, &user_code);
+
+    let oauth_config = mcp::oauth::OAuthConfig {
+        authorize_endpoint: String::new(),
+        token_endpoint: resolved_token_endpoint,
+        client_id: client_id.clone(),
+        scopes,
+        authorize_extra_params: Vec::new(),
+        callback_path: None,
+    };
+    let interval = Duration::from_secs(interval_secs);
+    let token = runtime
+        .block_on(mcp::oauth::poll_device_token(
+            &oauth_config,
+            &device_code,
+            interval,
+        ))
+        .map_err(|err| err.to_string())?;
+
+    let mut credential = serde_json::Map::new();
+    credential.insert("type".to_owned(), JsonValue::String("oauth".to_owned()));
+    credential.insert(
+        "access_token".to_owned(),
+        JsonValue::String(token.access_token),
+    );
+    credential.insert("token_type".to_owned(), JsonValue::String(token.token_type));
+    if let Some(refresh_token) = token.refresh_token {
+        credential.insert("refresh_token".to_owned(), JsonValue::String(refresh_token));
+    }
+    if let Some(expires_at) = token.expires_at {
+        credential.insert(
+            "expires_at".to_owned(),
+            JsonValue::Number(expires_at.into()),
+        );
+    }
+    credential.insert(
+        "token_endpoint".to_owned(),
+        JsonValue::String(token.token_endpoint),
+    );
+    credential.insert("client_id".to_owned(), JsonValue::String(token.client_id));
+    Ok(JsonValue::Object(credential))
+}
+
+/// Look up `CORTEX_OAUTH_<PROVIDER>_<SUFFIX>` then `CORTEX_OAUTH_<SUFFIX>`.
+fn cortex_oauth_override(provider_id: &str, suffix: &str) -> Option<String> {
+    let provider_key: String = provider_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    non_empty(
+        std::env::var(format!("CORTEX_OAUTH_{provider_key}_{suffix}"))
+            .ok()
+            .as_deref(),
+    )
+    .or_else(|| {
+        non_empty(
+            std::env::var(format!("CORTEX_OAUTH_{suffix}"))
+                .ok()
+                .as_deref(),
+        )
+    })
 }
 
 fn read_interactive_oauth_code() -> Option<String> {
@@ -1108,4 +1466,115 @@ fn emit_text(body: &str) -> Exit {
         return Exit::Failure;
     }
     Exit::Success
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{builtin_auth_methods, AuthMethodType};
+    use providers::connectable_providers;
+
+    /// Contract for task 23: `AuthMethodType::Device` is a first-class method type
+    /// (help text at `cli.rs` already lists `device` alongside `api` / `oauth`).
+    ///
+    /// RED until the variant exists — compile fails on `AuthMethodType::Device`.
+    #[test]
+    fn auth_method_type_device_exists_and_displays_as_device() {
+        assert_eq!(AuthMethodType::Device.to_string(), "device");
+        // Exhaustive match must accept Device (pins the variant, not just Display).
+        let label = match AuthMethodType::Device {
+            AuthMethodType::Api => "api",
+            AuthMethodType::Oauth => "oauth",
+            AuthMethodType::Device => "device",
+        };
+        assert_eq!(label, "device");
+    }
+
+    /// Wave 5 / task 36: every OAuth-capable connectable profile must surface a builtin
+    /// `oauth` method. Guards drift when new `supports_oauth` profiles land in
+    /// `provider_profiles::PROFILES` but `builtin_auth_methods` is not regenerated.
+    #[test]
+    fn builtin_auth_methods_covers_every_oauth_capable_connectable_provider() {
+        let methods = builtin_auth_methods();
+        let oauth_capable: Vec<_> = connectable_providers()
+            .into_iter()
+            .filter(|provider| provider.supports_oauth)
+            .collect();
+        assert!(
+            !oauth_capable.is_empty(),
+            "fixture sanity: at least one connectable provider must advertise OAuth"
+        );
+
+        for provider in &oauth_capable {
+            assert!(
+                methods.iter().any(|method| {
+                    method.provider_id == provider.id
+                        && method.method_id == "oauth"
+                        && method.method_type == AuthMethodType::Oauth
+                        && method.provider_name == provider.display_name
+                }),
+                "oauth-capable connectable provider `{}` ({}) must expose builtin oauth method",
+                provider.id,
+                provider.display_name
+            );
+        }
+
+        // Pin the known subscription/OAuth trio so a silent drop fails loudly.
+        for id in ["chatgpt", "xai", "copilot"] {
+            assert!(
+                methods
+                    .iter()
+                    .any(|method| method.provider_id == id && method.method_id == "oauth"),
+                "expected builtin oauth method for `{id}`"
+            );
+        }
+    }
+
+    /// Wave 5 / task 36 companion: every connectable profile with a primary API-key env
+    /// must expose a builtin `api` method. Fails while `builtin_auth_methods` is a short
+    /// hardcoded list that omits catalogue profiles (e.g. openrouter, anthropic).
+    #[test]
+    fn builtin_auth_methods_covers_every_connectable_provider_with_api_key_env() {
+        let methods = builtin_auth_methods();
+        let with_api_key: Vec<_> = connectable_providers()
+            .into_iter()
+            .filter(|provider| provider.api_key_env.is_some())
+            .collect();
+        assert!(
+            with_api_key.len() > 5,
+            "fixture sanity: connectable catalogue must list many API-key providers"
+        );
+
+        for provider in &with_api_key {
+            let env = provider.api_key_env.expect("filtered to Some");
+            assert!(
+                methods.iter().any(|method| {
+                    method.provider_id == provider.id
+                        && method.method_id == "api"
+                        && method.method_type == AuthMethodType::Api
+                        && method.provider_name == provider.display_name
+                        && method.env.iter().any(|name| name == env)
+                }),
+                "connectable provider `{}` with api_key_env `{env}` must expose builtin api method",
+                provider.id
+            );
+        }
+    }
+
+    /// Device-code methods stay available for providers that product already offers them for
+    /// (copilot + xai), independent of whether OAuth defaults pin a device endpoint.
+    #[test]
+    fn builtin_auth_methods_retains_device_for_copilot_and_xai() {
+        let methods = builtin_auth_methods();
+        for id in ["copilot", "xai"] {
+            assert!(
+                methods.iter().any(|method| {
+                    method.provider_id == id
+                        && method.method_id == "device"
+                        && method.method_type == AuthMethodType::Device
+                }),
+                "expected builtin device method for `{id}`"
+            );
+        }
+    }
 }

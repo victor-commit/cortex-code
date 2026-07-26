@@ -234,6 +234,89 @@ fn start_chat_fixture(
     (format!("http://127.0.0.1:{port}"), captures, handle)
 }
 
+/// Loopback Anthropic Messages SSE fixture (`POST {base}/messages`).
+///
+/// Callers should pass a `base_url` that already ends in `/v1` (matching
+/// `ANTHROPIC_API_BASE`) so the captured path is `/v1/messages`.
+fn start_anthropic_messages_fixture(
+    model_id: &str,
+    answer: &str,
+) -> (
+    String,
+    Arc<Mutex<Vec<CapturedRequest>>>,
+    std::thread::JoinHandle<()>,
+) {
+    let listener = bind_loopback_listener();
+    let port = listener.local_addr().expect("fixture addr").port();
+    listener
+        .set_nonblocking(true)
+        .expect("set fixture nonblocking");
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let captures_thread = Arc::clone(&captures);
+    let model_id = model_id.to_owned();
+    let answer = answer.to_owned();
+
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_http_request(&mut stream);
+                    captures_thread.lock().expect("captures lock").push(request);
+                    // Minimal Anthropic Messages SSE that yields one text block.
+                    let start = serde_json::json!({
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg_gap_llm_secondary",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": model_id,
+                            "usage": { "input_tokens": 4 }
+                        }
+                    })
+                    .to_string();
+                    let block_start = serde_json::json!({
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": { "type": "text", "text": "" }
+                    })
+                    .to_string();
+                    let delta = serde_json::json!({
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": { "type": "text_delta", "text": answer }
+                    })
+                    .to_string();
+                    let stop = serde_json::json!({
+                        "type": "message_delta",
+                        "delta": { "stop_reason": "end_turn" },
+                        "usage": { "output_tokens": 2 }
+                    })
+                    .to_string();
+                    let body = format!(
+                        "data: {start}\n\ndata: {block_start}\n\ndata: {delta}\n\ndata: {stop}\n\ndata: [DONE]\n\n"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                    return;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        }
+    });
+
+    // Real Anthropic base is `…/v1`; adapter appends `/messages` → `/v1/messages`.
+    (format!("http://127.0.0.1:{port}/v1"), captures, handle)
+}
+
 fn serve_json_once(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
     let listener = bind_loopback_listener();
     let port = listener.local_addr().expect("fixture addr").port();
@@ -664,5 +747,94 @@ fn models_refresh_lists_secondary_provider_namespaces_and_caches_offline() {
     assert!(
         offline_ids.contains(&"bedrock") && offline_ids.contains(&"vertex"),
         "offline cached listing should preserve refreshed secondary providers: {offline_ids:?}"
+    );
+}
+
+#[test]
+fn direct_anthropic_provider_uses_messages_framing_not_chat_completions() {
+    let scratch = Scratch::new("direct-anthropic-messages");
+    let model_id = "claude-sonnet-4";
+    // Synthetic key via ANTHROPIC_API_KEY only (profile default_api_key_env) — not config.
+    let api_key = synthetic_config_api_key("direct-anthropic-messages");
+    let (base_url, captures, handle) =
+        start_anthropic_messages_fixture(model_id, "direct anthropic messages ok");
+    scratch.write_project_config(&format!(
+        r#"
+[provider]
+enabled = ["anthropic"]
+disabled = ["openrouter"]
+
+[provider.model_overrides]
+"google/gemini-2.5-flash" = "anthropic/{model_id}"
+
+[provider.anthropic]
+base_url = "{base_url}"
+protocol = "anthropic-messages"
+"#,
+    ));
+
+    let mut command = scratch.command(&["run", "--format", "json", "say hi"]);
+    command.env("ANTHROPIC_API_KEY", &api_key);
+    let out = run(command);
+    handle.join().expect("join fixture");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "run should succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains(&api_key) && !stderr.contains(&api_key),
+        "ANTHROPIC_API_KEY must never appear on stdout/stderr"
+    );
+
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("run json");
+    assert!(
+        doc["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("direct anthropic messages ok")),
+        "expected fixture content, got: {doc}"
+    );
+
+    let captures = captures.lock().expect("captures lock");
+    let first = captures.first().expect("captured request");
+    assert!(
+        first.request_line.contains("POST /v1/messages"),
+        "direct anthropic must use Messages path /v1/messages, got: {}",
+        first.request_line
+    );
+    assert!(
+        !first.request_line.contains("/chat/completions"),
+        "must not use OpenAI chat completions framing: {}",
+        first.request_line
+    );
+
+    let headers_lc = first.headers.to_ascii_lowercase();
+    assert!(
+        headers_lc
+            .lines()
+            .any(|line| line.starts_with("x-api-key:") && line.contains(api_key.as_str())),
+        "anthropic framing requires x-api-key header, got: {}",
+        first.headers
+    );
+    assert!(
+        headers_lc.contains("anthropic-version: 2023-06-01"),
+        "anthropic framing requires anthropic-version: 2023-06-01, got: {}",
+        first.headers
+    );
+    assert!(
+        first.body.contains("\"messages\"")
+            && first.body.contains("\"stream\":true")
+            && first.body.contains("\"model\":\"claude-sonnet-4\""),
+        "body must be Anthropic Messages shape (messages/stream/model), got: {}",
+        first.body
+    );
+    assert!(
+        !first.body.contains("/chat/completions"),
+        "body must not reference chat completions path: {}",
+        first.body
     );
 }

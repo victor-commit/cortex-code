@@ -398,6 +398,11 @@ fn start_gemini_fixture(
 struct OAuthFixtureState {
     authorization_grants: usize,
     refresh_grants: usize,
+    /// Captured from the authorize redirect query (never logged to stdout).
+    authorize_code_challenge: Option<String>,
+    authorize_code_challenge_method: Option<String>,
+    /// Captured from the token POST form body (never logged to stdout).
+    token_code_verifier: Option<String>,
 }
 
 fn parse_form_field(body: &str, key: &str) -> Option<String> {
@@ -443,6 +448,19 @@ fn start_oauth_fixture(
                             .find(|(name, _)| name == "state")
                             .map(|(_, value)| value.clone())
                             .unwrap_or_default();
+                        let code_challenge = params
+                            .iter()
+                            .find(|(name, _)| name == "code_challenge")
+                            .map(|(_, value)| value.clone());
+                        let code_challenge_method = params
+                            .iter()
+                            .find(|(name, _)| name == "code_challenge_method")
+                            .map(|(_, value)| value.clone());
+                        {
+                            let mut guard = state.lock().expect("state");
+                            guard.authorize_code_challenge = code_challenge;
+                            guard.authorize_code_challenge_method = code_challenge_method;
+                        }
                         let location =
                             format!("{redirect_uri}?code=oauth-code-123&state={state_value}");
                         let response = format!(
@@ -456,7 +474,12 @@ fn start_oauth_fixture(
                         let grant_type =
                             parse_form_field(&request.body, "grant_type").unwrap_or_default();
                         let (access, refresh, expires_in) = if grant_type == "authorization_code" {
-                            state.lock().expect("state").authorization_grants += 1;
+                            let verifier = parse_form_field(&request.body, "code_verifier");
+                            {
+                                let mut guard = state.lock().expect("state");
+                                guard.authorization_grants += 1;
+                                guard.token_code_verifier = verifier;
+                            }
                             (initial_access, "oauth-refresh-1", 1_u64)
                         } else if grant_type == "refresh_token" {
                             state.lock().expect("state").refresh_grants += 1;
@@ -720,6 +743,161 @@ models = [{{ id = "copilot/test-model", name = "Copilot Fixture", tool_call = tr
         );
     }
 }
+
+#[test]
+fn oauth_loopback_authorize_carries_pkce_s256_and_token_posts_matching_verifier() {
+    let sandbox = Sandbox::new("oauth-pkce-s256");
+    let oauth_state = Arc::new(Mutex::new(OAuthFixtureState::default()));
+    let (oauth_base, oauth_handle) = start_oauth_fixture(
+        Arc::clone(&oauth_state),
+        "oauth-access-pkce",
+        "oauth-access-pkce-refreshed",
+    );
+
+    let login_args_owned = vec![
+        "auth".to_owned(),
+        "login".to_owned(),
+        "copilot".to_owned(),
+        "--auth-method".to_owned(),
+        "oauth".to_owned(),
+        "--auth-input".to_owned(),
+        "client_id=fixture-client".to_owned(),
+        "--auth-input".to_owned(),
+        "client_secret=fixture-secret".to_owned(),
+        "--auth-input".to_owned(),
+        format!("authorize_endpoint={oauth_base}/authorize"),
+        "--auth-input".to_owned(),
+        format!("token_endpoint={oauth_base}/token"),
+        "--auth-input".to_owned(),
+        "timeout_seconds=20".to_owned(),
+        "--format".to_owned(),
+        "json".to_owned(),
+    ];
+    let login_args = login_args_owned
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let (login, callback_body) = run_auth_with_browser(sandbox.command(&login_args));
+    oauth_handle.join().expect("join oauth fixture");
+
+    assert_eq!(
+        login.status.code(),
+        Some(0),
+        "oauth login should succeed: {}",
+        String::from_utf8_lossy(&login.stderr)
+    );
+    assert!(
+        callback_body.contains("Authorization complete"),
+        "callback response should acknowledge completion: {callback_body}"
+    );
+
+    let state = oauth_state.lock().expect("oauth state");
+    assert_eq!(
+        state.authorize_code_challenge_method.as_deref(),
+        Some("S256"),
+        "authorize URL must carry code_challenge_method=S256"
+    );
+    let challenge = state
+        .authorize_code_challenge
+        .as_deref()
+        .expect("authorize URL must carry code_challenge");
+    assert!(
+        !challenge.is_empty() && !challenge.contains('='),
+        "code_challenge must be non-empty base64url without padding"
+    );
+    let verifier = state
+        .token_code_verifier
+        .as_deref()
+        .expect("token POST must include code_verifier");
+    assert!(
+        (43..=128).contains(&verifier.len()),
+        "RFC 7636 code_verifier length must be 43..=128, got {}",
+        verifier.len()
+    );
+    let expected_challenge = pkce_s256_challenge(verifier);
+    assert_eq!(
+        challenge, expected_challenge,
+        "token code_verifier must S256-match the authorize code_challenge"
+    );
+    assert!(
+        state.authorization_grants >= 1,
+        "oauth login should exchange an authorization code"
+    );
+
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&login.stdout),
+        String::from_utf8_lossy(&login.stderr)
+    );
+    // Never print or leak the verifier on CLI surfaces.
+    assert!(
+        !output.contains(verifier),
+        "stdout/stderr must not leak code_verifier"
+    );
+    for secret in ["oauth-access-pkce", "fixture-secret", "oauth-refresh-1"] {
+        assert!(
+            !output.contains(secret),
+            "stdout/stderr must not leak oauth secret `{secret}`"
+        );
+    }
+}
+
+/// RFC 7636 S256: BASE64URL-NOPAD(SHA256(ASCII(code_verifier))).
+///
+/// Uses openssl for the digest so the CLI integration test stays free of a sha2 dev-dep;
+/// encoding is local base64url-nopad (same alphabet as production).
+fn pkce_s256_challenge(verifier: &str) -> String {
+    let mut child = Command::new("openssl")
+        .args(["dgst", "-sha256", "-binary"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn openssl dgst for PKCE S256 oracle");
+    {
+        let mut stdin = child.stdin.take().expect("openssl stdin");
+        stdin
+            .write_all(verifier.as_bytes())
+            .expect("write verifier to openssl");
+    }
+    let output = child.wait_with_output().expect("openssl wait");
+    assert!(
+        output.status.success(),
+        "openssl dgst -sha256 failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    base64url_nopad(&output.stdout)
+}
+
+fn base64url_nopad(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let n = (u32::from(bytes[i]) << 16)
+            | (u32::from(bytes[i + 1]) << 8)
+            | u32::from(bytes[i + 2]);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        out.push(TABLE[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let rem = bytes.len() - i;
+    if rem == 1 {
+        let n = u32::from(bytes[i]) << 16;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+    } else if rem == 2 {
+        let n = (u32::from(bytes[i]) << 16) | (u32::from(bytes[i + 1]) << 8);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+    }
+    out
+}
+
 
 #[test]
 fn bedrock_uses_aws_credential_chain_without_manual_auth_login() {

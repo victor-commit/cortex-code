@@ -248,8 +248,14 @@ fn auth_login_accepts_env_or_stdin_and_logout_removes_the_stored_key() {
     );
     assert_eq!(list_after.status.code(), Some(0));
     assert!(
-        !String::from_utf8_lossy(&list_after.stdout).contains("openrouter"),
-        "provider should be absent from auth list after logout"
+        !String::from_utf8_lossy(&list_after.stdout)
+            .lines()
+            .any(|line| line.trim() == "openrouter"),
+        "stored provider `openrouter` should be absent from auth list after logout (methods catalogue may still name it)"
+    );
+    assert!(
+        !String::from_utf8_lossy(&list_after.stdout).contains("(logged in)"),
+        "no method should report logged-in after openrouter logout"
     );
 
     let auth_file = sandbox.auth_file();
@@ -290,4 +296,63 @@ fn auth_logout_unknown_provider_is_clean_and_deterministic() {
     );
     no_panic(&String::from_utf8_lossy(&first.stderr));
     no_panic(&String::from_utf8_lossy(&second.stderr));
+}
+
+
+/// `cortex auth login --auth-method device` must surface the RFC 8628 user-facing
+/// fields (verification URI + user code). Help text promises `device` as a method.
+///
+/// RED until `AuthMethodType::Device` is registered/dispatched (task 23).
+/// Must never print the opaque `device_code` secret.
+#[test]
+fn auth_login_device_method_prints_verification_uri_and_user_code() {
+    let sandbox = Sandbox::new("device-method");
+
+    // Fixture values the device-auth endpoint will return once dispatch exists.
+    let verification_uri = "https://example.test/device";
+    let user_code = "WDJB-MJHT";
+    let device_code_secret = "device-code-secret-must-not-leak";
+
+    let login = run(
+        cortex(
+            &sandbox,
+            &[
+                "auth",
+                "login",
+                "copilot",
+                "--auth-method",
+                "device",
+                "--auth-input",
+                "client_id=cortex-device-test",
+                "--auth-input",
+                &format!("verification_uri={verification_uri}"),
+                "--auth-input",
+                &format!("user_code={user_code}"),
+                "--auth-input",
+                &format!("device_code={device_code_secret}"),
+            ],
+        ),
+        None,
+        Duration::from_secs(10),
+    );
+
+    let stdout = String::from_utf8_lossy(&login.stdout);
+    let stderr = String::from_utf8_lossy(&login.stderr);
+    let combined = format!("{stdout}{stderr}");
+    no_panic(&stderr);
+
+    assert!(
+        combined.contains(verification_uri),
+        "device login must print the verification URI; got status={:?} out={combined}",
+        login.status.code()
+    );
+    assert!(
+        combined.contains(user_code),
+        "device login must print the user code; got status={:?} out={combined}",
+        login.status.code()
+    );
+    assert!(
+        !stdout.contains(device_code_secret) && !stderr.contains(device_code_secret),
+        "device_code secret must never appear on stdout/stderr: {combined}"
+    );
 }

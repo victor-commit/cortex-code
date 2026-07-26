@@ -609,3 +609,252 @@ fn live_refresh_fetches_models_dev() {
         "the live refresh caches the fetched snapshot"
     );
 }
+
+// ---- W2 first-class providers: refresh surfaces them; offline cache keeps them ------------
+
+/// models.dev-shaped fixture covering the W2 first-class catalogue providers (anthropic,
+/// openai, google, plus several OpenAI-Chat catalogue vendors). Each entry carries at least one
+/// well-formed model so `curate_provider` retains the provider (empty model maps are dropped).
+const W2_FIXTURE: &str = r#"{
+  "openrouter": {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "api": "https://openrouter.ai/api/v1",
+    "env": ["OPENROUTER_API_KEY"],
+    "models": {
+      "google/gemini-2.5-flash": { "id": "google/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tool_call": true, "cost": { "input": 0.3, "output": 2.5 }, "limit": { "context": 1048576, "output": 65535 } }
+    }
+  },
+  "anthropic": {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "api": "https://api.anthropic.com",
+    "env": ["ANTHROPIC_API_KEY"],
+    "models": {
+      "claude-sonnet-4": { "id": "claude-sonnet-4", "name": "Claude Sonnet 4", "tool_call": true, "cost": { "input": 3, "output": 15 }, "limit": { "context": 200000, "output": 64000 } }
+    }
+  },
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "api": "https://api.openai.com/v1",
+    "env": ["OPENAI_API_KEY"],
+    "models": {
+      "gpt-4o": { "id": "gpt-4o", "name": "GPT-4o", "tool_call": true, "cost": { "input": 2.5, "output": 10 }, "limit": { "context": 128000, "output": 16384 } }
+    }
+  },
+  "google": {
+    "id": "google",
+    "name": "Google",
+    "api": "https://generativelanguage.googleapis.com",
+    "env": ["GEMINI_API_KEY"],
+    "models": {
+      "gemini-2.5-flash": { "id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "tool_call": true, "cost": { "input": 0.3, "output": 2.5 }, "limit": { "context": 1048576, "output": 65535 } }
+    }
+  },
+  "deepseek": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "api": "https://api.deepseek.com",
+    "env": ["DEEPSEEK_API_KEY"],
+    "models": {
+      "deepseek-chat": { "id": "deepseek-chat", "name": "DeepSeek Chat", "tool_call": true, "cost": { "input": 0.14, "output": 0.28 }, "limit": { "context": 64000, "output": 8192 } }
+    }
+  },
+  "moonshotai": {
+    "id": "moonshotai",
+    "name": "Moonshot AI",
+    "api": "https://api.moonshot.cn/v1",
+    "env": ["MOONSHOT_API_KEY"],
+    "models": {
+      "kimi-k2": { "id": "kimi-k2", "name": "Kimi K2", "tool_call": true, "cost": { "input": 0.6, "output": 2.5 }, "limit": { "context": 128000, "output": 8192 } }
+    }
+  },
+  "zai": {
+    "id": "zai",
+    "name": "Z.AI",
+    "api": "https://api.z.ai/api/paas/v4",
+    "env": ["ZAI_API_KEY"],
+    "models": {
+      "glm-4.5": { "id": "glm-4.5", "name": "GLM 4.5", "tool_call": true, "cost": { "input": 0.6, "output": 2.2 }, "limit": { "context": 128000, "output": 8192 } }
+    }
+  },
+  "fireworks-ai": {
+    "id": "fireworks-ai",
+    "name": "Fireworks AI",
+    "api": "https://api.fireworks.ai/inference/v1",
+    "env": ["FIREWORKS_API_KEY"],
+    "models": {
+      "llama-v3p1-70b": { "id": "llama-v3p1-70b", "name": "Llama 3.1 70B", "tool_call": true, "cost": { "input": 0.9, "output": 0.9 }, "limit": { "context": 131072, "output": 8192 } }
+    }
+  },
+  "huggingface": {
+    "id": "huggingface",
+    "name": "Hugging Face",
+    "api": "https://router.huggingface.co/v1",
+    "env": ["HF_TOKEN"],
+    "models": {
+      "meta-llama/Llama-3.1-8B-Instruct": { "id": "meta-llama/Llama-3.1-8B-Instruct", "name": "Llama 3.1 8B Instruct", "tool_call": true, "cost": { "input": 0.1, "output": 0.1 }, "limit": { "context": 128000, "output": 4096 } }
+    }
+  },
+  "nvidia": {
+    "id": "nvidia",
+    "name": "NVIDIA",
+    "api": "https://integrate.api.nvidia.com/v1",
+    "env": ["NVIDIA_API_KEY"],
+    "models": {
+      "meta/llama-3.1-70b-instruct": { "id": "meta/llama-3.1-70b-instruct", "name": "Llama 3.1 70B Instruct", "tool_call": true, "cost": { "input": 0.35, "output": 0.4 }, "limit": { "context": 128000, "output": 4096 } }
+    }
+  },
+  "baseten": {
+    "id": "baseten",
+    "name": "Baseten",
+    "api": "https://inference.baseten.co/v1",
+    "env": ["BASETEN_API_KEY"],
+    "models": {
+      "deepseek-ai/DeepSeek-V3": { "id": "deepseek-ai/DeepSeek-V3", "name": "DeepSeek V3", "tool_call": true, "cost": { "input": 0.5, "output": 1.5 }, "limit": { "context": 64000, "output": 8192 } }
+    }
+  },
+  "minimax": {
+    "id": "minimax",
+    "name": "MiniMax",
+    "api": "https://api.minimax.io/v1",
+    "env": ["MINIMAX_API_KEY"],
+    "models": {
+      "MiniMax-M1": { "id": "MiniMax-M1", "name": "MiniMax M1", "tool_call": true, "cost": { "input": 0.4, "output": 2.2 }, "limit": { "context": 1000000, "output": 40000 } }
+    }
+  },
+  "nebius": {
+    "id": "nebius",
+    "name": "Nebius",
+    "api": "https://api.studio.nebius.ai/v1",
+    "env": ["NEBIUS_API_KEY"],
+    "models": {
+      "meta-llama/Meta-Llama-3.1-70B-Instruct": { "id": "meta-llama/Meta-Llama-3.1-70B-Instruct", "name": "Llama 3.1 70B Instruct", "tool_call": true, "cost": { "input": 0.13, "output": 0.4 }, "limit": { "context": 128000, "output": 4096 } }
+    }
+  },
+  "venice": {
+    "id": "venice",
+    "name": "Venice",
+    "api": "https://api.venice.ai/api/v1",
+    "env": ["VENICE_API_KEY"],
+    "models": {
+      "llama-3.3-70b": { "id": "llama-3.3-70b", "name": "Llama 3.3 70B", "tool_call": true, "cost": { "input": 0.7, "output": 2.8 }, "limit": { "context": 128000, "output": 8192 } }
+    }
+  }
+}"#;
+
+/// Provider ids the W2 first-class profiles pin for models.dev-backed vendors. Local-only
+/// profiles (`lmstudio`, `llamacpp`) have no `models_dev_id` and are not expected from a
+/// models.dev refresh — they are asserted only when already present.
+const W2_CATALOGUE_PROVIDER_IDS: &[&str] = &[
+    "anthropic",
+    "openai",
+    "google",
+    "deepseek",
+    "moonshotai",
+    "zai",
+    "fireworks-ai",
+    "huggingface",
+    "nvidia",
+    "baseten",
+    "minimax",
+    "nebius",
+    "venice",
+];
+
+fn provider_ids_from_models_json(stdout: &[u8]) -> Vec<String> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(stdout).expect("models --format json is a strict document");
+    doc["providers"]
+        .as_array()
+        .expect("providers array")
+        .iter()
+        .map(|provider| {
+            provider["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn w2_providers_appear_in_models_and_survive_offline_cache() {
+    let sandbox = Sandbox::new("w2-providers");
+    let (listener, port) = bind_fixture_port();
+    let server = serve_once(listener, W2_FIXTURE.to_owned());
+    let url = format!("http://127.0.0.1:{port}/api.json");
+
+    // Given: a models.dev fixture carrying the W2 first-class catalogue providers
+    // When: cortex models --refresh --format json hits that fixture
+    let mut refresh = cortex(&sandbox, &["models", "--refresh", "--format", "json"]);
+    refresh.env("CORTEX_MODELS_DEV_URL", &url);
+    let refresh_out = run(refresh, Duration::from_secs(30));
+    server.join().ok();
+
+    assert_eq!(
+        refresh_out.status.code(),
+        Some(0),
+        "W2 refresh exits 0; stderr: {}",
+        String::from_utf8_lossy(&refresh_out.stderr)
+    );
+    let refreshed_ids = provider_ids_from_models_json(&refresh_out.stdout);
+    for id in W2_CATALOGUE_PROVIDER_IDS {
+        assert!(
+            refreshed_ids.iter().any(|listed| listed == id),
+            "refresh must surface W2 provider {id}; got {refreshed_ids:?}"
+        );
+    }
+    assert!(
+        refreshed_ids.iter().any(|id| id == "openrouter"),
+        "primary openrouter provider remains: {refreshed_ids:?}"
+    );
+    assert!(
+        sandbox.cache_file().exists(),
+        "successful W2 refresh writes the on-disk cache"
+    );
+
+    // When: plain listing under CORTEX_NO_NET=1 (no network, must read cache/embedded merge)
+    // Then: the same W2 providers still appear, tagged as cached
+    let mut offline = cortex(&sandbox, &["models", "--format", "json"]);
+    offline.env("CORTEX_NO_NET", "1");
+    let offline_out = run(offline, Duration::from_secs(20));
+    assert_eq!(
+        offline_out.status.code(),
+        Some(0),
+        "offline listing exits 0 under CORTEX_NO_NET; stderr: {}",
+        String::from_utf8_lossy(&offline_out.stderr)
+    );
+    let offline_doc: serde_json::Value =
+        serde_json::from_slice(&offline_out.stdout).expect("offline listing json");
+    let offline_ids = provider_ids_from_models_json(&offline_out.stdout);
+    for id in W2_CATALOGUE_PROVIDER_IDS {
+        assert!(
+            offline_ids.iter().any(|listed| listed == id),
+            "CORTEX_NO_NET listing must keep W2 provider {id} from cache; got {offline_ids:?}"
+        );
+    }
+    // At least one W2 provider (and openrouter) must report source=cached so we know the
+    // offline path is the cache, not a silent re-fetch or empty embedded-only view.
+    let sources: Vec<&str> = offline_doc["providers"]
+        .as_array()
+        .expect("providers array")
+        .iter()
+        .filter_map(|provider| provider["source"].as_str())
+        .collect();
+    assert!(
+        sources.contains(&"cached"),
+        "offline listing after refresh must read the cache (source=cached): {offline_doc}"
+    );
+
+    // Local-only profiles are not models.dev-backed; only assert if the listing already has them.
+    for local_id in ["lmstudio", "llamacpp"] {
+        if offline_ids.iter().any(|id| id == local_id) {
+            assert!(
+                refreshed_ids.iter().any(|id| id == local_id),
+                "local provider {local_id} present offline must also have been in the refresh listing"
+            );
+        }
+    }
+}
