@@ -1,14 +1,41 @@
+# Build artifacts
 /target
-target/
 **/target/
+
+# Secrets and local env
 .env
 .env.local
 *.secret
 *.key
+
+# OS / editor
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Agent / local tooling (never ship)
 /.cortex/
 **/.cortex/
-.omo/
-.firecrawl/
-__pycache__/
-install-marker.txt
+.omo/
+.firecrawl/
+.factory/
+.codegraph/
+.ruff_cache/
+.direnv/
+result
+
+# Python caches (scripts / tooling)
+__pycache__/
+*.pyc
+*.pyo
+
+# Node (sdk installs locally)
+node_modules/
+
+# Coverage / misc
+*.profraw
+*.profdata
+coverage/
