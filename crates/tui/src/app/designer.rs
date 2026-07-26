@@ -193,9 +193,11 @@ impl App {
 
     /// Open the command palette with an optional query (matches come from the live catalogue).
     pub fn designer_open_palette(&mut self, query: &str, _matches: Vec<String>) {
-        let mut palette = Palette::default();
-        palette.query = query.to_owned();
-        palette.selected = 0;
+        let palette = Palette {
+            query: query.to_owned(),
+            selected: 0,
+            ..Default::default()
+        };
         self.palette = Some(palette);
     }
 
