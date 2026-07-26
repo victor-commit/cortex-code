@@ -2,9 +2,10 @@
 //!
 //! Invoked by `cortex auth login` with no provider argument (on a TTY), this replaces the
 //! old print-and-exit login with a full-screen TUI: the shared `✦ Cortex · auth · login`
-//! chrome, a centered titled sign-in panel listing the real providers (openrouter, anthropic,
-//! openai (codex), azure openai, github copilot) with their auth-method tag and logged-in status,
-//! an arrow-navigable selection bar, a MASKED API-key input box, a 0600 stored-credential note,
+//! chrome, a centered titled sign-in panel listing every connectable provider (from
+//! [`providers::connectable_providers`], same catalogue as `/connect`) with their auth-method
+//! tag and logged-in status, an arrow-navigable selection bar (windowed when the catalogue is
+//! longer than the panel), a MASKED API-key input box, a 0600 stored-credential note,
 //! and a key-hints footer, over the persistent 3-zone status bar.
 //!
 //! Security invariant: the typed key lives only in [`AuthLoginState::key_input`] and is NEVER
@@ -17,7 +18,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
-use providers::{AuthPathInputs, list_stored_providers, store_credential};
+use providers::{AuthPathInputs, connectable_providers, list_stored_providers, store_credential};
 use tui_components::style::ThemeColors;
 
 use crate::app::App;
@@ -37,6 +38,8 @@ const SUBTITLE: &str = "select a provider";
 const PANEL_W: u16 = 68;
 /// Height (rows) of the centered sign-in panel.
 const PANEL_H: u16 = 18;
+/// How many provider rows are visible in the panel at once (scroll window when the catalogue is longer).
+const PROVIDER_LIST_CAPACITY: usize = 5;
 
 // Provider-row interior column layout (relative to the panel inner region).
 /// The amber `▎` left edge of the selected row.
@@ -85,6 +88,7 @@ impl AuthKind {
 /// marker and storage use the authentic provider id), `env_var` is the provider's real credential
 /// environment variable (a resolved credential also counts as logged-in), and `key_prefix` is a
 /// non-secret format hint shown before the masked bullets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProviderSpec {
     /// The display name shown in the row (authentic provider name).
     display: &'static str,
@@ -98,49 +102,56 @@ struct ProviderSpec {
     key_prefix: &'static str,
 }
 
-/// The five real providers offered on the auth screen, in display order.
-const PROVIDERS: [ProviderSpec; 5] = [
-    ProviderSpec {
-        display: "openrouter",
-        id: "openrouter",
-        kind: AuthKind::ApiKey,
-        env_var: "OPENROUTER_API_KEY",
-        key_prefix: "sk-or-",
-    },
-    ProviderSpec {
-        display: "anthropic",
-        id: "anthropic",
-        kind: AuthKind::ApiKey,
-        env_var: "ANTHROPIC_API_KEY",
-        key_prefix: "sk-ant-",
-    },
-    ProviderSpec {
-        display: "openai (codex)",
-        id: "codex",
-        kind: AuthKind::ApiKey,
-        env_var: "OPENAI_API_KEY",
-        key_prefix: "sk-",
-    },
-    ProviderSpec {
-        display: "azure openai",
-        id: "azure",
-        kind: AuthKind::ApiKey,
-        env_var: "AZURE_OPENAI_API_KEY",
-        key_prefix: "",
-    },
-    ProviderSpec {
-        display: "github copilot",
-        id: "copilot",
-        kind: AuthKind::OAuth,
-        env_var: "GITHUB_COPILOT_TOKEN",
-        key_prefix: "",
-    },
-];
+/// Providers offered on the auth/login screen.
+///
+/// Derived from [`connectable_providers`] (same catalogue as `/connect`), not a separate
+/// hardcoded table — so chatgpt, xai, and every other profile stay in parity.
+fn login_providers() -> Vec<ProviderSpec> {
+    connectable_providers()
+        .into_iter()
+        .map(|provider| ProviderSpec {
+            display: provider.display_name,
+            id: provider.id,
+            kind: if provider.supports_oauth {
+                AuthKind::OAuth
+            } else {
+                AuthKind::ApiKey
+            },
+            env_var: provider.api_key_env.unwrap_or(""),
+            key_prefix: key_prefix_hint(provider.id),
+        })
+        .collect()
+}
+
+/// Non-secret key-format prefix hint for the masked input box (empty when unknown).
+fn key_prefix_hint(provider_id: &str) -> &'static str {
+    match provider_id {
+        "openrouter" => "sk-or-",
+        "anthropic" => "sk-ant-",
+        "openai" => "sk-",
+        _ => "",
+    }
+}
+
+/// Visible `[start, end)` window of a list of `len` rows with `capacity` slots (mirrors connect).
+fn provider_window(selected: usize, len: usize, capacity: usize) -> (usize, usize) {
+    if len == 0 || capacity == 0 {
+        return (0, 0);
+    }
+    if len <= capacity {
+        return (0, len);
+    }
+    let half = capacity / 2;
+    let start = selected.saturating_sub(half).min(len - capacity);
+    (start, start + capacity)
+}
 
 /// The interactive auth-screen state: the resolved logged-in status per provider, the highlighted
 /// row, the focused field, and the (never-rendered) typed key buffer.
 pub struct AuthLoginState {
-    /// The logged-in flag per provider (parallel to [`PROVIDERS`]).
+    /// Connectable providers offered on this screen (from [`login_providers`]).
+    providers: Vec<ProviderSpec>,
+    /// The logged-in flag per provider (parallel to [`Self::providers`]).
     logged_in: Vec<bool>,
     /// The highlighted provider row.
     selected: usize,
@@ -156,12 +167,17 @@ impl AuthLoginState {
     /// and the provider list focused.
     #[must_use]
     pub fn new() -> Self {
+        let providers = login_providers();
         let stored = stored_provider_ids();
-        let logged_in = PROVIDERS
+        let logged_in = providers
             .iter()
-            .map(|spec| stored.iter().any(|id| id == spec.id) || env_non_empty(spec.env_var))
+            .map(|spec| {
+                stored.iter().any(|id| id == spec.id)
+                    || (!spec.env_var.is_empty() && env_non_empty(spec.env_var))
+            })
             .collect();
         Self {
+            providers,
             logged_in,
             selected: 0,
             focus: Focus::Providers,
@@ -170,17 +186,18 @@ impl AuthLoginState {
     }
 
     /// The highlighted provider.
-    fn selected_spec(&self) -> &'static ProviderSpec {
-        &PROVIDERS[self.selected.min(PROVIDERS.len() - 1)]
+    fn selected_spec(&self) -> &ProviderSpec {
+        let idx = self.selected.min(self.providers.len().saturating_sub(1));
+        &self.providers[idx]
     }
 
     /// Move the highlighted provider by `delta` (wrapping), but only while the provider list is
     /// focused — once the key field is focused the arrows no longer move the selection.
     pub fn move_selection(&mut self, delta: i32) {
-        if self.focus != Focus::Providers {
+        if self.focus != Focus::Providers || self.providers.is_empty() {
             return;
         }
-        let n = PROVIDERS.len() as i32;
+        let n = self.providers.len() as i32;
         let next = (self.selected as i32 + delta).rem_euclid(n);
         self.selected = next as usize;
     }
@@ -318,9 +335,9 @@ fn auth_header_line(width: usize, theme: &ThemeColors) -> Line<'static> {
     cells_to_line(&cells)
 }
 
-/// Build the sign-in panel interior (the region inside the titled border): the subtitle, the five
-/// provider rows, then the method-specific detail block (masked key input + stored note, or the
-/// OAuth affordance), and the key-hints footer. `width` is the panel's inner width.
+/// Build the sign-in panel interior (the region inside the titled border): the subtitle, a
+/// windowed provider list, then the method-specific detail block (masked key input + stored note,
+/// or the OAuth affordance), and the key-hints footer. `width` is the panel's inner width.
 fn panel_body_lines(
     state: &AuthLoginState,
     width: usize,
@@ -338,11 +355,21 @@ fn panel_body_lines(
     ));
     // Row 1: blank.
     lines.push(row(width, base, &[]));
-    // Rows 2..6: the five provider rows.
-    for (idx, spec) in PROVIDERS.iter().enumerate() {
+    // Rows 2..: windowed provider rows (capacity keeps the panel layout stable).
+    let (start, end) = provider_window(
+        state.selected,
+        state.providers.len(),
+        PROVIDER_LIST_CAPACITY,
+    );
+    for idx in start..end {
+        let spec = &state.providers[idx];
         lines.push(provider_row(state, idx, spec, width, theme));
     }
-    // Row 7: blank.
+    // Pad short catalogues so the detail block stays at a stable vertical offset.
+    for _ in (end - start)..PROVIDER_LIST_CAPACITY {
+        lines.push(row(width, base, &[]));
+    }
+    // Blank after the list.
     lines.push(row(width, base, &[]));
 
     let spec = state.selected_spec();
@@ -790,21 +817,74 @@ mod tests {
     }
 
     #[test]
+    fn login_providers_derived_from_connectable_include_chatgpt_and_xai() {
+        // Provider-parity: auth_login list is the connectable catalogue (not a 5-row hardcode),
+        // so subscription OAuth targets chatgpt + xai appear alongside every other profile.
+        let login = login_providers();
+        let connectable = providers::connectable_providers();
+        assert_eq!(
+            login.len(),
+            connectable.len(),
+            "login_providers length must match connectable_providers (got login ids: {:?})",
+            login.iter().map(|p| p.id).collect::<Vec<_>>()
+        );
+        for (spec, provider) in login.iter().zip(connectable.iter()) {
+            assert_eq!(
+                spec.id, provider.id,
+                "login list order/ids must match connectable_providers"
+            );
+            assert_eq!(
+                spec.display, provider.display_name,
+                "display name for {} must come from the profile",
+                provider.id
+            );
+            let expect_oauth = if provider.supports_oauth {
+                AuthKind::OAuth
+            } else {
+                AuthKind::ApiKey
+            };
+            assert_eq!(
+                spec.kind, expect_oauth,
+                "auth kind for {} must reflect supports_oauth",
+                provider.id
+            );
+            assert_eq!(
+                spec.env_var,
+                provider.api_key_env.unwrap_or(""),
+                "env_var for {} must match profile api_key_env",
+                provider.id
+            );
+        }
+        assert!(
+            login.iter().any(|p| p.id == "chatgpt"),
+            "chatgpt must appear in the login provider list"
+        );
+        assert!(
+            login.iter().any(|p| p.id == "xai"),
+            "xai must appear in the login provider list"
+        );
+    }
+
+    #[test]
     fn lists_all_real_providers_with_method_tags() {
-        // VAL-ONB-017/018: the five real providers, each with an aligned method tag.
+        // VAL-ONB-017/018: connectable providers drive the list; the window shows the head of the
+        // catalogue with method tags. Full catalogue (incl. chatgpt/xai) is asserted unit-side.
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
-        for name in [
-            "openrouter",
-            "anthropic",
-            "openai (codex)",
-            "azure openai",
-            "github copilot",
-        ] {
-            assert!(text.contains(name), "provider `{name}` present:\n{text}");
-        }
+        assert!(
+            text.contains("OpenRouter"),
+            "first connectable provider visible:\n{text}"
+        );
         assert!(text.contains("[api-key]"), "api-key method tag present");
-        assert!(text.contains("[oauth]"), "oauth method tag present");
+        let state = AuthLoginState::new();
+        assert!(
+            state.providers.iter().any(|p| p.kind == AuthKind::OAuth),
+            "at least one OAuth provider is in the login catalogue"
+        );
+        assert!(
+            state.providers.iter().any(|p| p.kind == AuthKind::ApiKey),
+            "at least one API-key provider is in the login catalogue"
+        );
     }
 
     #[test]
@@ -845,7 +925,7 @@ mod tests {
         let fill = selected
             .spans
             .iter()
-            .find(|s| s.content.contains("openrouter"))
+            .find(|s| s.content.contains("OpenRouter"))
             .expect("selected provider name present on the fill");
         assert_eq!(fill.style.bg, Some(theme.primary), "row fill is ORANGE");
         assert_eq!(fill.style.fg, Some(theme.background), "text is near-black");
@@ -861,7 +941,7 @@ mod tests {
         let buf = render(&app_with_auth());
         let text = buffer_text(&buf);
         assert!(
-            text.contains("paste API key for openrouter:"),
+            text.contains("paste API key for OpenRouter:"),
             "key prompt:\n{text}"
         );
     }
@@ -1051,7 +1131,7 @@ mod tests {
         state.move_selection(-1);
         assert_eq!(
             state.selected,
-            PROVIDERS.len() - 1,
+            state.providers.len() - 1,
             "up wraps to the last provider"
         );
     }
@@ -1072,9 +1152,14 @@ mod tests {
 
     #[test]
     fn oauth_provider_shows_no_api_key_prompt() {
-        // VAL-ONB-033: selecting the OAuth provider presents OAuth, not the masked-key input.
+        // VAL-ONB-033: selecting an OAuth provider presents OAuth, not the masked-key input.
         let mut state = AuthLoginState::new();
-        state.selected = PROVIDERS.len() - 1; // github copilot (oauth)
+        let oauth_idx = state
+            .providers
+            .iter()
+            .position(|p| p.kind == AuthKind::OAuth)
+            .expect("at least one OAuth provider in the connectable catalogue");
+        state.selected = oauth_idx;
         assert_eq!(state.selected_spec().kind, AuthKind::OAuth);
         let theme = ThemeColors::from_name("dark");
         let lines = panel_body_lines(&state, 62, &theme);

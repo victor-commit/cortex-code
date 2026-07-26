@@ -488,6 +488,8 @@ impl ConnectState {
             token_endpoint: endpoints.token_endpoint,
             client_id: endpoints.client_id,
             scopes: endpoints.scopes,
+            authorize_extra_params: endpoints.authorize_extra_params,
+            callback_path: Some(endpoints.callback_path).filter(|path| !path.is_empty()),
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let rx = spawn_oauth(
@@ -1714,9 +1716,14 @@ mod tests {
         OAuthEndpoints {
             authorize_endpoint: format!("{token_base}/authorize"),
             token_endpoint: format!("{token_base}/token"),
+            device_authorization_endpoint: None,
             client_id: "fixture-client".to_owned(),
             scopes: vec!["read:user".to_owned()],
             callback_port: None,
+            callback_path: "/callback".to_owned(),
+            authorize_extra_params: Vec::new(),
+            token_extra_params: Vec::new(),
+            extra_request_headers: Vec::new(),
         }
     }
 
@@ -1900,6 +1907,8 @@ mod tests {
             token_endpoint: "http://127.0.0.1:3200/token".to_owned(),
             client_id: "fixture-client".to_owned(),
             scopes: vec!["read:user".to_owned()],
+            authorize_extra_params: Vec::new(),
+            callback_path: None,
         };
         let path = unique_auth_path("oauth-cancel-shutdown");
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
