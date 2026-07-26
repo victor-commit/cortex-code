@@ -179,6 +179,9 @@ Missions live under `~/.cortex/missions/<id>/` (override with `--root` or
 
 ## Development
 
+TUI design harness (sibling repo, not a workspace member):
+[cortex-tui-designer](https://github.com/CortexLM/cortex-tui-designer).
+
 ```bash
 # Fast validation
 cargo check -p cli --bins
