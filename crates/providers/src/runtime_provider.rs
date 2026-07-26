@@ -13,7 +13,7 @@ use llm::{
 };
 
 use crate::openrouter::{OPENROUTER_ID, openai_compatible_provider_with_api_key};
-use crate::runtime_auth::resolve_provider_api_key;
+use crate::runtime_auth::{resolve_provider_api_key, subscription_request_headers};
 use crate::{
     ProviderConfigError, ProviderConfigSet, ProviderProtocol, resolve_openrouter_with_options,
 };
@@ -76,7 +76,8 @@ pub fn resolve_runtime_provider_with_options(
             let base_url = provider_config
                 .resolve_provider_base_url(provider_id)
                 .map_err(RuntimeProviderError::Config)?;
-            let headers = provider_config.provider_headers(provider_id);
+            let mut headers = provider_config.provider_headers(provider_id);
+            headers.extend(subscription_request_headers(provider_id, &credentials));
             let headers = (!headers.is_empty()).then_some(headers.as_slice());
             let provider: Arc<dyn llm::Provider> = match protocol {
                 ProviderProtocol::OpenAiChat => Arc::new(

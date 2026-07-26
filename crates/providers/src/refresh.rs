@@ -20,6 +20,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use errors::Diagnostic;
@@ -100,6 +101,21 @@ pub fn resolve_catalogue() -> Catalogue {
     )
 }
 
+/// Process-wide memo of [`resolve_catalogue`] for callers that intentionally want a live
+/// (or degraded-offline) resolve once per process.
+///
+/// The first call runs [`resolve_catalogue`] exactly once, so `guard_outbound` / `CORTEX_NO_NET`
+/// still apply on that first resolve (no socket under the kill-switch; offline cache then embedded).
+/// Later calls return the same `&'static Catalogue` without consulting the network again.
+///
+/// **Not for `cortex run` / credential / base-url hot paths** — those must use
+/// [`offline_catalogue_memo`] so a local-only provider never opens a models.dev socket.
+#[must_use]
+pub fn resolved_catalogue_memo() -> &'static Catalogue {
+    static MEMO: OnceLock<Catalogue> = OnceLock::new();
+    MEMO.get_or_init(resolve_catalogue)
+}
+
 /// The offline catalogue: the on-disk cache written by a prior refresh when present and valid,
 /// otherwise the embedded snapshot. No network, no error; the excluded Zen provider is omitted
 /// either way.
@@ -117,6 +133,18 @@ pub fn offline_catalogue() -> Catalogue {
 #[must_use]
 pub fn offline_catalogue_with_source() -> (Catalogue, &'static str) {
     choose_offline_with_source(load_cached_catalogue())
+}
+
+/// Process-wide memo of [`offline_catalogue`] for hot paths (credential env fallback, base URL
+/// catalogue `api` fallback, model metadata) that must never open a models.dev socket.
+///
+/// Cache-then-embedded only — same decision as [`offline_catalogue`] / [`offline_catalogue_with_source`],
+/// including [`Catalogue::ensure_default_model_present`] on a cached snapshot. Live fetch remains
+/// exclusive to [`resolve_catalogue`] / `models --refresh`.
+#[must_use]
+pub fn offline_catalogue_memo() -> &'static Catalogue {
+    static MEMO: OnceLock<Catalogue> = OnceLock::new();
+    MEMO.get_or_init(offline_catalogue)
 }
 
 /// The pure resolve decision, separated from the environment/socket/disk reads so both the online
@@ -152,7 +180,10 @@ fn choose_offline(cached: Option<Catalogue>) -> Catalogue {
 /// CLI/server surface as each entry's `source`.
 fn choose_offline_with_source(cached: Option<Catalogue>) -> (Catalogue, &'static str) {
     match cached {
-        Some(cached) => (cached, "cached"),
+        Some(mut cached) => {
+            cached.ensure_default_model_present();
+            (cached, "cached")
+        }
         None => (Catalogue::embedded().clone(), "builtin"),
     }
 }
@@ -284,7 +315,11 @@ fn parse_and_curate(bytes: &[u8]) -> Result<Catalogue, Diagnostic> {
             providers.insert(provider.id.clone(), provider);
         }
     }
-    Ok(Catalogue::from_providers(providers))
+    Ok({
+        let mut catalogue = Catalogue::from_providers(providers);
+        catalogue.ensure_default_model_present();
+        catalogue
+    })
 }
 
 /// Curate the primary provider's (OpenRouter) models dynamically from the fetched models.dev list.
@@ -1002,5 +1037,148 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn choose_offline_pins_default_model_when_cache_omits_it() {
+        let json = r#"{
+          "openrouter": {
+            "id": "openrouter",
+            "name": "OpenRouter",
+            "api": "https://openrouter.ai/api/v1",
+            "env": ["OPENROUTER_API_KEY"],
+            "models": {
+              "google/gemini-3-flash": {
+                "id": "google/gemini-3-flash",
+                "name": "Gemini 3 Flash",
+                "cost": { "input": 0.3, "output": 2.5 },
+                "limit": { "context": 1048576, "output": 65535 }
+              }
+            }
+          }
+        }"#;
+        let cached = Catalogue::from_json(json).expect("parse cache without default");
+        assert!(
+            cached.find_model(crate::DEFAULT_MODEL).is_none(),
+            "fixture must omit DEFAULT_MODEL"
+        );
+        let (resolved, source) = choose_offline_with_source(Some(cached));
+        assert_eq!(source, "cached");
+        assert!(
+            resolved.find_model(crate::DEFAULT_MODEL).is_some(),
+            "offline resolve must pin DEFAULT_MODEL from embedded when cache omits it"
+        );
+        assert!(
+            resolved.find_model("google/gemini-3-flash").is_some(),
+            "cache models must be preserved alongside the pin"
+        );
+    }
+
+    #[test]
+    fn curate_pins_default_model_when_live_openrouter_omits_it() {
+        // Live openrouter list has only a newer google model — product default must still appear.
+        let json = r#"{
+          "openrouter": {
+            "id": "openrouter",
+            "name": "OpenRouter",
+            "api": "https://openrouter.ai/api/v1",
+            "env": ["OPENROUTER_API_KEY"],
+            "models": {
+              "google/gemini-3-flash": {
+                "id": "google/gemini-3-flash",
+                "name": "Gemini 3 Flash",
+                "tool_call": true,
+                "release_date": "2026-01-01",
+                "cost": { "input": 0.3, "output": 2.5 },
+                "limit": { "context": 1048576, "output": 65535 }
+              }
+            }
+          }
+        }"#;
+        let catalogue = curate(json).expect("curates");
+        assert!(
+            catalogue.find_model(crate::DEFAULT_MODEL).is_some(),
+            "parse_and_curate must pin DEFAULT_MODEL when live list omits it"
+        );
+        assert!(catalogue.find_model("google/gemini-3-flash").is_some());
+    }
+
+    #[test]
+    fn resolved_catalogue_memo_returns_same_pointer() {
+        let first = resolved_catalogue_memo();
+        let second = resolved_catalogue_memo();
+        assert!(
+            std::ptr::eq(first, second),
+            "memo must return the identical &'static Catalogue on every call"
+        );
+        assert!(
+            first.provider(OPENROUTER_ID).is_some(),
+            "memo must yield a usable catalogue with the openrouter provider"
+        );
+    }
+
+    #[test]
+    fn offline_catalogue_memo_returns_same_pointer_and_matches_offline() {
+        let first = offline_catalogue_memo();
+        let second = offline_catalogue_memo();
+        assert!(
+            std::ptr::eq(first, second),
+            "offline memo must return the identical &'static Catalogue on every call"
+        );
+        assert_eq!(
+            *first,
+            offline_catalogue(),
+            "offline memo must equal a fresh offline_catalogue() snapshot"
+        );
+        assert!(
+            first.find_model(crate::DEFAULT_MODEL).is_some(),
+            "offline memo must retain DEFAULT_MODEL (embedded or pinned from cache)"
+        );
+    }
+
+    /// Under `CORTEX_NO_NET=1` the memo still resolves (offline path) without panicking.
+    ///
+    /// Env must be set at process start and the workspace forbids in-process `set_var`, so this
+    /// re-invokes the test binary as a child with the kill-switch engaged (same pattern as
+    /// `runtime_auth` / `llm` net-guard probes).
+    #[test]
+    fn resolved_catalogue_memo_under_cortex_no_net_yields_offline_catalogue() {
+        const PROBE_ENV: &str = "CORTEX_RESOLVED_CATALOGUE_MEMO_PROBE";
+        const MARKER: &str = "RESOLVED_CATALOGUE_MEMO=";
+
+        if std::env::var_os(PROBE_ENV).is_some() {
+            let memo = resolved_catalogue_memo();
+            let offline = offline_catalogue();
+            let has_providers = memo.providers().next().is_some();
+            let has_openrouter = memo.provider(OPENROUTER_ID).is_some();
+            let matches_offline = *memo == offline;
+            let ok = has_providers && has_openrouter && matches_offline;
+            println!(
+                "{MARKER}{}",
+                if ok {
+                    "ok"
+                } else {
+                    "fail"
+                }
+            );
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("path to this test binary");
+        let full_name =
+            "refresh::tests::resolved_catalogue_memo_under_cortex_no_net_yields_offline_catalogue";
+        let output = std::process::Command::new(exe)
+            .args(["--exact", full_name, "--nocapture"])
+            .env("CORTEX_NO_NET", "1")
+            .env(PROBE_ENV, "1")
+            .output()
+            .expect("spawn child probe");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("{MARKER}ok")),
+            "child under CORTEX_NO_NET=1 must yield a usable offline catalogue via the memo. stdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

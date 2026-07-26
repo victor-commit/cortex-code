@@ -326,8 +326,29 @@ impl ProviderConfigSet {
     /// Build credential-resolution inputs for `provider_id`.
     ///
     /// Precedence remains env > 0600 auth file > config value.
+    ///
+    /// Hot-path wrapper: uses the process-wide **offline** catalogue memo (cache then embedded)
+    /// so catalogue `env` fallback never opens a models.dev socket on `cortex run`.
     #[must_use]
     pub fn credential_inputs(&self, provider_id: &str) -> CredentialInputs {
+        self.credential_inputs_with(
+            provider_id,
+            crate::refresh::offline_catalogue_memo(),
+        )
+    }
+
+    /// Build credential-resolution inputs with an explicit catalogue for env-name fallback.
+    ///
+    /// Env-name precedence: config `api_key_env` → profile `default_api_key_env` →
+    /// catalogue `ProviderInfo.env` (first non-empty entry) → OpenRouter default.
+    /// Config value still comes from `provider.auth.api_key`. Secret-layer precedence
+    /// remains env > file > config via [`CredentialInputs::from_process`].
+    #[must_use]
+    pub fn credential_inputs_with(
+        &self,
+        provider_id: &str,
+        catalogue: &Catalogue,
+    ) -> CredentialInputs {
         let provider = self.providers.get(provider_id);
         let env_name = provider
             .and_then(|provider| provider.auth.api_key_env.clone())
@@ -335,6 +356,15 @@ impl ProviderConfigSet {
                 provider_profiles::profile(provider_id)
                     .and_then(|profile| profile.default_api_key_env)
                     .map(ToOwned::to_owned)
+            })
+            .or_else(|| {
+                catalogue.provider(provider_id).and_then(|info| {
+                    info.env
+                        .iter()
+                        .map(String::as_str)
+                        .find(|name| !name.is_empty())
+                        .map(ToOwned::to_owned)
+                })
             })
             .or_else(|| (provider_id == OPENROUTER_ID).then(|| OPENROUTER_ENV.to_owned()));
         let config_value = provider.and_then(|provider| provider.auth.api_key.clone());
@@ -367,9 +397,27 @@ impl ProviderConfigSet {
     }
 
     /// Resolve the provider base URL, honoring OpenRouter defaults when unconfigured.
+    ///
+    /// Hot-path wrapper: uses the process-wide **offline** catalogue memo (cache then embedded)
+    /// so catalogue `api` fallback never opens a models.dev socket on `cortex run`.
     pub fn resolve_provider_base_url(
         &self,
         provider_id: &str,
+    ) -> Result<String, ProviderConfigError> {
+        self.resolve_provider_base_url_with(
+            provider_id,
+            crate::refresh::offline_catalogue_memo(),
+        )
+    }
+
+    /// Resolve the provider base URL with an explicit catalogue for fallback.
+    ///
+    /// Precedence: config `base_url` → profile `default_base_url` → catalogue
+    /// `ProviderInfo.api` (non-empty) → OpenRouter default → missing.
+    pub fn resolve_provider_base_url_with(
+        &self,
+        provider_id: &str,
+        catalogue: &Catalogue,
     ) -> Result<String, ProviderConfigError> {
         if let Some(base_url) = self.provider_base_url(provider_id) {
             return Ok(base_url);
@@ -378,6 +426,13 @@ impl ProviderConfigSet {
             provider_profiles::profile(provider_id).and_then(|profile| profile.default_base_url)
         {
             return Ok(base_url.to_owned());
+        }
+        if let Some(api) = catalogue
+            .provider(provider_id)
+            .and_then(|provider| provider.api.clone())
+            .filter(|api| !api.is_empty())
+        {
+            return Ok(api);
         }
         if provider_id == OPENROUTER_ID {
             return Ok(crate::openrouter::OPENROUTER_API_BASE.to_owned());

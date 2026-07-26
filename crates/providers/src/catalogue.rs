@@ -292,6 +292,39 @@ impl Catalogue {
             .find_map(|provider| provider.models.get(model_id).map(|model| (provider, model)))
     }
 
+    /// Ensure [`DEFAULT_MODEL`] remains present by merging it from the embedded snapshot.
+    ///
+    /// Live models.dev refreshes and on-disk caches can drop the product default when upstream
+    /// retires an id. Settings and `/config/providers` still advertise that default, so the
+    /// listing must keep the model even when the cache/live catalogue no longer carries it.
+    pub(crate) fn ensure_default_model_present(&mut self) {
+        if self.find_model(DEFAULT_MODEL).is_some() {
+            return;
+        }
+        let Some((provider, model)) = Self::embedded().find_model(DEFAULT_MODEL) else {
+            // Embedded snapshot is expected to carry DEFAULT_MODEL; soft no-op if it ever does not.
+            return;
+        };
+        let provider_id = provider.id.clone();
+        let model = model.clone();
+        if let Some(entry) = self.providers.get_mut(&provider_id) {
+            entry.models.insert(model.id.clone(), model);
+            return;
+        }
+        let mut models = BTreeMap::new();
+        models.insert(model.id.clone(), model);
+        self.providers.insert(
+            provider_id.clone(),
+            ProviderInfo {
+                id: provider_id,
+                name: provider.name.clone(),
+                api: provider.api.clone(),
+                env: provider.env.clone(),
+                models,
+            },
+        );
+    }
+
     /// Resolve a requested model id (or the default when `None`/blank) to a [`ResolvedModel`].
     ///
     /// A known id carries its catalogue metadata and its serving provider. An unknown id resolves
@@ -501,6 +534,53 @@ mod tests {
         assert!(catalogue.model("openrouter", DEFAULT_MODEL).is_some());
         assert!(catalogue.model("no-such-provider", DEFAULT_MODEL).is_none());
         assert!(catalogue.model("openrouter", "no/such-model").is_none());
+    }
+
+    #[test]
+    fn ensure_default_model_present_pins_from_embedded_when_missing() {
+        let json = r#"{
+            "openrouter": {
+                "id": "openrouter",
+                "name": "OpenRouter",
+                "api": "https://openrouter.ai/api/v1",
+                "env": ["OPENROUTER_API_KEY"],
+                "models": {
+                    "google/gemini-3-flash": {
+                        "id": "google/gemini-3-flash",
+                        "name": "Gemini 3 Flash",
+                        "cost": { "input": 0.3, "output": 2.5 },
+                        "limit": { "context": 1048576, "output": 65535 }
+                    }
+                }
+            }
+        }"#;
+        let mut catalogue = Catalogue::from_json(json).expect("parse cache without default");
+        assert!(
+            catalogue.find_model(DEFAULT_MODEL).is_none(),
+            "fixture must omit DEFAULT_MODEL so the pin is exercised"
+        );
+        catalogue.ensure_default_model_present();
+        let (provider, model) = catalogue
+            .find_model(DEFAULT_MODEL)
+            .expect("DEFAULT_MODEL must be merged from embedded");
+        assert_eq!(provider.id, DEFAULT_PROVIDER);
+        assert_eq!(model.id, DEFAULT_MODEL);
+        // Existing live/cache models are preserved.
+        assert!(catalogue.find_model("google/gemini-3-flash").is_some());
+    }
+
+    #[test]
+    fn ensure_default_model_present_is_noop_when_already_present() {
+        let mut catalogue = Catalogue::embedded().clone();
+        let before = catalogue
+            .model(DEFAULT_PROVIDER, DEFAULT_MODEL)
+            .expect("embedded carries default")
+            .clone();
+        catalogue.ensure_default_model_present();
+        let after = catalogue
+            .model(DEFAULT_PROVIDER, DEFAULT_MODEL)
+            .expect("still present");
+        assert_eq!(*after, before);
     }
 
     #[test]

@@ -661,6 +661,165 @@ mod tests {
         assert_eq!(AuthPathInputs::default().resolve(), None);
     }
 
+    /// Subscription OAuth credentials are opaque JSON blobs stored in
+    /// `AuthEntry.key` (a plain string). The on-disk outer schema must stay
+    /// `{ "<provider>": { "key": "<string>" } }` at mode 0600 — no typed
+    /// OAuth fields on `AuthEntry`, no top-level schema change.
+    #[test]
+    fn subscription_oauth_blob_round_trips_as_auth_entry_key_string_at_0600() {
+        let dir = unique_temp_dir("cred-oauth-blob");
+        let path = dir.join("auth.json");
+
+        // Fixture mirrors runtime_auth OAuthCredential::to_stored_string shape
+        // (plus optional id_token used by ChatGPT account-id extraction).
+        let chatgpt_blob = serde_json::json!({
+            "type": "oauth",
+            "access_token": "at_chatgpt_fixture_roundtrip",
+            "refresh_token": "rt_chatgpt_fixture_roundtrip",
+            "id_token": "idt_chatgpt_fixture_roundtrip",
+            "expires_at": 1_900_000_000_u64,
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "token_endpoint": "https://auth.openai.com/oauth/token",
+            "token_type": "Bearer",
+        })
+        .to_string();
+        let xai_blob = serde_json::json!({
+            "type": "oauth",
+            "access_token": "at_xai_fixture_roundtrip",
+            "refresh_token": "rt_xai_fixture_roundtrip",
+            "expires_at": 1_900_000_100_u64,
+            "client_id": "b1a00492-073a-47ea-816f-4c329264a828",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+            "token_type": "Bearer",
+        })
+        .to_string();
+
+        store_credential(&path, "chatgpt", &chatgpt_blob).expect("store chatgpt oauth blob");
+        store_credential(&path, "xai", &xai_blob).expect("store xai oauth blob");
+
+        // Round-trip: store API returns the identical key string.
+        assert_eq!(
+            read_stored_key(&path, "chatgpt").as_deref(),
+            Some(chatgpt_blob.as_str()),
+            "chatgpt oauth blob must round-trip byte-for-byte as AuthEntry.key"
+        );
+        assert_eq!(
+            read_stored_key(&path, "xai").as_deref(),
+            Some(xai_blob.as_str()),
+            "xai oauth blob must round-trip byte-for-byte as AuthEntry.key"
+        );
+
+        // Logical fields survive JSON re-parse of the key string (not AuthEntry fields).
+        for (provider, blob, expect_access, expect_refresh, expect_id, expect_exp, expect_client, expect_endpoint) in [
+            (
+                "chatgpt",
+                chatgpt_blob.as_str(),
+                "at_chatgpt_fixture_roundtrip",
+                Some("rt_chatgpt_fixture_roundtrip"),
+                Some("idt_chatgpt_fixture_roundtrip"),
+                1_900_000_000_u64,
+                "app_EMoamEEZ73f0CkXaXp7hrann",
+                "https://auth.openai.com/oauth/token",
+            ),
+            (
+                "xai",
+                xai_blob.as_str(),
+                "at_xai_fixture_roundtrip",
+                Some("rt_xai_fixture_roundtrip"),
+                None,
+                1_900_000_100_u64,
+                "b1a00492-073a-47ea-816f-4c329264a828",
+                "https://auth.x.ai/oauth2/token",
+            ),
+        ] {
+            let parsed: serde_json::Value =
+                serde_json::from_str(blob).unwrap_or_else(|e| panic!("{provider} key is JSON: {e}"));
+            let obj = parsed
+                .as_object()
+                .unwrap_or_else(|| panic!("{provider} key must be a JSON object"));
+            assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("oauth"));
+            assert_eq!(
+                obj.get("access_token").and_then(|v| v.as_str()),
+                Some(expect_access)
+            );
+            assert_eq!(
+                obj.get("refresh_token").and_then(|v| v.as_str()),
+                expect_refresh
+            );
+            assert_eq!(obj.get("id_token").and_then(|v| v.as_str()), expect_id);
+            assert_eq!(
+                obj.get("expires_at").and_then(|v| v.as_u64()),
+                Some(expect_exp)
+            );
+            assert_eq!(
+                obj.get("client_id").and_then(|v| v.as_str()),
+                Some(expect_client)
+            );
+            assert_eq!(
+                obj.get("token_endpoint").and_then(|v| v.as_str()),
+                Some(expect_endpoint)
+            );
+        }
+
+        // Outer on-disk schema: AuthFile { BTreeMap provider → AuthEntry { key: String } }.
+        // No top-level oauth fields; each entry is exactly { "key": <string> }.
+        let raw = std::fs::read_to_string(&path).expect("read auth.json");
+        let outer: serde_json::Value =
+            serde_json::from_str(&raw).expect("auth.json must be valid JSON");
+        let outer_obj = outer
+            .as_object()
+            .expect("auth.json root must be an object");
+        assert_eq!(
+            outer_obj.keys().cloned().collect::<Vec<_>>(),
+            vec!["chatgpt".to_owned(), "xai".to_owned()],
+            "top-level keys must be provider ids only (BTreeMap order)"
+        );
+        for provider in ["chatgpt", "xai"] {
+            let entry = outer_obj
+                .get(provider)
+                .and_then(|v| v.as_object())
+                .unwrap_or_else(|| panic!("{provider} entry must be an object"));
+            assert_eq!(
+                entry.keys().cloned().collect::<Vec<_>>(),
+                vec!["key".to_owned()],
+                "{provider}: AuthEntry must expose only `key` — no structured oauth fields"
+            );
+            assert!(
+                entry.get("key").is_some_and(serde_json::Value::is_string),
+                "{provider}: AuthEntry.key must be a JSON string (oauth blob), not an object"
+            );
+        }
+
+        // Typed deserialize through the private AuthFile / AuthEntry contract.
+        let file = load_auth_file(&path).expect("load AuthFile");
+        assert_eq!(file.entries.len(), 2);
+        assert_eq!(
+            file.entries.get("chatgpt").map(|e| e.key.as_str()),
+            Some(chatgpt_blob.as_str())
+        );
+        assert_eq!(
+            file.entries.get("xai").map(|e| e.key.as_str()),
+            Some(xai_blob.as_str())
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "oauth credential store must remain owner-only 0600"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
     fn unique_temp_dir(tag: &str) -> PathBuf {
         let unique = format!(
             "cortex-{tag}-{}-{:?}",
