@@ -39,6 +39,10 @@ use crate::slash;
 use crate::tool_card::ToolCard;
 use crate::turn::TurnMessage;
 
+/// Fixture bridge for cortex-tui-designer (`App::designer_*`). Gated off the product default.
+#[cfg(feature = "designer")]
+mod designer;
+
 /// The cap on the number of files surfaced in the `@`-mention picker at once, so a broad query (or a
 /// bare `@`) cannot build an unbounded row list; the popup scrolls within this set.
 const MENTION_MATCH_LIMIT: usize = 200;

@@ -43,3 +43,8 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+
+[features]
+default = []
+# Opt-in fixture bridge for cortex-tui-designer (App::designer_*). Never default-on.
+designer = []
