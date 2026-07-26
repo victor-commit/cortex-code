@@ -525,7 +525,7 @@ impl ThemeColors {
             "ocean" | "ocean_dark" => Self::ocean_dark(),
             "monokai" => Self::monokai(),
             "vscode" | "vscode_dark" | "vscode-dark" => Self::vscode(),
-            "cortexnight" | "cortexnight" | "cortex-night" | "cortex_night" => Self::cortexnight(),
+            "cortexnight" | "cortex" | "cortex-night" | "cortex_night" => Self::cortexnight(),
             // Default (and any unknown name) resolves to the mono-orange brand `dark`.
             _ => Self::dark(),
         }
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(t.text, Color::Rgb(0xe1, 0xe1, 0xe1));
         assert_eq!(t.primary, Color::Rgb(0xbb, 0x9a, 0xf7));
         assert_eq!(ThemeColors::from_name("cortexnight"), t);
-        assert_eq!(ThemeColors::from_name("cortexnight"), t);
+        assert_eq!(ThemeColors::from_name("cortex"), t);
         // Not copper.
         assert_ne!(t.primary, Color::Rgb(0xd9, 0x82, 0x5f));
     }

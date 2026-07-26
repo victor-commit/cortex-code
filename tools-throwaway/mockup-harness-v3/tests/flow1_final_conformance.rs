@@ -31,10 +31,10 @@ fn pure_mode() -> bool {
 /// Pre-Cortex fixture origin retained for historical fixtures.
 const DAILY_WORK_ORIGIN_LEGACY: &str = "Daily work · current conversation";
 /// Cortex redesign origin label used on live conversation / inspector frames.
-const DAILY_WORK_ORIGIN_GROK: &str = "Current conversation";
+const DAILY_WORK_ORIGIN_PRODUCT: &str = "Current conversation";
 
 fn keeps_daily_work_origin(text: &str) -> bool {
-    text.contains(DAILY_WORK_ORIGIN_GROK) || text.contains(DAILY_WORK_ORIGIN_LEGACY)
+    text.contains(DAILY_WORK_ORIGIN_PRODUCT) || text.contains(DAILY_WORK_ORIGIN_LEGACY)
 }
 
 /// Exact 24 Flow 1 states required by VAL-V3-F1-059.

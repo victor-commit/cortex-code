@@ -7,7 +7,7 @@
 //! - `status` → compact `/session-info` + `/context` facts in shell
 //! - sidebars inherit shell chrome without `◆ Cortex` nameplates
 //!
-//! Source: `/tmp/grok-build-ref` views/shortcuts_help.rs, slash session_info /
+//! Source: `/tmp/cortex-build-ref` views/shortcuts_help.rs, slash session_info /
 //! context, scrollback context_info.rs; mission pure-structure-law.
 
 use crate::chrome::canvas::Canvas;

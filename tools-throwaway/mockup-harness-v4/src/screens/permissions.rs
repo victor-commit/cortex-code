@@ -1,6 +1,6 @@
 //! Pure permissions & recovery (M2 pure-structure permission docks).
 //!
-//! Source law: `/tmp/grok-build-ref/.../views/permission_view.rs`,
+//! Source law: `/tmp/cortex-build-ref/.../views/permission_view.rs`,
 //! `.../permission/prompter.rs`, `.../acp_handler/permissions.rs`,
 //! mission `library/pure-structure-law.md` + `library/fidelity-audit-auth-tools.md`.
 //!

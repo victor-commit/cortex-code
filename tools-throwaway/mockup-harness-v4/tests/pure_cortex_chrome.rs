@@ -25,7 +25,7 @@ fn palette_cortexnight_identity_hex() {
 }
 
 #[test]
-fn palette_grokday_peer_hex() {
+fn palette_cortexday_peer_hex() {
     let p = palette(Theme::CortexDay);
     assert_eq!(p.hex(ColorToken::Canvas), "#eeeeee");
     assert_eq!(p.hex(ColorToken::Text), "#262626");

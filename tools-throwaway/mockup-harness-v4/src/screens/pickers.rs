@@ -1,7 +1,7 @@
 //! Pure Cortex composer & pickers (M3 pure-structure slash / model geometry).
 //!
 //! Authority: `library/pure-structure-law.md`, fidelity-audit-views-orchestration.md,
-//! source `/tmp/grok-build-ref/.../views/slash_dropdown.rs` + slash/commands/{model,resume,session_info}.
+//! source `/tmp/cortex-build-ref/.../views/slash_dropdown.rs` + slash/commands/{model,resume,session_info}.
 //!
 //! VAL-V3-STRUCT-011:
 //! - `slash-menu` = slash_dropdown glued over live prompt with product command names

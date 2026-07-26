@@ -1,7 +1,7 @@
 //! Pure CortexNight / CortexDay tokens and expanded Cortex glyph policy.
 //!
-//! Source of truth: `library/grok-pure-dump-spec.md` +
-//! `/tmp/grok-build-ref/.../theme/{cortexnight,grokday}.rs`.
+//! Source of truth: `library/cortex-pure-dump-spec.md` +
+//! `/tmp/cortex-build-ref/.../theme/{cortexnight,cortexday}.rs`.
 //! No copper Cortex Identity tokens live here.
 
 /// Canonical gallery terminal source dimensions.
@@ -174,7 +174,7 @@ impl Palette {
 }
 
 /// CortexNight raster tokens (truecolor RGB from source theme + runtime SGR).
-pub const GROK_NIGHT: Palette = Palette {
+pub const CORTEX_NIGHT: Palette = Palette {
     values: [
         Rgb::new(0x14, 0x14, 0x14), // Canvas      #141414
         Rgb::new(0x24, 0x24, 0x24), // Surface     #242424
@@ -200,7 +200,7 @@ pub const GROK_NIGHT: Palette = Palette {
 };
 
 /// CortexDay light peer (deepened TokyoNight hues).
-pub const GROK_DAY: Palette = Palette {
+pub const CORTEX_DAY: Palette = Palette {
     values: [
         Rgb::new(0xee, 0xee, 0xee), // Canvas      #eeeeee
         Rgb::new(0xde, 0xde, 0xde), // Surface     #dedede
@@ -227,8 +227,8 @@ pub const GROK_DAY: Palette = Palette {
 
 pub const fn palette(theme: Theme) -> Palette {
     match theme {
-        Theme::CortexNight => GROK_NIGHT,
-        Theme::CortexDay => GROK_DAY,
+        Theme::CortexNight => CORTEX_NIGHT,
+        Theme::CortexDay => CORTEX_DAY,
     }
 }
 
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn grokday_core_hex_values() {
+    fn cortexday_core_hex_values() {
         let p = palette(Theme::CortexDay);
         assert_eq!(p.hex(ColorToken::Canvas), "#eeeeee");
         assert_eq!(p.hex(ColorToken::Text), "#262626");

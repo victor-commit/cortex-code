@@ -1,5 +1,5 @@
 //! Pure Cortex device-code login shell (runtime capture fidelity).
-//! Matches `evidence/grok-runtime-captures/welcome-120x40-reconstructed.txt`.
+//! Matches `evidence/cortex-runtime-captures/welcome-120x40-reconstructed.txt`.
 
 use crate::chrome::canvas::Canvas;
 use crate::chrome::components::{

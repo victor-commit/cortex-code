@@ -625,7 +625,7 @@ pub fn paint_picker_row_compact(
 
 /// Product slash_dropdown suggestion row: `❯ label` + aligned description.
 ///
-/// Source: `/tmp/grok-build-ref/.../views/slash_dropdown.rs` — PREFIX_W=2 (`❯ `/`  `),
+/// Source: `/tmp/cortex-build-ref/.../views/slash_dropdown.rs` — PREFIX_W=2 (`❯ `/`  `),
 /// label column + gap + description. Selection uses Accent `❯` (canvas has no bg_visual fill).
 /// Glue these immediately above the live prompt jewel; do not invent a detached
 /// Commands essay or Filter putty rewrite.
