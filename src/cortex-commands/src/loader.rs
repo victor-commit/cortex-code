@@ -42,7 +42,9 @@ impl CommandLoader {
     ///
     /// Default paths:
     /// 1. `.cortex/commands/` (project-local)
-    /// 2. `~/.config/cortex/commands/` (global)
+    /// 2. `<config_dir>/cortex/commands/` (global), where `<config_dir>` is
+    ///    [`dirs::config_dir`]: `~/.config` on Linux (or `$XDG_CONFIG_HOME`),
+    ///    `~/Library/Application Support` on macOS, `%APPDATA%` on Windows.
     pub fn new() -> Self {
         let mut search_dirs = Vec::new();
 
